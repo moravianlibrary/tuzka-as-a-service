@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>taas Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>taas &mdash; Dashboard</h1>
+  </header>
+  <div class="container">
+    <nav id="tabs">
+      <button class="active" data-tab="overview">Overview</button>
+      <button data-tab="users">Users</button>
+      <button data-tab="jobs">Jobs</button>
+      <button data-tab="backends">Backends</button>
+      <button data-tab="storage">Storage</button>
+    </nav>
+
+    <div id="overview" class="tab-content active">
+      <div class="cards" id="stat-cards"></div>
+      <h2 style="margin-bottom:12px">Backends</h2>
+      <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Inflight</th><th>Health</th></tr></thead><tbody id="overview-backends"></tbody></table>
+    </div>
+
+    <div id="users" class="tab-content">
+      <form class="inline" id="add-user-form" style="margin-bottom:16px">
+        <input name="username" placeholder="Username" required>
+        <button type="submit">Add User</button>
+      </form>
+      <table><thead><tr><th>Username</th><th>Active</th><th>Created</th><th>Jobs</th><th>Done</th><th>Failed</th><th>Actions</th></tr></thead><tbody id="users-table"></tbody></table>
+    </div>
+
+    <div id="jobs" class="tab-content">
+      <div class="filters">
+        <input id="jobs-filter-user" placeholder="Username">
+        <select id="jobs-filter-status"><option value="">All</option><option>queued</option><option>running</option><option>done</option><option>failed</option></select>
+        <button onclick="loadJobs()">Filter</button>
+      </div>
+      <table><thead><tr><th>Job ID</th><th>User</th><th>Status</th><th>Format</th><th>Submitted</th><th>Finished</th></tr></thead><tbody id="jobs-table"></tbody></table>
+      <div class="pagination" id="jobs-pagination"></div>
+    </div>
+
+    <div id="backends" class="tab-content">
+      <form class="inline" id="add-backend-form" style="margin-bottom:16px">
+        <input name="url" placeholder="URL" required>
+        <input name="label" placeholder="Label">
+        <input name="api_key" placeholder="API Key">
+        <input name="max_inflight" type="number" value="4" style="width:80px">
+        <button type="submit">Add Backend</button>
+      </form>
+      <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Enabled</th><th>Max Inflight</th><th>Inflight</th><th>Health</th><th>Actions</th></tr></thead><tbody id="backends-table"></tbody></table>
+    </div>
+
+    <div id="storage" class="tab-content">
+      <div class="storage-form" id="storage-form"></div>
+    </div>
+  </div>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

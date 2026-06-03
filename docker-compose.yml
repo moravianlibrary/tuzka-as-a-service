@@ -1,0 +1,208 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-taas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taas}
+      POSTGRES_DB: ${POSTGRES_DB:-taas}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  minio-incoming:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_INCOMING_ACCESS_KEY:-minioincoming}
+      MINIO_ROOT_PASSWORD: ${MINIO_INCOMING_SECRET_KEY:-minioincoming}
+    ports:
+      - "9000:9000"
+    volumes:
+      - minio-incoming-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  minio-results:
+    image: minio/minio
+    command: server /data --address ":9010" --console-address ":9011"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_RESULTS_ACCESS_KEY:-minioresults}
+      MINIO_ROOT_PASSWORD: ${MINIO_RESULTS_SECRET_KEY:-minioresults}
+    ports:
+      - "9010:9010"
+    volumes:
+      - minio-results-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  minio-init:
+    image: minio/mc
+    entrypoint: /bin/sh
+    command: /scripts/minio-init.sh
+    environment:
+      MINIO_INCOMING_ACCESS_KEY: ${MINIO_INCOMING_ACCESS_KEY:-minioincoming}
+      MINIO_INCOMING_SECRET_KEY: ${MINIO_INCOMING_SECRET_KEY:-minioincoming}
+      MINIO_RESULTS_ACCESS_KEY: ${MINIO_RESULTS_ACCESS_KEY:-minioresults}
+      MINIO_RESULTS_SECRET_KEY: ${MINIO_RESULTS_SECRET_KEY:-minioresults}
+    volumes:
+      - ./scripts:/scripts:ro
+    depends_on:
+      minio-incoming:
+        condition: service_healthy
+      minio-results:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: api.Containerfile
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env.app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  worker-submit:
+    build:
+      context: .
+      dockerfile: worker.Containerfile
+    command: python -m app.workers.submit
+    env_file:
+      - .env.app
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  worker-poller:
+    build:
+      context: .
+      dockerfile: worker.Containerfile
+    command: python -m app.workers.poller
+    env_file:
+      - .env.app
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  worker-cleanup:
+    build:
+      context: .
+      dockerfile: worker.Containerfile
+    command: python -m app.workers.cleanup
+    env_file:
+      - .env.app
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  compat:
+    build:
+      context: ./compat
+      dockerfile: Containerfile
+    ports:
+      - "8001:8001"
+    environment:
+      TAAS_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379/0
+      COMPAT_TTL_SECONDS: 3600
+      ENGINES: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
+  ocr-engine:
+    build:
+      context: ./TuzkaOCR
+      dockerfile: Dockerfile
+    image: tuzkaocr:cpu
+    environment:
+      TUZKAOCR_DEVICE: cpu
+      TUZKAOCR_OCR_THREADS: 4
+      TUZKAOCR_LINE_WORKERS: 4
+      TUZKAOCR_PAGE_WORKERS: 2
+      TUZKAOCR_HEIGHT_SCALE: "1.0"
+      TUZKAOCR_ADAPTIVE_DOWNSAMPLE: "true"
+      TUZKAOCR_RESULTS_DIR: /app/results
+      TUZKAOCR_SPOOL_DIR: /app/spool
+      TUZKAOCR_MAX_QUEUE: 16
+      TUZKAOCR_API_KEY: ${OCR_ENGINE_API_KEY:-test-engine-key}
+    volumes:
+      - ocr-results:/app/results
+      - ocr-spool:/app/spool
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 120s
+    networks:
+      - backend
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-incoming-data:
+  minio-results-data:
+  ocr-results:
+  ocr-spool:
+
+networks:
+  backend:

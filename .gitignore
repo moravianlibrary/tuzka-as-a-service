@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv
+.venv/
+venv/
+
+# Live env files (copy from the *.example templates; see `make env`)
+.env
+.env.app
+.env.local
+compat/.env.compat
+
+# OCR engine — cloned separately into ./TuzkaOCR (see README)
+/TuzkaOCR/
+
+# Test data — only a single public sample is tracked
+test-data/*
+!test-data/sample.jpg
+
+# Java build artifacts
+clients/java/target/
+*.class
+
+# Local tooling
+.idea/
+.vscode/
+*.log
