@@ -1,0 +1,112 @@
+# `app/` — taas core server
+
+The FastAPI application and background workers that make up **Tuzka as a Service**:
+the public API, the job queue lifecycle, result storage, and the admin dashboard.
+For the project overview and quickstart, see the [root README](../README.md).
+
+## Layout
+
+| Path | Responsibility |
+|---|---|
+| `main.py` | app factory (`create_app`), router wiring, `/healthz`, `/dashboard`, `/static` |
+| `config.py` | `Settings` (pydantic-settings) — read from `.env.local` / container env |
+| `deps.py` | FastAPI dependencies: DB session, Redis, auth (`require_user` / `require_master`), rate limiters |
+| `models/` | SQLAlchemy models — `user`, `job` (+ `JobResult`), `backend`, `storage_config`, `db` |
+| `schemas/` | Pydantic request/response schemas |
+| `routers/` | HTTP/WebSocket endpoints — `jobs`, `admin`, `dashboard`, `ws` |
+| `services/` | `auth`, `storage` (MinIO), `redis_jobs` (queue/state), `engine_client` (TuzkaOCR HTTP) |
+| `workers/` | standalone processes — `submit`, `poller`, `cleanup` |
+| `static/` | dashboard UI (`index.html`, `dashboard.js`, `style.css`) |
+
+## Authentication
+
+| Header | Used by | Identifies |
+|---|---|---|
+| `X-API-Key` | `/api/v1/*`, `/ws` | a user (hashed key looked up in `users`) |
+| `X-Master-Key` | `/admin/*`, `/dashboard/*` | the operator (matches `MASTER_KEY`) |
+
+## API
+
+### Jobs — `/api/v1` (user key, rate-limited)
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/jobs` | multipart: `image` (required), `uuid` (required — caller's `external_id`, must be a valid UUID, unique per user), `fmt` (`alto`\|`txt`\|`multi`, default `multi`), `domain?` → `202 {job_id, external_id, status}` |
+| `GET` | `/jobs/{job_id}` | job status |
+| `GET` | `/jobs/{job_id}/result` | `{results:[{fmt, url}]}` — presigned URLs (regenerated if expired) |
+| `GET` | `/jobs?status=&limit=&offset=` | paginated list (scoped to the user) |
+
+### Admin — `/admin` (master key)
+
+`GET/POST /users`, `DELETE /users/{u}` (deactivate), `POST /users/{u}/rotate-key`,
+`PUT /users/{u}/key`, `GET/POST /backends`, `PATCH/DELETE /backends/{id}`,
+`GET/PUT /storage-config`. Creating/rotating a user returns the raw `api_key` **once**.
+
+### Dashboard — `/dashboard` (master key)
+
+`GET /stats`, `GET /users`, `GET /jobs` (filters: `username`, `status`, `from`, `to`,
+`limit`, `offset`), `GET /backends` (live inflight + health). The HTML page is at `GET /dashboard`.
+
+### WebSocket — `/ws?api_key=...`
+
+On connect: replays `done`/`failed` jobs finished within `WS_CATCH_UP_SECONDS`, then streams
+live events. Event JSON:
+
+```json
+{"status": "done", "uuid": "<external_id>", "alto_url": "...", "txt_url": "..."}
+{"status": "failed", "uuid": "<external_id>", "error": "..."}
+```
+
+## Job lifecycle
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as API
+    participant R as Redis
+    participant S as submit worker
+    participant P as poller worker
+    participant E as TuzkaOCR
+    participant M as MinIO
+
+    C->>API: POST /jobs (image)
+    API->>M: store incoming image
+    API->>R: enqueue (jobs:pending), DB row = queued
+    S->>R: dequeue, pick healthy backend
+    S->>E: POST /process  → engine_job_id  (status=running)
+    P->>E: poll status until done
+    P->>E: GET result(s)
+    P->>M: store zstd-compressed results
+    P->>R: publish done event   (status=done)
+    C->>API: GET /jobs/{id}/result → presigned URL(s)
+```
+
+Statuses: `queued → running → done` (or `failed`).
+
+## Workers
+
+Each runs as its own process (one container per worker in compose):
+
+```bash
+python -m app.workers.submit    # dequeue → dispatch to a healthy backend
+python -m app.workers.poller    # poll engine status → harvest + store results → publish events
+python -m app.workers.cleanup   # TTL cleanup of buckets and old DB rows
+```
+
+## Running
+
+Containers (with the rest of the stack): see the [root README](../README.md) (`make up`).
+
+Locally:
+
+```bash
+make infra                     # postgres + redis + minio in Docker
+pip install -e ..              # installs taas
+alembic upgrade head           # apply migrations (config in ../alembic)
+cp ../.env.local.example ../.env.local
+uvicorn app.main:app --reload --port 8080
+# workers, in separate shells:
+python -m app.workers.submit & python -m app.workers.poller & python -m app.workers.cleanup
+```
+
+Configuration keys are documented in `../.env.app.example`.

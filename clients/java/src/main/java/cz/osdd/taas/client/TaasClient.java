@@ -87,11 +87,18 @@ public class TaasClient implements AutoCloseable {
     }
 
     public UUID submit(Path imagePath) {
-        return submit(imagePath, imagePath.getFileName().toString(), defaultFmt, defaultDomain);
+        return submit(imagePath, UUID.randomUUID());
+    }
+
+    public UUID submit(Path imagePath, UUID uuid) {
+        return submit(imagePath, uuid, imagePath.getFileName().toString(), defaultFmt, defaultDomain);
     }
 
     public UUID submit(Path imagePath, String filename, String fmt, String domain) {
-        UUID uuid = UUID.randomUUID();
+        return submit(imagePath, UUID.randomUUID(), filename, fmt, domain);
+    }
+
+    public UUID submit(Path imagePath, UUID uuid, String filename, String fmt, String domain) {
         pending.add(uuid);
 
         String mediaType = guessMediaType(filename);

@@ -29,6 +29,12 @@ flowchart LR
 
 The Python package / CLI is named `taas`.
 
+## Documentation
+
+- [`app/`](app/README.md) — core server: API, workers, job lifecycle
+- [`clients/`](clients/README.md) — Python & Java client libraries
+- [`compat/`](compat/README.md) — legacy PERO-compatibility server
+
 ## Components
 
 | Service | Role |
