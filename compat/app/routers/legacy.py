@@ -2,7 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import zstandard
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from starlette.responses import Response
 
 router = APIRouter()
@@ -15,9 +15,22 @@ def get_api_key(request: Request) -> str:
     return key
 
 
+async def validate_api_key(request: Request, api_key: str) -> None:
+    """Verify the api-key is a valid taas user key by calling a protected endpoint."""
+    http = request.app.state.http
+    resp = await http.get(
+        "/api/v1/jobs",
+        headers={"X-API-Key": api_key},
+        params={"limit": 1},
+    )
+    if resp.status_code == 401:
+        raise HTTPException(401, "Invalid api-key")
+
+
 @router.post("/post_processing_request")
 async def post_processing_request(request: Request):
     api_key = get_api_key(request)
+    await validate_api_key(request, api_key)
     body = await request.json()
     engine = body.get("engine", 1)
     images = body.get("images", {})
@@ -35,7 +48,8 @@ async def post_processing_request(request: Request):
 
 @router.get("/get_status")
 async def get_status(request: Request, request_id: str):
-    get_api_key(request)
+    api_key = get_api_key(request)
+    await validate_api_key(request, api_key)
     state = request.app.state.compat_state
     req = await state.get_request(request_id)
     if not req:
@@ -67,7 +81,9 @@ async def upload_image(
     # Forward to taas
     http = request.app.state.http
     upload_filename = file.filename or filename
-    files_data = {"image": (upload_filename, file_bytes, file.content_type or "application/octet-stream")}
+    files_data = {
+        "image": (upload_filename, file_bytes, file.content_type or "application/octet-stream")
+    }
     form_data = {"uuid": external_id, "fmt": "multi"}
     if engine_cfg.domain:
         form_data["domain"] = engine_cfg.domain
@@ -111,9 +127,7 @@ async def request_status(request: Request, request_id: str):
             return fname, {"state": "PROCESSED"}
         return fname, {"state": "PROCESSING"}
 
-    results = await asyncio.gather(
-        *[check_status(f, jid) for f, jid in job_ids.items()]
-    )
+    results = await asyncio.gather(*[check_status(f, jid) for f, jid in job_ids.items()])
 
     return {
         "status": "success",
@@ -183,7 +197,8 @@ async def download_results(
 
 @router.get("/get_engines")
 async def get_engines(request: Request):
-    get_api_key(request)
+    api_key = get_api_key(request)
+    await validate_api_key(request, api_key)
     settings = request.app.state.settings
 
     engines = {}

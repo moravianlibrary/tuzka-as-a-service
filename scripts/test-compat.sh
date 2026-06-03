@@ -46,8 +46,9 @@ done
 
 say "Waiting for compat to be ready"
 for i in $(seq 1 30); do
+  # any HTTP response means compat is up (401 = it validated the dummy key)
   code="$(curl -s -o /dev/null -w '%{http_code}' "$COMPAT_URL/get_engines" -H "api-key: x" || true)"
-  [ "$code" = 200 ] && break
+  { [ "$code" != 000 ] && [ -n "$code" ]; } && break
   [ "$i" = 30 ] && die "compat not responding (last code=$code)"
   sleep 1
 done

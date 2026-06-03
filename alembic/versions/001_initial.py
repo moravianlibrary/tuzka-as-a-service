@@ -5,15 +5,16 @@ Revises:
 Create Date: 2024-01-01 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -87,9 +88,7 @@ def upgrade() -> None:
         ["username", sa.text("submitted_at DESC")],
     )
     op.create_index("ix_jobs_status", "jobs", ["status"])
-    op.create_unique_constraint(
-        "uq_jobs_username_external", "jobs", ["username", "external_id"]
-    )
+    op.create_unique_constraint("uq_jobs_username_external", "jobs", ["username", "external_id"])
 
     op.create_table(
         "job_results",
@@ -117,8 +116,7 @@ def upgrade() -> None:
     )
 
     op.execute(
-        "INSERT INTO storage_config (bucket, ttl_minutes) "
-        "VALUES ('incoming', 60), ('results', 60)"
+        "INSERT INTO storage_config (bucket, ttl_minutes) VALUES ('incoming', 60), ('results', 60)"
     )
 
 

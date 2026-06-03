@@ -27,7 +27,10 @@ async def get_job(r: aioredis.Redis, job_id: str) -> dict | None:
     data = await r.hgetall(f"job:{job_id}")
     if not data:
         return None
-    return {k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v for k, v in data.items()}
+    return {
+        k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
+        for k, v in data.items()
+    }
 
 
 async def set_running(
@@ -100,9 +103,7 @@ async def publish_event(r: aioredis.Redis, username: str, event: dict) -> None:
     await r.publish(channel, json.dumps(event))
 
 
-async def check_rate_limit(
-    r: aioredis.Redis, key: str, limit: int, window: int = 60
-) -> bool:
+async def check_rate_limit(r: aioredis.Redis, key: str, limit: int, window: int = 60) -> bool:
     now = time.time()
     pipe = r.pipeline()
     pipe.zremrangebyscore(key, 0, now - window)

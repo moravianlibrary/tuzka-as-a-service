@@ -1,12 +1,9 @@
-import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
 from app.deps import get_settings
 from app.models.db import async_session
 from app.models.job import Job
@@ -51,9 +48,7 @@ async def websocket_endpoint(ws: WebSocket):
 
         # Catch-up: send recent done/failed events
         async with async_session() as db:
-            cutoff = datetime.utcnow() - timedelta(
-                seconds=settings.ws_catch_up_seconds
-            )
+            cutoff = datetime.utcnow() - timedelta(seconds=settings.ws_catch_up_seconds)
             result = await db.execute(
                 select(Job).where(
                     Job.username == username,
@@ -77,9 +72,7 @@ async def websocket_endpoint(ws: WebSocket):
 
         try:
             while True:
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=1.0
-                )
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if message and message["type"] == "message":
                     data = message["data"]
                     if isinstance(data, bytes):

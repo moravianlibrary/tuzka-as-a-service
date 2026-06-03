@@ -1,12 +1,11 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.models.job import Job, JobResult
 from app.models.storage_config import StorageConfig
 from app.services.storage import (
     delete_objects,
@@ -44,18 +43,14 @@ async def main() -> None:
                     if not client:
                         continue
 
-                    cutoff = datetime.utcnow() - timedelta(
-                        minutes=cfg.ttl_minutes
-                    )
+                    cutoff = datetime.utcnow() - timedelta(minutes=cfg.ttl_minutes)
                     expired = await list_expired_objects(client, cfg.bucket, cutoff)
                     if expired:
                         # Delete in batches of 1000
                         for i in range(0, len(expired), 1000):
                             batch = expired[i : i + 1000]
                             await delete_objects(client, cfg.bucket, batch)
-                            logger.info(
-                                f"Deleted {len(batch)} expired objects from {cfg.bucket}"
-                            )
+                            logger.info(f"Deleted {len(batch)} expired objects from {cfg.bucket}")
 
                 # Postgres cleanup: old job_results and jobs
                 cutoff_90d = datetime.utcnow() - timedelta(days=90)

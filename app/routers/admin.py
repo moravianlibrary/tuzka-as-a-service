@@ -50,9 +50,7 @@ async def deactivate_user(username: str, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    await db.execute(
-        update(User).where(User.username == username).values(active=False)
-    )
+    await db.execute(update(User).where(User.username == username).values(active=False))
     await db.commit()
     return {"status": "deactivated"}
 
@@ -65,26 +63,20 @@ async def rotate_key(username: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
 
     raw_key, hashed = generate_key()
-    await db.execute(
-        update(User).where(User.username == username).values(hashed_key=hashed)
-    )
+    await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
     await db.commit()
     return UserResponse(username=username, api_key=raw_key)
 
 
 @router.put("/users/{username}/key")
-async def set_key(
-    username: str, body: SetKeyRequest, db: AsyncSession = Depends(get_db)
-):
+async def set_key(username: str, body: SetKeyRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     hashed = hash_key(body.key)
-    await db.execute(
-        update(User).where(User.username == username).values(hashed_key=hashed)
-    )
+    await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
     await db.commit()
     return {"status": "key updated"}
 
@@ -189,16 +181,11 @@ async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/storage-config")
 async def get_storage_config(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(StorageConfig))
-    return [
-        {"bucket": sc.bucket, "ttl_minutes": sc.ttl_minutes}
-        for sc in result.scalars().all()
-    ]
+    return [{"bucket": sc.bucket, "ttl_minutes": sc.ttl_minutes} for sc in result.scalars().all()]
 
 
 @router.put("/storage-config")
-async def update_storage_config(
-    configs: list[dict], db: AsyncSession = Depends(get_db)
-):
+async def update_storage_config(configs: list[dict], db: AsyncSession = Depends(get_db)):
     for cfg in configs:
         result = await db.execute(
             select(StorageConfig).where(StorageConfig.bucket == cfg["bucket"])

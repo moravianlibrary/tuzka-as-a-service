@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
 import websockets
 import zstandard
-from collections.abc import Callable
 
 from .models import JobEvent, JobResult, JobStatus
 
@@ -100,7 +100,7 @@ class AsyncTaasClient:
         try:
             await asyncio.wait_for(self._all_done.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     async def _ws_listen(self) -> None:

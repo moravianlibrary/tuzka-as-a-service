@@ -44,9 +44,7 @@ class EngineClient:
         resp.raise_for_status()
         return resp.json()["job_id"]
 
-    async def check_status(
-        self, url: str, api_key: str | None, engine_job_id: str
-    ) -> dict:
+    async def check_status(self, url: str, api_key: str | None, engine_job_id: str) -> dict:
         headers = {}
         if api_key:
             headers["X-API-Key"] = api_key

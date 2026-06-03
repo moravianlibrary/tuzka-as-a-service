@@ -69,6 +69,16 @@ test-fast: ## E2E against an already-running stack (no build/up)
 test-compat: ## Run the legacy-compat server e2e (stack must be up)
 	IMAGE=$(IMAGE) bash scripts/test-compat.sh
 
+.PHONY: format
+format: ## Format code + auto-fix lint issues (ruff)
+	ruff format .
+	ruff check --fix .
+
+.PHONY: lint
+lint: ## Check formatting + lint without changes (ruff)
+	ruff check .
+	ruff format --check .
+
 .PHONY: secret
 secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
 	@python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

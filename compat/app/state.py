@@ -8,9 +8,7 @@ class CompatState:
         self.r = r
         self.ttl = ttl
 
-    async def create_request(
-        self, request_id: str, engine: int, filenames: list[str]
-    ) -> None:
+    async def create_request(self, request_id: str, engine: int, filenames: list[str]) -> None:
         key = f"compat:{request_id}"
         await self.r.hset(
             key,
@@ -34,9 +32,7 @@ class CompatState:
             filenames = filenames.decode()
         return {"engine": int(engine), "filenames": json.loads(filenames)}
 
-    async def set_job_id(
-        self, request_id: str, filename: str, job_id: str
-    ) -> None:
+    async def set_job_id(self, request_id: str, filename: str, job_id: str) -> None:
         key = f"compat:{request_id}:{filename}"
         await self.r.set(key, job_id, ex=self.ttl)
 

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Query
@@ -24,15 +24,11 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     total_jobs = total.scalar() or 0
 
     # Jobs by status
-    by_status_result = await db.execute(
-        select(Job.status, func.count()).group_by(Job.status)
-    )
+    by_status_result = await db.execute(select(Job.status, func.count()).group_by(Job.status))
     jobs_by_status = {row[0]: row[1] for row in by_status_result.all()}
 
     # Jobs today
-    today_start = datetime.utcnow().replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_result = await db.execute(
         select(func.count()).select_from(Job).where(Job.submitted_at >= today_start)
     )
@@ -42,10 +38,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     cutoff = datetime.utcnow() - timedelta(hours=24)
     avg_result = await db.execute(
         select(
-            func.avg(
-                func.extract("epoch", Job.finished_at)
-                - func.extract("epoch", Job.started_at)
-            )
+            func.avg(func.extract("epoch", Job.finished_at) - func.extract("epoch", Job.started_at))
         ).where(
             Job.status == "done",
             Job.finished_at >= cutoff,

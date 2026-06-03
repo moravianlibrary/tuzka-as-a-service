@@ -2,7 +2,7 @@ import os
 import time
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,9 +97,7 @@ async def submit_job(
         },
     )
 
-    return JobSubmitResponse(
-        job_id=job.id, external_id=external_id, status="queued"
-    )
+    return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
@@ -108,9 +106,7 @@ async def get_job_status(
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Job).where(Job.id == job_id, Job.username == username)
-    )
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -135,9 +131,7 @@ async def get_job_result(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    result = await db.execute(
-        select(Job).where(Job.id == job_id, Job.username == username)
-    )
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -148,9 +142,7 @@ async def get_job_result(
         raise HTTPException(status_code=202, detail="Job not completed yet")
 
     # Get results
-    res = await db.execute(
-        select(JobResult).where(JobResult.job_id == job_id)
-    )
+    res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
     job_results = res.scalars().all()
 
     results_client = storage.get_results_client(settings)
@@ -160,9 +152,7 @@ async def get_job_result(
     now = datetime.utcnow()
     for jr in job_results:
         # Refresh presigned URL if expired (stored as naive UTC)
-        if not jr.presigned_url or (
-            jr.presigned_until and jr.presigned_until < now
-        ):
+        if not jr.presigned_url or (jr.presigned_until and jr.presigned_until < now):
             ext_map = {"alto": "xml", "txt": "txt"}
             file_ext = ext_map.get(jr.fmt, jr.fmt)
             obj_path = f"{username}/{job.external_id}.{file_ext}.zst"

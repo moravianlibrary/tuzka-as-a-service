@@ -29,5 +29,7 @@ clients/java/target/
 
 # Local tooling
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+.ruff_cache/
 *.log

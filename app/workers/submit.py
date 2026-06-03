@@ -4,7 +4,7 @@ import time
 
 import redis.asyncio as aioredis
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.models.backend import Backend
@@ -89,9 +89,7 @@ async def main() -> None:
             await set_failed(r, job_id, f"Failed to read image: {e}")
             async with session_factory() as db:
                 await db.execute(
-                    update(Job)
-                    .where(Job.id == job_id)
-                    .values(status="failed", error=str(e))
+                    update(Job).where(Job.id == job_id).values(status="failed", error=str(e))
                 )
                 await db.commit()
             await publish_event(
@@ -104,23 +102,19 @@ async def main() -> None:
         # Decrypt backend API key
         api_key = None
         if backend.api_key_enc:
-            api_key = decrypt_backend_key(
-                backend.api_key_enc, settings.key_encryption_secret
-            )
+            api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
 
         filename = f"{external_id}{ext}"
         try:
             engine_job_id = await engine_client.process(
                 backend.url, api_key, image_bytes, filename, fmt, domain
             )
-            logger.info(
-                f"Job {job_id} running, engine_job_id={engine_job_id}"
-            )
+            logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
 
             await set_running(r, job_id, engine_job_id, backend.url, backend.id)
 
             async with session_factory() as db:
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 await db.execute(
                     update(Job)
@@ -135,16 +129,14 @@ async def main() -> None:
                 await db.commit()
 
         except EngineFullError:
-            logger.info(
-                f"Engine {backend.url} full, requeuing job {job_id}"
-            )
+            logger.info(f"Engine {backend.url} full, requeuing job {job_id}")
             await requeue_job(r, job_id, original_score)
 
         except Exception as e:
             logger.error(f"Failed to dispatch job {job_id}: {e}")
             await set_failed(r, job_id, str(e))
             async with session_factory() as db:
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 await db.execute(
                     update(Job)
@@ -183,9 +175,7 @@ async def main() -> None:
                 logger.info(
                     f"Dispatching {len(job_entries)} job(s) to {backend.label or backend.url}"
                 )
-                await asyncio.gather(
-                    *[dispatch(jid, score, backend) for jid, score in job_entries]
-                )
+                await asyncio.gather(*[dispatch(jid, score, backend) for jid, score in job_entries])
 
         except Exception as e:
             logger.error(f"Submit worker error: {e}")

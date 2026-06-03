@@ -28,9 +28,7 @@ def get_results_client(settings: Settings) -> Minio:
     )
 
 
-async def put_object(
-    client: Minio, bucket: str, path: str, data: bytes, content_type: str
-) -> None:
+async def put_object(client: Minio, bucket: str, path: str, data: bytes, content_type: str) -> None:
     stream = BytesIO(data)
     await client.put_object(bucket, path, stream, len(data), content_type=content_type)
 
@@ -44,12 +42,8 @@ async def get_object(client: Minio, bucket: str, path: str) -> bytes:
         await response.release()
 
 
-async def presign_get(
-    client: Minio, bucket: str, path: str, ttl_minutes: int
-) -> str:
-    return await client.presigned_get_object(
-        bucket, path, expires=timedelta(minutes=ttl_minutes)
-    )
+async def presign_get(client: Minio, bucket: str, path: str, ttl_minutes: int) -> str:
+    return await client.presigned_get_object(bucket, path, expires=timedelta(minutes=ttl_minutes))
 
 
 async def delete_objects(client: Minio, bucket: str, paths: list[str]) -> None:
@@ -61,9 +55,7 @@ async def delete_objects(client: Minio, bucket: str, paths: list[str]) -> None:
         print(f"Delete error: {error}")
 
 
-async def list_expired_objects(
-    client: Minio, bucket: str, older_than: datetime
-) -> list[str]:
+async def list_expired_objects(client: Minio, bucket: str, older_than: datetime) -> list[str]:
     expired = []
     objects = client.list_objects(bucket, recursive=True)
     async for obj in objects:

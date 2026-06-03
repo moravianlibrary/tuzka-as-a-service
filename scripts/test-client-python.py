@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Test taas Python client library with real TuzkaOCR backend."""
+
+import os
 import sys
 from pathlib import Path
 from uuid import uuid4
 
-from taas_client import TaasClient, JobResult, JobEvent
+from taas_client import JobEvent, JobResult, TaasClient
 
 TAAS_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080"
 API_KEY = sys.argv[2] if len(sys.argv) > 2 else None
 IMAGE_DIR = sys.argv[3] if len(sys.argv) > 3 else None
+FMT = os.environ.get("FMT", "multi")
 
 if not API_KEY or not IMAGE_DIR:
     print(f"Usage: {sys.argv[0]} <taas_url> <api_key> <image_dir>")
@@ -45,6 +48,7 @@ client = TaasClient(
     api_key=API_KEY,
     on_result=handle_result,
     on_error=handle_error,
+    fmt=FMT,
 )
 client.start()
 

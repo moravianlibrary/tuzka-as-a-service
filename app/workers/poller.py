@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import redis.asyncio as aioredis
 import zstandard
@@ -43,9 +43,7 @@ async def main() -> None:
                 backend = await db.get(Backend, backend_id)
             key = None
             if backend and backend.api_key_enc:
-                key = decrypt_backend_key(
-                    backend.api_key_enc, settings.key_encryption_secret
-                )
+                key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
             backend_keys[backend_id] = key
         return backend_keys[backend_id]
 
@@ -92,16 +90,12 @@ async def main() -> None:
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
             elif fmt == "alto":
-                alto_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id
-                )
+                alto_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
                     ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
                 ]
             else:
-                txt_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id
-                )
+                txt_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
@@ -121,9 +115,7 @@ async def main() -> None:
                         compressed,
                         "application/octet-stream",
                     )
-                    logger.info(
-                        f"Stored {obj_path} ({len(compressed)} bytes)"
-                    )
+                    logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
 
                     presigned_url = await presign_get(
                         results_client,
@@ -221,17 +213,15 @@ async def main() -> None:
                 if status == "done":
                     done_jobs.append((job_id, meta))
                 elif status in ("failed", "error"):
-                    failed_jobs.append(
-                        (job_id, meta, meta.get("error", "Engine error"))
-                    )
+                    failed_jobs.append((job_id, meta, meta.get("error", "Engine error")))
                 else:
                     running_jobs.append((job_id, meta))
 
             # Update next_poll_at with backoff for running jobs
             for job_id, meta in running_jobs:
-                current_backoff = float(
-                    meta.get("next_poll_at", time.time())
-                ) - float(meta.get("last_poll", time.time()))
+                current_backoff = float(meta.get("next_poll_at", time.time())) - float(
+                    meta.get("last_poll", time.time())
+                )
                 next_backoff = min(
                     max(current_backoff * 2, settings.poll_backoff_initial),
                     settings.poll_backoff_max,
@@ -246,9 +236,7 @@ async def main() -> None:
 
             # Harvest done jobs
             if done_jobs:
-                await asyncio.gather(
-                    *[harvest_with_sem(jid, meta) for jid, meta in done_jobs]
-                )
+                await asyncio.gather(*[harvest_with_sem(jid, meta) for jid, meta in done_jobs])
 
             # Mark failed jobs
             for job_id, meta, error in failed_jobs:

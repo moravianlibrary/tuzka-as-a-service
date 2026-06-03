@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Submit a job and verify the WS event arrives."""
+
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -35,7 +37,7 @@ async def main():
                     f"{TAAS_URL}/api/v1/jobs",
                     headers={"X-API-Key": API_KEY},
                     files={"image": (Path(IMAGE).name, f)},
-                    data={"uuid": ext_id, "fmt": "multi"},
+                    data={"uuid": ext_id, "fmt": os.environ.get("FMT", "multi")},
                 )
                 resp.raise_for_status()
                 job = resp.json()
