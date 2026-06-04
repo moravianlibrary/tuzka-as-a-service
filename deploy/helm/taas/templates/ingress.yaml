@@ -1,6 +1,9 @@
 {{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
 {{- range $t := $targets }}
 {{- if eq $t.cfg.kind "ingress" }}
+{{- /* Strip the prefix only when there is a real sub-path to strip; a
+       dedicated host (empty or "/" pathPrefix) is served at the root. */}}
+{{- $doStrip := and $t.strip (ne ($t.cfg.pathPrefix | default "/") "/") }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -10,7 +13,7 @@ metadata:
     {{- include "taas.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $t.name }}
   annotations:
-    {{- if $t.strip }}
+    {{- if $doStrip }}
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     {{- end }}
     {{- with $t.cfg.annotations }}
@@ -28,9 +31,17 @@ spec:
     - {{ if $t.cfg.host }}host: {{ $t.cfg.host | quote }}
       {{ end }}http:
         paths:
-          {{- if $t.strip }}
+          {{- if $doStrip }}
           - path: {{ $t.cfg.pathPrefix }}(/|$)(.*)
             pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ $t.service }}
+                port:
+                  number: {{ $t.port }}
+          {{- else if $t.strip }}
+          - path: {{ $t.cfg.pathPrefix | default "/" }}
+            pathType: Prefix
             backend:
               service:
                 name: {{ $t.service }}
