@@ -131,7 +131,7 @@ import sys,urllib.request,zstandard
 raw=urllib.request.urlopen(sys.argv[1],timeout=60).read()
 data=zstandard.ZstdDecompressor().decompress(raw) if raw[:4]==b"\x28\xb5\x2f\xfd" else raw
 sys.stdout.buffer.write(data)
-' "$url" > "$out"
+' "$url" > "$out" < /dev/null
   size="$(wc -c < "$out")"
   [ "$size" -gt 0 ] || die "result '$fmt' empty or unreachable"
   ok "result fmt=$fmt -> ${size} bytes -> $out"

@@ -20,7 +20,6 @@ class EngineClient:
         filename: str,
         fmt: str = "multi",
         domain: str | None = None,
-        height_scale: float | None = None,
     ) -> str:
         headers = {}
         if api_key:
@@ -30,8 +29,6 @@ class EngineClient:
         data: dict[str, str] = {"fmt": fmt}
         if domain:
             data["domain"] = domain
-        if height_scale is not None:
-            data["height_scale"] = str(height_scale)
 
         resp = await self._client.post(
             f"{url}/api/v1/process",
@@ -57,15 +54,17 @@ class EngineClient:
         return resp.json()
 
     async def get_result(
-        self, url: str, api_key: str | None, engine_job_id: str, fmt: str | None = None
+        self, url: str, api_key: str | None, engine_job_id: str, which: str | None = None
     ) -> bytes:
+        # `which` selects a single output (alto|txt) from a multi-format job;
+        # omit it for single-format jobs to fetch the sole result.
         headers = {}
         if api_key:
             headers["X-API-Key"] = api_key
 
         params = {}
-        if fmt:
-            params["fmt"] = fmt
+        if which:
+            params["which"] = which
 
         resp = await self._client.get(
             f"{url}/api/v1/result/{engine_job_id}",

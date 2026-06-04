@@ -80,10 +80,10 @@ async def main() -> None:
             results_to_store = []
             if fmt == "multi":
                 alto_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id, fmt="alto"
+                    backend_url, api_key, engine_job_id, which="alto"
                 )
                 txt_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id, fmt="txt"
+                    backend_url, api_key, engine_job_id, which="txt"
                 )
                 results_to_store = [
                     ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
