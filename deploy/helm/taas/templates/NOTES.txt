@@ -1,0 +1,38 @@
+taas (Tuzka as a Service) has been deployed.
+
+Components:
+  - API:        {{ include "taas.fullname" . }}-api  (port {{ .Values.api.port }})
+  - Workers:    {{- range $name, $w := .Values.workers }} {{ $name }}{{- end }}
+  - Redis:      {{ include "taas.fullname" . }}-redis
+  - PostgreSQL: {{ .Values.cnpg.name }} (CloudNativePG)
+  - MinIO:      {{ include "taas.fullname" . }}-minio-incoming / -minio-results
+{{- if .Values.compat.enabled }}
+  - Compat:     {{ include "taas.fullname" . }}-compat  (port {{ .Values.compat.port }})
+{{- end }}
+{{- if .Values.ocrEngine.enabled }}
+  - OCR engine: {{ include "taas.fullname" . }}-ocr-engine  (auto-registered: {{ .Values.ocrEngine.register }})
+{{- else }}
+
+NOTE: no in-cluster OCR engine. Register backends via the admin API:
+  POST /admin/backends  (header X-Master-Key)
+{{- end }}
+
+Exposure (expose.<target>.kind = ingress | gateway | none):
+  api             [{{ .Values.expose.api.kind }}]            -> API   paths: {{ join ", " .Values.expose.api.paths }}
+{{- if .Values.compat.enabled }}
+  legacy          [{{ .Values.expose.legacy.kind }}]         -> compat  prefix: {{ .Values.expose.legacy.pathPrefix }} (stripped)
+{{- end }}
+  admin-dashboard [{{ .Values.expose.adminDashboard.kind }}] -> API   paths: {{ join ", " .Values.expose.adminDashboard.paths }}
+
+{{- $exposed := false }}
+{{- range $name, $cfg := dict "api" .Values.expose.api "legacy" .Values.expose.legacy "adminDashboard" .Values.expose.adminDashboard }}
+{{- if ne $cfg.kind "none" }}{{ $exposed = true }}{{- end }}
+{{- end }}
+{{- if not $exposed }}
+
+No target is exposed yet. Reach the API locally with:
+  kubectl port-forward svc/{{ include "taas.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
+{{- end }}
+
+Remember to override the secrets (masterKey, keyEncryptionSecret, postgresPassword,
+minio*SecretKey) for any non-dev deployment.

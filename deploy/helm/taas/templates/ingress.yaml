@@ -1,0 +1,51 @@
+{{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
+{{- range $t := $targets }}
+{{- if eq $t.cfg.kind "ingress" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "taas.fullname" $ }}-{{ $t.name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $t.name }}
+  annotations:
+    {{- if $t.strip }}
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    {{- end }}
+    {{- with $t.cfg.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if $t.cfg.ingressClassName }}
+  ingressClassName: {{ $t.cfg.ingressClassName | quote }}
+  {{- end }}
+  {{- with $t.cfg.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - {{ if $t.cfg.host }}host: {{ $t.cfg.host | quote }}
+      {{ end }}http:
+        paths:
+          {{- if $t.strip }}
+          - path: {{ $t.cfg.pathPrefix }}(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ $t.service }}
+                port:
+                  number: {{ $t.port }}
+          {{- else }}
+          {{- range $p := $t.cfg.paths }}
+          - path: {{ $p }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $t.service }}
+                port:
+                  number: {{ $t.port }}
+          {{- end }}
+          {{- end }}
+{{- end }}
+{{- end }}

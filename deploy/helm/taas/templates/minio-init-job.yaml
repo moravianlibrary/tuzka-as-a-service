@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "taas.fullname" . }}-minio-init
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: "{{ .Values.minio.mcImage.repository }}:{{ .Values.minio.mcImage.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "taas.fullname" . }}-secret
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              mc alias set incoming http://{{ include "taas.fullname" . }}-minio-incoming:{{ .Values.minio.port }} "$MINIO_INCOMING_ACCESS_KEY" "$MINIO_INCOMING_SECRET_KEY"
+              mc mb --ignore-existing incoming/{{ .Values.minio.incoming.bucket }}
+              mc alias set results http://{{ include "taas.fullname" . }}-minio-results:{{ .Values.minio.port }} "$MINIO_RESULTS_ACCESS_KEY" "$MINIO_RESULTS_SECRET_KEY"
+              mc mb --ignore-existing results/{{ .Values.minio.results.bucket }}
+              echo "buckets ready"

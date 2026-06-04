@@ -1,0 +1,104 @@
+{{- if .Values.ocrEngine.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "taas.fullname" . }}-ocr-engine
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+spec:
+  serviceName: {{ include "taas.fullname" . }}-ocr-engine
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ocr-engine
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ocr-engine
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ocr-engine
+          image: "{{ .Values.ocrEngine.image.repository }}:{{ .Values.ocrEngine.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ocrEngine.port }}
+          env:
+            {{- range $k, $v := .Values.ocrEngine.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: TUZKAOCR_RESULTS_DIR
+              value: /app/results
+            - name: TUZKAOCR_SPOOL_DIR
+              value: /app/spool
+            - name: TUZKAOCR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" . }}-secret
+                  key: OCR_ENGINE_API_KEY
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: results
+              mountPath: /app/results
+            - name: spool
+              mountPath: /app/spool
+          resources:
+            {{- toYaml .Values.ocrEngine.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: results
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.ocrEngine.storage.storageClassName }}
+        storageClassName: {{ .Values.ocrEngine.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.ocrEngine.storage.results.size }}
+    - metadata:
+        name: spool
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.ocrEngine.storage.storageClassName }}
+        storageClassName: {{ .Values.ocrEngine.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.ocrEngine.storage.spool.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "taas.fullname" . }}-ocr-engine
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.ocrEngine.port }}
+      targetPort: http
+      name: http
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+{{- end }}

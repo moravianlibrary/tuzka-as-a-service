@@ -1,0 +1,87 @@
+{{- range $key, $cfg := dict "incoming" .Values.minio.incoming "results" .Values.minio.results }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "taas.fullname" $ }}-minio-{{ $key }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: minio-{{ $key }}
+spec:
+  serviceName: {{ include "taas.fullname" $ }}-minio-{{ $key }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: minio-{{ $key }}
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: minio-{{ $key }}
+    spec:
+      containers:
+        - name: minio
+          image: "{{ $.Values.minio.image.repository }}:{{ $.Values.minio.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: ["server", "/data", "--address", ":{{ $.Values.minio.port }}", "--console-address", ":9090"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" $ }}-secret
+                  key: MINIO_{{ $key | upper }}_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" $ }}-secret
+                  key: MINIO_{{ $key | upper }}_SECRET_KEY
+          ports:
+            - name: api
+              containerPort: {{ $.Values.minio.port }}
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml $.Values.minio.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if $cfg.storage.storageClassName }}
+        storageClassName: {{ $cfg.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $cfg.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "taas.fullname" $ }}-minio-{{ $key }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: minio-{{ $key }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $.Values.minio.port }}
+      targetPort: api
+      name: api
+  selector:
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: minio-{{ $key }}
+---
+{{- end }}

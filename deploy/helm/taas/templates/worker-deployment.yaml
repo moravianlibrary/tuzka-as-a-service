@@ -1,0 +1,38 @@
+{{- range $name, $w := .Values.workers }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "taas.fullname" $ }}-worker-{{ $name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: worker-{{ $name }}
+spec:
+  replicas: {{ $w.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: worker-{{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: worker-{{ $name }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "taas.image" (dict "image" $.Values.worker.image "global" $.Values.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["python", "-m", "app.workers.{{ $name }}"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "taas.fullname" $ }}-config
+            - secretRef:
+                name: {{ include "taas.fullname" $ }}-secret
+          resources:
+            {{- toYaml $.Values.worker.resources | nindent 12 }}
+---
+{{- end }}

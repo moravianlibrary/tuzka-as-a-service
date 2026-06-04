@@ -1,0 +1,24 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cnpg.name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.cnpg.instances }}
+
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.database }}
+      owner: {{ .Values.cnpg.owner }}
+      secret:
+        name: {{ include "taas.fullname" . }}-cnpg-auth
+
+  storage:
+    size: {{ .Values.cnpg.storage.size }}
+    {{- if .Values.cnpg.storage.storageClassName }}
+    storageClass: {{ .Values.cnpg.storage.storageClassName | quote }}
+    {{- end }}
+
+  resources:
+    {{- toYaml .Values.cnpg.resources | nindent 4 }}

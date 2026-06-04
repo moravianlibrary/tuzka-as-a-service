@@ -1,0 +1,214 @@
+# -- Global image settings
+image:
+  registry: ""
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- API (FastAPI: jobs, admin, dashboard, websocket)
+api:
+  replicaCount: 1
+  image:
+    repository: taas-api
+  port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- Background workers. Each key becomes a Deployment running
+#    `python -m app.workers.<key>`. All share the worker image below.
+worker:
+  image:
+    repository: taas-worker
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+workers:
+  submit:
+    replicaCount: 1
+  poller:
+    replicaCount: 1
+  cleanup:
+    replicaCount: 1
+
+# -- Compat server (legacy PERO API: ProArc / AltoEditor)
+compat:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: taas-compat
+  port: 8001
+  ttlSeconds: "3600"
+  engines: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# -- Redis (StatefulSet) — job queue + pub/sub
+redis:
+  image:
+    repository: redis
+    tag: "7-alpine"
+  port: 6379
+  storage:
+    size: 1Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# -- PostgreSQL via CloudNativePG
+cnpg:
+  name: taas-db
+  instances: 1
+  storage:
+    size: 10Gi
+    storageClassName: ""
+  database: taas
+  owner: taas
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- MinIO object storage (two instances: incoming uploads + results)
+minio:
+  image:
+    repository: minio/minio
+    tag: "latest"
+  mcImage:
+    repository: minio/mc
+    tag: "latest"
+  port: 9000
+  incoming:
+    bucket: incoming
+    storage:
+      size: 20Gi
+      storageClassName: ""
+  results:
+    bucket: results
+    storage:
+      size: 20Gi
+      storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- TuzkaOCR engine (optional). When disabled, register external backends
+#    via the admin API (POST /admin/backends).
+ocrEngine:
+  enabled: false
+  # Register this in-cluster engine as a backend via a post-install hook.
+  register: true
+  image:
+    repository: tuzkaocr
+    tag: "cpu"
+  port: 8000
+  maxInflight: 4
+  env:
+    TUZKAOCR_DEVICE: "cpu"
+    TUZKAOCR_OCR_THREADS: "4"
+    TUZKAOCR_LINE_WORKERS: "4"
+    TUZKAOCR_PAGE_WORKERS: "2"
+    TUZKAOCR_MAX_QUEUE: "16"
+  storage:
+    results:
+      size: 10Gi
+    spool:
+      size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+# -- Shared application config (non-secret). See app/config.Settings.
+config:
+  allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
+  maxUploadBytes: "104857600"
+  submitTickSeconds: "2.0"
+  pollerTickSeconds: "2.0"
+  pollerHarvestConcurrency: "10"
+  jobTtlSeconds: "3600"
+  pollBackoffInitial: "2.0"
+  pollBackoffMax: "30.0"
+  zstdCompressionLevel: "3"
+  rateLimitSubmitPerMinute: "60"
+  rateLimitQueryPerMinute: "120"
+  rateLimitWsConnectsPerMinute: "5"
+  wsCatchUpSeconds: "120"
+  presignedTtlMinutes: "60"
+
+# -- Secrets (override via --set or an external secret manager)
+secrets:
+  masterKey: "replaceMe"
+  # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  keyEncryptionSecret: "replace-with-a-fernet-key"
+  postgresPassword: "replaceMe"
+  minioIncomingAccessKey: "minioincoming"
+  minioIncomingSecretKey: "replaceMe"
+  minioResultsAccessKey: "minioresults"
+  minioResultsSecretKey: "replaceMe"
+  ocrEngineApiKey: "replaceMe"
+
+# -- Exposure. Each target is exposed via an Ingress, a Gateway API HTTPRoute,
+#    or not at all  (kind: ingress | gateway | none):
+#      api            -> API service     (job API at /api/v1, WebSocket at /ws)
+#      legacy         -> compat service  (path prefix stripped before forwarding)
+#      adminDashboard -> API service     (/admin, /dashboard, /static)
+#
+#    gateway.* is used when kind=gateway (references an existing Gateway).
+#    For kind=ingress on `legacy`, prefix-strip uses the ingress-nginx
+#    rewrite-target annotation; override `annotations` for other controllers.
+expose:
+  api:
+    kind: none
+    host: ""
+    paths: ["/api", "/ws"]
+    ingressClassName: ""
+    annotations: {}
+    tls: []
+    gateway: { name: "", namespace: "", sectionName: "" }
+  legacy:
+    kind: none
+    host: ""
+    pathPrefix: "/legacy"
+    ingressClassName: ""
+    annotations: {}
+    tls: []
+    gateway: { name: "", namespace: "", sectionName: "" }
+  adminDashboard:
+    kind: none
+    host: ""
+    paths: ["/admin", "/dashboard", "/static"]
+    ingressClassName: ""
+    annotations: {}
+    tls: []
+    gateway: { name: "", namespace: "", sectionName: "" }

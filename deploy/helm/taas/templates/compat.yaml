@@ -1,0 +1,67 @@
+{{- if .Values.compat.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "taas.fullname" . }}-compat-config
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: compat
+data:
+  TAAS_BASE_URL: {{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port | quote }}
+  REDIS_URL: {{ printf "redis://%s-redis:%v/0" (include "taas.fullname" .) .Values.redis.port | quote }}
+  COMPAT_TTL_SECONDS: {{ .Values.compat.ttlSeconds | quote }}
+  ENGINES: {{ .Values.compat.engines | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "taas.fullname" . }}-compat
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: compat
+spec:
+  replicas: {{ .Values.compat.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: compat
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: compat
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: compat
+          image: {{ include "taas.image" (dict "image" .Values.compat.image "global" .Values.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.compat.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "taas.fullname" . }}-compat-config
+          resources:
+            {{- toYaml .Values.compat.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "taas.fullname" . }}-compat
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: compat
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.compat.port }}
+      targetPort: http
+      name: http
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: compat
+{{- end }}

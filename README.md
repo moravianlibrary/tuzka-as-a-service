@@ -34,6 +34,7 @@ The Python package / CLI is named `taas`.
 - [`app/`](app/README.md) — core server: API, workers, job lifecycle
 - [`clients/`](clients/README.md) — Python & Java client libraries
 - [`compat/`](compat/README.md) — legacy PERO-compatibility server
+- [`deploy/helm/taas/`](deploy/helm/taas/README.md) — Helm chart ([architecture](deploy/helm/taas/ARCHITECTURE.md))
 
 ## Components
 
@@ -107,6 +108,24 @@ alembic upgrade head
 cp .env.local.example .env.local            # adjust if needed
 uvicorn app.main:app --reload --port 8080
 ```
+
+## Deployment (Kubernetes / Helm)
+
+A Helm chart lives in [`deploy/helm/taas/`](deploy/helm/taas/) (full stack: API, workers,
+compat, Redis, PostgreSQL via CloudNativePG, MinIO, optional TuzkaOCR engine). Requires the
+[CloudNativePG operator](https://cloudnative-pg.io/).
+
+```bash
+helm install taas ./deploy/helm/taas \
+  --set secrets.masterKey=$(openssl rand -hex 16) \
+  --set secrets.keyEncryptionSecret=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \
+  --set secrets.postgresPassword=$(openssl rand -hex 16) \
+  --set secrets.minioIncomingSecretKey=$(openssl rand -hex 16) \
+  --set secrets.minioResultsSecretKey=$(openssl rand -hex 16)
+```
+
+See the chart's [README](deploy/helm/taas/README.md) (install, exposure, values) and
+[ARCHITECTURE](deploy/helm/taas/ARCHITECTURE.md) (topology, hooks, request flow).
 
 ## Make targets
 

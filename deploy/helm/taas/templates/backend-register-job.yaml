@@ -1,0 +1,45 @@
+{{- if and .Values.ocrEngine.enabled .Values.ocrEngine.register }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "taas.fullname" . }}-backend-register
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend-register
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend-register
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: curlimages/curl:latest
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "taas.fullname" . }}-secret
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              API={{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port }}
+              ENGINE={{ printf "http://%s-ocr-engine:%v" (include "taas.fullname" .) .Values.ocrEngine.port }}
+              echo "waiting for API..."
+              until curl -sf "$API/healthz" >/dev/null; do sleep 3; done
+              echo "registering backend $ENGINE"
+              curl -sf -X POST "$API/admin/backends" \
+                -H "X-Master-Key: $MASTER_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{\"url\":\"$ENGINE\",\"label\":\"tuzkaocr\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ .Values.ocrEngine.maxInflight }}}" \
+                || echo "register returned non-zero (backend may already exist)"
+              echo "done"
+{{- end }}

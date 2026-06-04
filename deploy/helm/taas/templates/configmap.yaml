@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "taas.fullname" . }}-config
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+data:
+  REDIS_URL: {{ printf "redis://%s-redis:%v/0" (include "taas.fullname" .) .Values.redis.port | quote }}
+  MINIO_INCOMING_URL: {{ printf "http://%s-minio-incoming:%v" (include "taas.fullname" .) .Values.minio.port | quote }}
+  MINIO_INCOMING_BUCKET: {{ .Values.minio.incoming.bucket | quote }}
+  MINIO_RESULTS_URL: {{ printf "http://%s-minio-results:%v" (include "taas.fullname" .) .Values.minio.port | quote }}
+  MINIO_RESULTS_BUCKET: {{ .Values.minio.results.bucket | quote }}
+  ALLOWED_EXTENSIONS: {{ .Values.config.allowedExtensions | quote }}
+  MAX_UPLOAD_BYTES: {{ .Values.config.maxUploadBytes | quote }}
+  SUBMIT_TICK_SECONDS: {{ .Values.config.submitTickSeconds | quote }}
+  POLLER_TICK_SECONDS: {{ .Values.config.pollerTickSeconds | quote }}
+  POLLER_HARVEST_CONCURRENCY: {{ .Values.config.pollerHarvestConcurrency | quote }}
+  JOB_TTL_SECONDS: {{ .Values.config.jobTtlSeconds | quote }}
+  POLL_BACKOFF_INITIAL: {{ .Values.config.pollBackoffInitial | quote }}
+  POLL_BACKOFF_MAX: {{ .Values.config.pollBackoffMax | quote }}
+  ZSTD_COMPRESSION_LEVEL: {{ .Values.config.zstdCompressionLevel | quote }}
+  RATE_LIMIT_SUBMIT_PER_MINUTE: {{ .Values.config.rateLimitSubmitPerMinute | quote }}
+  RATE_LIMIT_QUERY_PER_MINUTE: {{ .Values.config.rateLimitQueryPerMinute | quote }}
+  RATE_LIMIT_WS_CONNECTS_PER_MINUTE: {{ .Values.config.rateLimitWsConnectsPerMinute | quote }}
+  WS_CATCH_UP_SECONDS: {{ .Values.config.wsCatchUpSeconds | quote }}
+  PRESIGNED_TTL_MINUTES: {{ .Values.config.presignedTtlMinutes | quote }}
