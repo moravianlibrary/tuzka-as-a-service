@@ -1,0 +1,14 @@
+apiVersion: v1
+entries:
+  taas:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-06-04T09:23:02.416253151Z"
+    description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
+    digest: fa8e4a62a1d63c548ece91d7ad6cc735bb73f659e93e40d7f08da2563e4cbe16
+    name: taas
+    type: application
+    urls:
+    - https://moravianlibrary.github.io/tuzka-as-a-service/taas-0.1.1.tgz
+    version: 0.1.1
+generated: "2026-06-04T09:23:02.415270863Z"
