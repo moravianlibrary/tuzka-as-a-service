@@ -135,19 +135,34 @@ ocrEngine:
     TUZKAOCR_LINE_WORKERS: "4"
     TUZKAOCR_PAGE_WORKERS: "2"
     TUZKAOCR_MAX_QUEUE: "16"
+  # -- Engine scratch volumes. Each is transient (results = finished ALTO/txt,
+  #    auto-swept per MAX_JOB_AGE_HOURS once the poller harvests it; spool =
+  #    upload spillover, only used for uploads >8 MiB). `type` selects the
+  #    backing:
+  #      memory   -> emptyDir on tmpfs (RAM-backed, fastest; its usage counts
+  #                  against resources.limits.memory below). Default.
+  #      emptyDir -> emptyDir on node disk (counts against ephemeral-storage).
+  #      pvc      -> a PersistentVolumeClaim (survives pod restarts; uses
+  #                  storageClassName).
+  #    `size` is the emptyDir sizeLimit (memory/emptyDir) or the PVC request.
+  #    Bump `spool` (or move it to disk/pvc) if you ingest very large images.
   storage:
-    results:
-      size: 10Gi
-    spool:
-      size: 5Gi
     storageClassName: ""
+    results:
+      type: memory
+      size: 128Mi
+    spool:
+      type: memory
+      size: 256Mi
   resources:
     requests:
-      cpu: "1"
-      memory: 2Gi
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 256Mi
     limits:
-      cpu: "4"
-      memory: 8Gi
+      cpu: "2"
+      memory: 4Gi
+      ephemeral-storage: 1Gi
 
 # -- Shared application config (non-secret). See app/config.Settings.
 config:

@@ -63,27 +63,44 @@ spec:
               mountPath: /app/spool
           resources:
             {{- toYaml .Values.ocrEngine.resources | nindent 12 }}
+      {{- $ephemeral := list }}
+      {{- $pvcs := list }}
+      {{- range $name := list "results" "spool" }}
+      {{- $vol := index $.Values.ocrEngine.storage $name }}
+      {{- if eq $vol.type "pvc" }}
+      {{- $pvcs = append $pvcs $name }}
+      {{- else }}
+      {{- $ephemeral = append $ephemeral $name }}
+      {{- end }}
+      {{- end }}
+      {{- if $ephemeral }}
+      volumes:
+        {{- range $name := $ephemeral }}
+        {{- $vol := index $.Values.ocrEngine.storage $name }}
+        - name: {{ $name }}
+          emptyDir:
+            {{- if eq $vol.type "memory" }}
+            medium: Memory
+            {{- end }}
+            sizeLimit: {{ $vol.size }}
+        {{- end }}
+      {{- end }}
+  {{- if $pvcs }}
   volumeClaimTemplates:
+    {{- range $name := $pvcs }}
+    {{- $vol := index $.Values.ocrEngine.storage $name }}
     - metadata:
-        name: results
+        name: {{ $name }}
       spec:
         accessModes: ["ReadWriteOnce"]
-        {{- if .Values.ocrEngine.storage.storageClassName }}
-        storageClassName: {{ .Values.ocrEngine.storage.storageClassName | quote }}
+        {{- if $.Values.ocrEngine.storage.storageClassName }}
+        storageClassName: {{ $.Values.ocrEngine.storage.storageClassName | quote }}
         {{- end }}
         resources:
           requests:
-            storage: {{ .Values.ocrEngine.storage.results.size }}
-    - metadata:
-        name: spool
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        {{- if .Values.ocrEngine.storage.storageClassName }}
-        storageClassName: {{ .Values.ocrEngine.storage.storageClassName | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.ocrEngine.storage.spool.size }}
+            storage: {{ $vol.size }}
+    {{- end }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: Service
