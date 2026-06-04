@@ -24,7 +24,7 @@ router = APIRouter(dependencies=[Depends(require_master)])
 
 @router.get("/users", response_model=list[UserList])
 async def list_users(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).order_by(User.created_at))
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
     return [
         UserList(username=u.username, active=u.active, created_at=u.created_at)
         for u in result.scalars().all()
@@ -53,6 +53,17 @@ async def deactivate_user(username: str, db: AsyncSession = Depends(get_db)):
     await db.execute(update(User).where(User.username == username).values(active=False))
     await db.commit()
     return {"status": "deactivated"}
+
+
+@router.post("/users/{username}/enable")
+async def enable_user(username: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.execute(update(User).where(User.username == username).values(active=True))
+    await db.commit()
+    return {"status": "enabled"}
 
 
 @router.post("/users/{username}/rotate-key", response_model=UserResponse)

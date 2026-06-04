@@ -1,5 +1,16 @@
-const MASTER_KEY = prompt("Enter Master Key:") || "";
-const headers = { "X-Master-Key": MASTER_KEY, "Content-Type": "application/json" };
+let MASTER_KEY = "";
+let headers = {};
+
+// Prompt for the master key and verify it before showing anything.
+async function ensureAuth() {
+  while (true) {
+    MASTER_KEY = prompt("Enter Master Key:") || "";
+    headers = { "X-Master-Key": MASTER_KEY, "Content-Type": "application/json" };
+    const r = await fetch("/dashboard/stats", { headers });
+    if (r.ok) return;
+    alert("Invalid master key — please try again.");
+  }
+}
 
 // Tab switching
 document.querySelectorAll("#tabs button").forEach(btn => {
@@ -14,6 +25,7 @@ document.querySelectorAll("#tabs button").forEach(btn => {
 
 function loadTab(tab) {
   if (tab === "overview") loadOverview();
+  else if (tab === "usage") loadUsage();
   else if (tab === "users") loadUsers();
   else if (tab === "jobs") loadJobs();
   else if (tab === "backends") loadBackends();
@@ -24,8 +36,14 @@ function statusBadge(s) {
   return `<span class="status status-${s}">${s}</span>`;
 }
 
+// Czech locale formatting
 function fmtDate(d) {
-  return d ? new Date(d).toLocaleString() : "-";
+  return d ? new Date(d).toLocaleString("cs-CZ") : "-";
+}
+
+// "YYYY-MM-DD" -> "DD.MM."
+function dayLabel(day) {
+  return `${day.slice(8, 10)}.${day.slice(5, 7)}.`;
 }
 
 // Overview
@@ -49,6 +67,97 @@ async function loadOverview() {
   </tr>`).join("");
 }
 
+// Usage (last 30 days, per user)
+async function loadUsage() {
+  const u = await fetch("/dashboard/usage?days=30", { headers }).then(r => r.json());
+  renderUsage(u, "usage-chart");
+
+  // per-user totals over the window
+  const totalsByUser = u.users
+    .map(usr => ({ usr, total: u.series[usr].reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.total - a.total);
+  const tbody = document.getElementById("usage-users-table");
+  tbody.innerHTML = totalsByUser.length
+    ? totalsByUser.map(r => `<tr><td>${r.usr}</td><td>${r.total}</td></tr>`).join("")
+    : `<tr><td colspan="2" class="muted">No jobs in the last 30 days.</td></tr>`;
+}
+
+// Up to 5 line slots, each a fixed color; pick which client (or All / none) per slot.
+const USAGE_SLOT_COLORS = ["#1a1a2e", "#4e79a7", "#f28e2b", "#59a14f", "#e15759"];
+let usageData = null; // { elId, days, totals, series, users:[ranked] }
+
+function renderUsage(u, elId) {
+  const el = document.getElementById(elId);
+  if (!u.users.length) {
+    el.innerHTML = `<p class="muted">No jobs in the last ${u.days.length} days.</p>`;
+    return;
+  }
+  const totals = u.days.map((_, i) => u.users.reduce((s, usr) => s + u.series[usr][i], 0));
+  const users = u.users
+    .map(usr => ({ usr, total: u.series[usr].reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.total - a.total)
+    .map(r => r.usr);
+  usageData = { elId, days: u.days, totals, series: u.series, users };
+
+  // default slots: All users, then the top 4 clients
+  const defaults = ["__all__", ...users.slice(0, 4)];
+  const options = (sel) =>
+    `<option value="">— none —</option>`
+    + `<option value="__all__"${sel === "__all__" ? " selected" : ""}>All users</option>`
+    + users.map(usr => `<option value="${usr}"${sel === usr ? " selected" : ""}>${usr}</option>`).join("");
+  const slots = USAGE_SLOT_COLORS.map((c, i) =>
+    `<div class="uslot"><i style="background:${c}"></i><select data-slot="${i}" onchange="drawUsage()">${options(defaults[i] || "")}</select></div>`
+  ).join("");
+
+  el.innerHTML = `<div class="uslots">${slots}</div><div id="usage-svg" class="usage-svg"></div>`;
+  drawUsage();
+}
+
+function drawUsage() {
+  const { elId, days, totals, series } = usageData;
+  const el = document.getElementById(elId);
+  const chosen = [];
+  el.querySelectorAll("select[data-slot]").forEach(sel => {
+    if (!sel.value) return;
+    const data = sel.value === "__all__" ? totals : series[sel.value];
+    if (!data) return;
+    chosen.push({
+      name: sel.value === "__all__" ? "All users" : sel.value,
+      color: USAGE_SLOT_COLORS[+sel.dataset.slot],
+      data,
+    });
+  });
+
+  const target = document.getElementById("usage-svg");
+  if (!chosen.length) {
+    target.innerHTML = `<p class="muted">Select a client to plot.</p>`;
+    return;
+  }
+
+  const W = 920, H = 280, padL = 40, padR = 14, padT = 14, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = days.length;
+  const xAt = i => padL + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1));
+  const max = Math.max(1, ...chosen.flatMap(s => s.data));
+  const yAt = v => padT + plotH - (v / max) * plotH;
+
+  const grid = [0, max / 2, max].map(t => {
+    const y = yAt(t).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eee"/>`
+      + `<text x="${padL - 6}" y="${(+y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#999">${Math.round(t)}</text>`;
+  }).join("");
+  const xlabels = days.map((d, i) =>
+    (i % 5 === 0 || i === n - 1)
+      ? `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#999">${dayLabel(d)}</text>`
+      : "").join("");
+  const lines = chosen.map(s => {
+    const pts = s.data.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(" ");
+    return `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${pts}"/>`;
+  }).join("");
+
+  target.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img">${grid}${xlabels}${lines}</svg>`;
+}
+
 // Users
 async function loadUsers() {
   const [users, dUsers] = await Promise.all([
@@ -61,11 +170,15 @@ async function loadUsers() {
   tbody.innerHTML = users.map(u => {
     const s = statsMap[u.username] || { total_jobs: 0, done: 0, failed: 0 };
     return `<tr>
-      <td>${u.username}</td><td>${u.active}</td><td>${fmtDate(u.created_at)}</td>
+      <td>${u.username}</td>
+      <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
+      <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
       <td class="actions">
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
-        ${u.active ? `<button onclick="disableUser('${u.username}')">Disable</button>` : ""}
+        ${u.active
+          ? `<button class="btn-disable" onclick="disableUser('${u.username}')">Disable</button>`
+          : `<button class="btn-enable" onclick="enableUser('${u.username}')">Enable</button>`}
       </td>
     </tr>`;
   }).join("");
@@ -93,6 +206,11 @@ async function disableUser(username) {
   loadUsers();
 }
 
+async function enableUser(username) {
+  await fetch(`/admin/users/${username}/enable`, { method: "POST", headers });
+  loadUsers();
+}
+
 // Jobs
 let jobsOffset = 0;
 async function loadJobs() {
@@ -104,7 +222,7 @@ async function loadJobs() {
   const data = await fetch(`/dashboard/jobs?${params}`, { headers }).then(r => r.json());
   const tbody = document.getElementById("jobs-table");
   tbody.innerHTML = data.jobs.map(j => `<tr>
-    <td title="${j.job_id}">${j.job_id.substring(0, 8)}...</td>
+    <td class="jobid">${j.job_id}</td>
     <td>${j.username}</td><td>${statusBadge(j.status)}</td><td>${j.fmt}</td>
     <td>${fmtDate(j.submitted_at)}</td><td>${fmtDate(j.finished_at)}</td>
   </tr>`).join("");
@@ -163,5 +281,5 @@ async function saveStorage() {
   alert("Saved");
 }
 
-// Initial load
-loadOverview();
+// Initial load — verify the master key first
+ensureAuth().then(loadOverview);

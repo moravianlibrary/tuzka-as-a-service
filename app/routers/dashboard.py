@@ -133,6 +133,34 @@ async def get_dashboard_jobs(
     }
 
 
+@router.get("/usage")
+async def get_usage(
+    days: int = Query(30, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+):
+    start = (datetime.utcnow() - timedelta(days=days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    day_col = func.date(Job.submitted_at)
+    result = await db.execute(
+        select(day_col.label("day"), Job.username, func.count().label("c"))
+        .where(Job.submitted_at >= start)
+        .group_by(day_col, Job.username)
+    )
+    rows = result.all()
+
+    day_list = [(start + timedelta(days=i)).date().isoformat() for i in range(days)]
+    day_index = {d: i for i, d in enumerate(day_list)}
+    users = sorted({row.username for row in rows})
+    series = {u: [0] * days for u in users}
+    for row in rows:
+        day = row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
+        if day in day_index:
+            series[row.username][day_index[day]] = row.c
+
+    return {"days": day_list, "users": users, "series": series}
+
+
 @router.get("/backends", response_model=list[DashboardBackend])
 async def get_dashboard_backends(
     db: AsyncSession = Depends(get_db),

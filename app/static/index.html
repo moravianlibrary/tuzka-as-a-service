@@ -3,16 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>taas Dashboard</title>
+  <title>Tuzka as a Service &mdash; Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <h1>taas &mdash; Dashboard</h1>
+    <h1>Tuzka as a Service &mdash; Dashboard</h1>
   </header>
   <div class="container">
     <nav id="tabs">
       <button class="active" data-tab="overview">Overview</button>
+      <button data-tab="usage">Usage</button>
       <button data-tab="users">Users</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="backends">Backends</button>
@@ -23,6 +24,13 @@
       <div class="cards" id="stat-cards"></div>
       <h2 style="margin-bottom:12px">Backends</h2>
       <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Inflight</th><th>Health</th></tr></thead><tbody id="overview-backends"></tbody></table>
+    </div>
+
+    <div id="usage" class="tab-content">
+      <h2 style="margin-bottom:12px">Usage per user &mdash; last 30 days</h2>
+      <div id="usage-chart" class="usage-chart"></div>
+      <h2 style="margin:20px 0 12px">Totals (30 days)</h2>
+      <table><thead><tr><th>User</th><th>Jobs</th></tr></thead><tbody id="usage-users-table"></tbody></table>
     </div>
 
     <div id="users" class="tab-content">
