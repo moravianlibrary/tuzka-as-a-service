@@ -11,6 +11,7 @@ IMAGE ?= test-data/sample.jpg
 # TAG defaults to the app version in ./VERSION.
 REGISTRY ?=
 TAG ?= $(shell cat VERSION 2>/dev/null || echo latest)
+GIT_TAG := v$(shell cat VERSION 2>/dev/null)
 
 .PHONY: help
 help: ## Show this help
@@ -99,3 +100,17 @@ lint: ## Check formatting + lint without changes (ruff)
 .PHONY: secret
 secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
 	@python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+.PHONY: tag-version
+tag-version:
+	@git tag -d $(GIT_TAG) 2>/dev/null || true
+	@git push origin :refs/tags/$(GIT_TAG) 2>/dev/null || true
+	git tag $(GIT_TAG)
+	git push origin $(GIT_TAG)
+
+.PHONY: tag-latest
+tag-latest:
+	@git tag -d latest 2>/dev/null || true
+	@git push origin :refs/tags/latest 2>/dev/null || true
+	git tag latest
+	git push origin latest
