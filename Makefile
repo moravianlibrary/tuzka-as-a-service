@@ -6,6 +6,12 @@ COMPOSE := docker compose
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
 
+# Registry for `make build-push` — there is no public registry, host your own.
+# Usage: make build-push REGISTRY=ghcr.io/yourorg [TAG=0.1.0]
+# TAG defaults to the app version in ./VERSION.
+REGISTRY ?=
+TAG ?= $(shell cat VERSION 2>/dev/null || echo latest)
+
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -25,6 +31,17 @@ env: ## Create .env and .env.app from templates (generates a Fernet key)
 .PHONY: build
 build: ## Build all images
 	$(COMPOSE) build
+
+.PHONY: build-push
+build-push: ## Build + push api/worker/compat images (REGISTRY=... [TAG=$(TAG)])
+	@test -n "$(REGISTRY)" || { echo "set REGISTRY, e.g. make build-push REGISTRY=ghcr.io/yourorg"; exit 1; }
+	docker build -t $(REGISTRY)/taas-api:$(TAG)    -f api.Containerfile    .
+	docker build -t $(REGISTRY)/taas-worker:$(TAG) -f worker.Containerfile .
+	docker build -t $(REGISTRY)/taas-compat:$(TAG) -f compat/Containerfile compat
+	docker push $(REGISTRY)/taas-api:$(TAG)
+	docker push $(REGISTRY)/taas-worker:$(TAG)
+	docker push $(REGISTRY)/taas-compat:$(TAG)
+	@echo "pushed taas-{api,worker,compat}:$(TAG) to $(REGISTRY)"
 
 .PHONY: up
 up: env ## Build + start the full stack (detached)
