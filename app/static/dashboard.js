@@ -1,15 +1,27 @@
-let MASTER_KEY = "";
-let headers = {};
+// Auth is carried by a short-lived httpOnly cookie that the server sets after
+// the master key is verified once via /dashboard/login. The raw key is never
+// stored in the browser, and a page refresh stays logged in until the cookie
+// expires (or you log out).
+let headers = { "Content-Type": "application/json" };
 
-// Prompt for the master key and verify it before showing anything.
+// Verify the session before showing anything: reuse an existing cookie if it
+// is still valid, otherwise prompt for the master key and exchange it for one.
 async function ensureAuth() {
+  if ((await fetch("/dashboard/stats", { headers })).ok) return;
   while (true) {
-    MASTER_KEY = prompt("Enter Master Key:") || "";
-    headers = { "X-Master-Key": MASTER_KEY, "Content-Type": "application/json" };
-    const r = await fetch("/dashboard/stats", { headers });
+    const key = prompt("Enter Master Key:") || "";
+    const r = await fetch("/dashboard/login", {
+      method: "POST",
+      headers: { "X-Master-Key": key },
+    });
     if (r.ok) return;
     alert("Invalid master key — please try again.");
   }
+}
+
+async function logout() {
+  await fetch("/dashboard/logout", { method: "POST", headers });
+  location.reload();
 }
 
 // Tab switching

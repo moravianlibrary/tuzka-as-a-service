@@ -66,8 +66,14 @@ async def require_master(
     key: str | None = Security(_master_key_header),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    if not key or key != settings.master_key:
-        raise HTTPException(status_code=403, detail="Invalid master key")
+    from app.services import dash_session
+
+    if key and key == settings.master_key:
+        return
+    cookie = request.cookies.get(dash_session.COOKIE_NAME)
+    if cookie and dash_session.verify(settings.master_key, cookie):
+        return
+    raise HTTPException(status_code=403, detail="Invalid master key")
 
 
 def rate_limit_submit():
