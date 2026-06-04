@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
 
     @app.get("/dashboard")
     async def dashboard_page(request: Request):
-        return templates.TemplateResponse("index.html", {"request": request})
+        return templates.TemplateResponse(request, "index.html")
 
     @app.get("/healthz")
     async def healthz():
