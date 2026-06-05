@@ -49,3 +49,15 @@ async def test_idle_key_expires(redis_client):
     await check(redis_client, "query", "frank", PER_MINUTE, BURST)
     ttl = await redis_client.ttl(b"rl:query:frank")
     assert 0 < ttl <= math.ceil(BURST * T + T) + 1
+
+
+async def test_nonpositive_rate_denies_cleanly(redis_client):
+    # misconfigured limits must not crash the hot path
+    result = await check(redis_client, "query", "greg", 0, BURST)
+    assert not result.allowed
+    assert result.retry_after == 60.0
+    result = await check(redis_client, "query", "greg", -10, BURST)
+    assert not result.allowed
+    # negative burst is clamped to 0 (steady rate, no burst)
+    result = await check(redis_client, "query", "hana", PER_MINUTE, -5)
+    assert result.allowed

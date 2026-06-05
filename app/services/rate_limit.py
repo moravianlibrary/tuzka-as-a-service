@@ -45,6 +45,10 @@ async def check(
 ) -> RateLimitResult:
     """GCRA check: allows burst+1 instant requests, then one per 60/per_minute s."""
     global _script_sha
+    # Misconfigured limits (admin-editable) must not 500 the hot path.
+    if per_minute <= 0:
+        return RateLimitResult(allowed=False, retry_after=60.0)
+    burst = max(burst, 0)
     emission_interval = 60.0 / per_minute
     tau = emission_interval * burst
     key = f"rl:{limit_class}:{username}"
