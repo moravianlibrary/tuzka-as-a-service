@@ -7,7 +7,7 @@ from alembic import context
 from app.config import Settings
 
 # Import all models so metadata is populated
-from app.models import backend, job, storage_config, user  # noqa: F401
+from app.models import backend, config, job, user  # noqa: F401
 from app.models.db import Base
 
 config = context.config
