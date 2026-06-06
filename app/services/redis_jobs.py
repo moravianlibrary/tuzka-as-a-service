@@ -101,15 +101,3 @@ async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:
 async def publish_event(r: aioredis.Redis, username: str, event: dict) -> None:
     channel = f"job:{username}:events"
     await r.publish(channel, json.dumps(event))
-
-
-async def check_rate_limit(r: aioredis.Redis, key: str, limit: int, window: int = 60) -> bool:
-    now = time.time()
-    pipe = r.pipeline()
-    pipe.zremrangebyscore(key, 0, now - window)
-    pipe.zadd(key, {str(now): now})
-    pipe.zcard(key)
-    pipe.expire(key, window)
-    results = await pipe.execute()
-    count = results[2]
-    return count <= limit

@@ -1,3 +1,4 @@
+import math
 import time
 from functools import lru_cache
 
@@ -10,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models.db import get_db
 from app.models.user import User
-from app.services.redis_jobs import check_rate_limit
+from app.services import config as config_service
+from app.services import rate_limit
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
@@ -76,49 +78,29 @@ async def require_master(
     raise HTTPException(status_code=403, detail="Invalid master key")
 
 
-def rate_limit_submit():
+def _rate_limit_dep(limit_class: str):
     async def _check(
         request: Request,
         username: str = Depends(require_user),
         r: aioredis.Redis = Depends(get_redis),
-        settings: Settings = Depends(get_settings),
+        db: AsyncSession = Depends(get_db),
     ) -> str:
-        allowed = await check_rate_limit(
-            r, f"rl:submit:{username}", settings.rate_limit_submit_per_minute
-        )
-        if not allowed:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        limits = await config_service.effective_limits(db, username, limit_class)
+        result = await rate_limit.check(r, limit_class, username, limits.per_minute, limits.burst)
+        if not result.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(math.ceil(result.retry_after))},
+            )
         return username
 
     return _check
+
+
+def rate_limit_submit():
+    return _rate_limit_dep("submit")
 
 
 def rate_limit_query():
-    async def _check(
-        request: Request,
-        username: str = Depends(require_user),
-        r: aioredis.Redis = Depends(get_redis),
-        settings: Settings = Depends(get_settings),
-    ) -> str:
-        allowed = await check_rate_limit(
-            r, f"rl:query:{username}", settings.rate_limit_query_per_minute
-        )
-        if not allowed:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        return username
-
-    return _check
-
-
-def rate_limit_ws():
-    async def _check(
-        username: str,
-        r: aioredis.Redis,
-        settings: Settings = Depends(get_settings),
-    ) -> bool:
-        allowed = await check_rate_limit(
-            r, f"rl:ws:{username}", settings.rate_limit_ws_connects_per_minute
-        )
-        return allowed
-
-    return _check
+    return _rate_limit_dep("query")

@@ -39,11 +39,6 @@ class Settings(BaseSettings):
     # Compression
     zstd_compression_level: int = 3
 
-    # Rate limiting
-    rate_limit_submit_per_minute: int = 60
-    rate_limit_query_per_minute: int = 120
-    rate_limit_ws_connects_per_minute: int = 5
-
     # WebSocket
     ws_catch_up_seconds: int = 120
 

@@ -8,8 +8,9 @@ from app.deps import get_settings
 from app.models.db import async_session
 from app.models.job import Job
 from app.models.user import User
+from app.services import config as config_service
+from app.services import rate_limit
 from app.services.auth import hash_key
-from app.services.redis_jobs import check_rate_limit
 
 router = APIRouter()
 
@@ -37,10 +38,12 @@ async def websocket_endpoint(ws: WebSocket):
     # Rate limit check
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     try:
-        allowed = await check_rate_limit(
-            r, f"rl:ws:{username}", settings.rate_limit_ws_connects_per_minute
+        async with async_session() as db:
+            limits = await config_service.effective_limits(db, username, "ws_connect")
+        result = await rate_limit.check(
+            r, "ws_connect", username, limits.per_minute, limits.burst
         )
-        if not allowed:
+        if not result.allowed:
             await ws.close(code=1008, reason="Rate limit exceeded")
             return
 
