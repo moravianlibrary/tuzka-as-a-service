@@ -10,6 +10,9 @@ from app.models.user import User
 
 # Short in-process cache: hot path must not hit Postgres per request,
 # admin changes still take effect within seconds on every replica.
+# The user: key space is bounded because callers only pass authenticated
+# usernames (require_user gates the hot path), so this dict cannot grow
+# unboundedly from unauthenticated traffic.
 CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[Any, float]] = {}
 
@@ -57,6 +60,8 @@ def parse_default_limits(value: Any, fallback: ClassLimits) -> ClassLimits:
 
 
 def _cache_get(key: str) -> tuple[Any, bool]:
+    # ok=True with value=None means a cached negative lookup (e.g. key not in DB),
+    # which is distinct from a cache miss (ok=False).
     hit = _cache.get(key)
     if hit is not None and time.monotonic() - hit[1] < CACHE_TTL_SECONDS:
         return hit[0], True
@@ -109,10 +114,12 @@ async def _get_user_overrides(db: AsyncSession, username: str) -> dict[str, int 
     overrides, ok = _cache_get(f"user:{username}")
     if ok:
         return overrides
-    result = await db.execute(select(User).where(User.username == username))
-    user = result.scalar_one_or_none()
     columns = [c for pair in USER_OVERRIDE_COLUMNS.values() for c in pair]
-    overrides = {c: getattr(user, c) if user else None for c in columns}
+    result = await db.execute(
+        select(*(getattr(User, c) for c in columns)).where(User.username == username)
+    )
+    row = result.one_or_none()
+    overrides = dict(zip(columns, row)) if row else {c: None for c in columns}
     _cache_put(f"user:{username}", overrides)
     return overrides
 
