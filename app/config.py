@@ -45,4 +45,5 @@ class Settings(BaseSettings):
     # Presigned URLs
     presigned_ttl_minutes: int = 60
 
-    model_config = {"env_file": ".env.local"}
+    # extra=ignore: stale env entries must not crash startup
+    model_config = {"env_file": ".env.local", "extra": "ignore"}
