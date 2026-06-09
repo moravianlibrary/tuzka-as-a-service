@@ -24,7 +24,30 @@ async def lifespan(app: FastAPI):
     await app.state.redis.aclose()
 
 
-app = FastAPI(title="taas-compat", lifespan=lifespan)
+DESCRIPTION = """\
+**taas-compat** — a compatibility shim that exposes the legacy *PERO* OCR HTTP API
+and forwards requests to the modern **Tuzka as a Service** backend.
+
+Lets existing PERO clients keep their endpoints and response shapes (errors are
+returned as `{"message": ...}`) while OCR runs on taas. Authenticated with an API key.
+"""
+
+TAGS_METADATA = [
+    {
+        "name": "Legacy (PERO compat)",
+        "description": "Legacy PERO-compatible endpoints. Each maps onto the modern taas "
+        "API; errors use the `{\"message\": ...}` envelope PERO clients expect.",
+    },
+]
+
+app = FastAPI(
+    title="taas-compat",
+    version="0.1.0",
+    lifespan=lifespan,
+    description=DESCRIPTION,
+    license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
+    openapi_tags=TAGS_METADATA,
+)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -40,4 +63,4 @@ async def message_envelope(request: Request, exc: StarletteHTTPException):
     )
 
 
-app.include_router(legacy.router)
+app.include_router(legacy.router, tags=["Legacy (PERO compat)"])

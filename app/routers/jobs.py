@@ -22,7 +22,17 @@ from app.services import redis_jobs, storage
 router = APIRouter()
 
 
-@router.post("/jobs", response_model=JobSubmitResponse, status_code=202)
+@router.post(
+    "/jobs",
+    response_model=JobSubmitResponse,
+    status_code=202,
+    summary="Submit an OCR job",
+    responses={
+        400: {"description": "Invalid UUID, unsupported fmt or extension, or file too large"},
+        401: {"description": "Missing or invalid X-API-Key header"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
 async def submit_job(
     image: UploadFile = File(...),
     uuid: str = Form(...),
@@ -33,6 +43,12 @@ async def submit_job(
     r=Depends(get_redis),
     settings: Settings = Depends(get_settings),
 ):
+    """Submit an image for OCR and enqueue it for asynchronous processing.
+
+    Requires a valid API key in the ``X-API-Key`` header. The upload is stored and the job
+    is queued, returning ``202 Accepted`` with a job id immediately; poll the status and
+    result endpoints to retrieve output once processing finishes.
+    """
     # Validate UUID
     try:
         external_id = UUID(uuid)
@@ -100,12 +116,27 @@ async def submit_job(
     return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
 
 
-@router.get("/jobs/{job_id}", response_model=JobStatus)
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobStatus,
+    summary="Get job status",
+    responses={
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Job not found for the authenticated user"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
 async def get_job_status(
     job_id: UUID,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
 ):
+    """Return the current status of one of your jobs.
+
+    Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
+    authenticated user. The status reflects the asynchronous lifecycle (``queued``,
+    ``running``, ``done``, ``failed``); fetch the result endpoint once it is ``done``.
+    """
     result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
@@ -124,13 +155,31 @@ async def get_job_status(
     )
 
 
-@router.get("/jobs/{job_id}/result", response_model=JobResultResponse)
+@router.get(
+    "/jobs/{job_id}/result",
+    response_model=JobResultResponse,
+    summary="Download job result",
+    responses={
+        202: {"description": "Job accepted but not finished yet; retry later"},
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Job not found for the authenticated user"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+        500: {"description": "Job processing failed"},
+    },
+)
 async def get_job_result(
     job_id: UUID,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    """Return presigned download URLs for a finished job's OCR output.
+
+    Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
+    authenticated user. Because processing is asynchronous, the result may still be pending:
+    a job that is not yet ``done`` responds with ``202``, while a failed job responds ``500``.
+    Presigned URLs are refreshed automatically when expired.
+    """
     result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
@@ -172,7 +221,15 @@ async def get_job_result(
     return JobResultResponse(results=entries)
 
 
-@router.get("/jobs", response_model=JobListResponse)
+@router.get(
+    "/jobs",
+    response_model=JobListResponse,
+    summary="List your jobs",
+    responses={
+        401: {"description": "Missing or invalid X-API-Key header"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
 async def list_jobs(
     status: str | None = None,
     limit: int = 50,
@@ -180,6 +237,12 @@ async def list_jobs(
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
 ):
+    """List the authenticated user's jobs, newest first.
+
+    Requires a valid API key in the ``X-API-Key`` header and returns only jobs owned by that
+    user. Results can be filtered by ``status`` and are paginated with ``limit`` and
+    ``offset``; ``total`` reports the full count matching the filter.
+    """
     query = select(Job).where(Job.username == username)
     count_query = select(func.count()).select_from(Job).where(Job.username == username)
 

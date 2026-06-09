@@ -18,8 +18,15 @@ from app.services.redis_jobs import get_backend_inflight
 router = APIRouter(dependencies=[Depends(require_master)])
 
 
-@router.get("/stats", response_model=DashboardStats)
+@router.get(
+    "/stats",
+    response_model=DashboardStats,
+    summary="Get aggregate stats",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
 async def get_stats(db: AsyncSession = Depends(get_db)):
+    """Return aggregate job stats: total jobs, counts by status, jobs submitted
+    today, and average done-job duration over the last 24h. Requires a master key."""
     # Total jobs
     total = await db.execute(select(func.count()).select_from(Job))
     total_jobs = total.scalar() or 0
@@ -57,8 +64,15 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("/users", response_model=list[DashboardUser])
+@router.get(
+    "/users",
+    response_model=list[DashboardUser],
+    summary="Get per-user job stats",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
 async def get_dashboard_users(db: AsyncSession = Depends(get_db)):
+    """Return per-user job stats grouped by username: total jobs, done and failed
+    counts, and last-active timestamp. Requires a master key."""
     result = await db.execute(
         select(
             Job.username,
@@ -80,7 +94,11 @@ async def get_dashboard_users(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@router.get("/jobs")
+@router.get(
+    "/jobs",
+    summary="List jobs (admin)",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
 async def get_dashboard_jobs(
     username: str | None = Query(None),
     status: str | None = Query(None),
@@ -90,6 +108,9 @@ async def get_dashboard_jobs(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
+    """List jobs newest-first with optional username/status/from/to date filters and
+    limit/offset pagination, returning the matching jobs plus the total filtered count.
+    Requires a master key."""
     query = select(Job)
     count_query = select(func.count()).select_from(Job)
 
@@ -134,11 +155,18 @@ async def get_dashboard_jobs(
     }
 
 
-@router.get("/usage")
+@router.get(
+    "/usage",
+    summary="Daily usage by user and status",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
 async def get_usage(
     days: int = Query(30, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
 ):
+    """Return daily job counts over the trailing ``days`` window (1-90). Provides both a
+    per-user ``series`` and a per-status ``status_series`` (done/failed/queued/running)
+    aligned to the same ``days`` axis. Requires a master key."""
     start = (datetime.utcnow() - timedelta(days=days - 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -186,12 +214,20 @@ async def get_usage(
     }
 
 
-@router.get("/backends", response_model=list[DashboardBackend])
+@router.get(
+    "/backends",
+    response_model=list[DashboardBackend],
+    summary="List backends with live health",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
 async def get_dashboard_backends(
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
 ):
+    """List configured backends with their config plus live state, probing every backend
+    concurrently for current in-flight count (Redis) and health (engine healthcheck).
+    Requires a master key."""
     result = await db.execute(select(Backend).order_by(Backend.id))
     backends = result.scalars().all()
 

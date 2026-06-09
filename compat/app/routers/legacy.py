@@ -47,8 +47,23 @@ async def validate_api_key(request: Request, api_key: str) -> None:
     _valid_keys[key_hash] = now + VALIDATE_CACHE_TTL_SECONDS
 
 
-@router.post("/post_processing_request")
+@router.post(
+    "/post_processing_request",
+    summary="Open a legacy OCR processing request",
+    responses={
+        400: {"description": "Unknown engine requested."},
+        401: {"description": "Missing or invalid api-key header."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+    },
+)
 async def post_processing_request(request: Request):
+    """Open a PERO-style processing request and reserve slots for its images.
+
+    Validates the ``api-key`` header against the modern taas API (via a cached
+    ``GET /api/v1/jobs`` probe), checks the requested engine, then stores the
+    image filenames in compat state under a freshly minted ``request_id``. No
+    taas job is created yet; images are uploaded later via ``upload_image``.
+    """
     api_key = get_api_key(request)
     await validate_api_key(request, api_key)
     body = await request.json()
@@ -66,8 +81,22 @@ async def post_processing_request(request: Request):
     return {"status": "success", "request_id": request_id}
 
 
-@router.get("/get_status")
+@router.get(
+    "/get_status",
+    summary="Check that a legacy request exists",
+    responses={
+        400: {"description": "Unknown request_id."},
+        401: {"description": "Missing or invalid api-key header."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+    },
+)
 async def get_status(request: Request, request_id: str):
+    """Report whether a previously opened request_id is still known to the shim.
+
+    Validates the ``api-key`` header against taas, then looks the request up in
+    compat state (which expires after ``compat_ttl_seconds``). This is a
+    liveness check only and does not query per-image OCR job progress.
+    """
     api_key = get_api_key(request)
     await validate_api_key(request, api_key)
     state = request.app.state.compat_state
@@ -77,13 +106,33 @@ async def get_status(request: Request, request_id: str):
     return {"status": "success", "request_id": request_id}
 
 
-@router.post("/upload_image/{request_id}/{filename}")
+@router.post(
+    "/upload_image/{request_id}/{filename}",
+    summary="Upload one image and create its taas OCR job",
+    responses={
+        400: {"description": "Filename not part of the request, or taas rejected the upload."},
+        401: {"description": "Missing api-key header."},
+        404: {"description": "Request not found in compat state."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+        "4XX": {"description": "Error forwarded verbatim from the taas job-creation call."},
+        "5XX": {"description": "Error forwarded verbatim from the taas job-creation call."},
+    },
+)
 async def upload_image(
     request: Request,
     request_id: str,
     filename: str,
     file: UploadFile = File(...),
 ):
+    """Upload a single image for a request and start its OCR job on taas.
+
+    Reads the upload, then forwards it as a ``POST /api/v1/jobs`` multipart call
+    (carrying the ``X-API-Key`` header and the engine's optional ``domain``),
+    and records the returned ``job_id`` against the filename. Unlike the other
+    endpoints this trusts the caller's earlier validation and does not re-probe
+    the api-key; any non-2xx taas response is surfaced with its original status
+    and body.
+    """
     api_key = get_api_key(request)
     state = request.app.state.compat_state
     settings = request.app.state.settings
@@ -125,8 +174,23 @@ async def upload_image(
     return {"status": "ok"}
 
 
-@router.get("/request_status/{request_id}")
+@router.get(
+    "/request_status/{request_id}",
+    summary="Report per-image OCR status for a request",
+    responses={
+        401: {"description": "Missing api-key header."},
+        404: {"description": "Request not found in compat state."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+    },
+)
 async def request_status(request: Request, request_id: str):
+    """Return PERO-style per-image processing states for every image in a request.
+
+    Fans out ``GET /api/v1/jobs/{job_id}`` (bounded to four concurrent calls to
+    spare the user's query limit) and maps each job onto WAITING (no job yet),
+    PROCESSED (taas ``done``), or PROCESSING (everything else, including transient
+    taas errors which are deliberately swallowed rather than failing the request).
+    """
     api_key = get_api_key(request)
     state = request.app.state.compat_state
     http = request.app.state.http
@@ -164,13 +228,36 @@ async def request_status(request: Request, request_id: str):
     }
 
 
-@router.get("/download_results/{request_id}/{filename}/{format}")
+@router.get(
+    "/download_results/{request_id}/{filename}/{format}",
+    summary="Download decompressed OCR results for one image",
+    responses={
+        400: {"description": "Job exists but is not finished processing yet."},
+        401: {"description": "Missing api-key header."},
+        404: {
+            "description": "File/job not found, or no result in the requested format is available."
+        },
+        502: {"description": "Result artifact could not be downloaded from storage."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+        "4XX": {"description": "Error forwarded verbatim from the taas result-listing call."},
+        "5XX": {"description": "Error forwarded verbatim from the taas result-listing call."},
+    },
+)
 async def download_results(
     request: Request,
     request_id: str,
     filename: str,
     format: str,
 ):
+    """Fetch and return the OCR output for one image in ``alto`` (XML) or text form.
+
+    Confirms the taas job is ``done``, lists its results via
+    ``GET /api/v1/jobs/{job_id}/result``, picks the entry matching the requested
+    format (``alto`` else ``txt``), then downloads the artifact and returns it
+    zstd-decompressed with an appropriate text/XML content type. The api-key is
+    forwarded as ``X-API-Key`` on the taas calls but the artifact URL is fetched
+    unauthenticated.
+    """
     api_key = get_api_key(request)
     state = request.app.state.compat_state
     http = request.app.state.http
@@ -228,8 +315,21 @@ async def download_results(
     return Response(content=decompressed, media_type=content_type)
 
 
-@router.get("/get_engines")
+@router.get(
+    "/get_engines",
+    summary="List available OCR engines",
+    responses={
+        401: {"description": "Missing or invalid api-key header."},
+        503: {"description": "taas rate limit could not be absorbed within the retry budget."},
+    },
+)
 async def get_engines(request: Request):
+    """List the OCR engines exposed to legacy clients, keyed by display label.
+
+    Validates the ``api-key`` header against taas, then returns the statically
+    configured engines (their numeric id and description) from settings. These
+    ids are what callers pass as ``engine`` to ``post_processing_request``.
+    """
     api_key = get_api_key(request)
     await validate_api_key(request, api_key)
     settings = request.app.state.settings

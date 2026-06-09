@@ -17,6 +17,68 @@ router = APIRouter()
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    """Realtime job-update stream over WebSocket.
+
+    Connect to ``ws://<host>/ws`` (or ``wss://`` behind TLS). This is a
+    WebSocket endpoint and therefore does not appear as an interactive
+    operation in the Swagger ``/docs`` UI.
+
+    Authentication
+    --------------
+    Pass the API key as the ``api_key`` query parameter, e.g.
+    ``wss://<host>/ws?api_key=<key>``. There is no HTTP body or header auth.
+    The connection is closed with code ``1008`` (policy violation) if:
+
+    - the ``api_key`` query parameter is missing (reason ``"Missing api_key"``);
+    - the key does not match an active user (reason ``"Invalid API key"``);
+    - the per-user rate limit for the ``ws_connect`` action is exceeded
+      (reason ``"Rate limit exceeded"``).
+
+    On any of these the socket is closed before ``accept()``, so no messages
+    are delivered.
+
+    Message protocol
+    ----------------
+    Communication is one-way: the **server sends, the client only listens**.
+    Any inbound client messages are ignored. Each server message is a single
+    JSON object describing one job state transition for the authenticated user.
+
+    Immediately after a successful handshake, the server replays a "catch-up"
+    batch: every ``done``/``failed`` job whose ``finished_at`` falls within the
+    last ``ws_catch_up_seconds`` (default 120) seconds. Catch-up events have the
+    shape::
+
+        {
+            "uuid": "<job external id>",   // string
+            "status": "done" | "failed",
+            "ts": "<ISO-8601 timestamp>",  // finished_at, may be null
+            "error": "<message>"           // present only when status == failed
+        }
+
+    After the catch-up batch the server subscribes to the per-user Redis
+    channel ``job:<username>:events`` and forwards each published event verbatim
+    as a text frame (raw JSON string). Live events published by the workers have
+    the shape::
+
+        {
+            "uuid": "<job external id>",   // string
+            "status": "done" | "failed",
+            "alto_url": "<presigned URL>", // on "done", only for ALTO results
+            "txt_url": "<presigned URL>",  // on "done", only for text results
+            "error": "<message>"           // present only when status == failed
+        }
+
+    Note the live ``done`` event carries presigned result URLs (one of
+    ``alto_url`` / ``txt_url`` depending on the requested format) but no ``ts``
+    field, whereas the catch-up replay carries ``ts`` but no result URLs.
+
+    Closing
+    -------
+    The socket stays open and streams events until the client disconnects
+    (``WebSocketDisconnect``); the server then unsubscribes from the channel and
+    releases its Redis connection. The server does not close the socket on its
+    own once accepted.
+    """
     settings = get_settings()
     api_key = ws.query_params.get("api_key")
     if not api_key:
@@ -40,9 +102,7 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         async with async_session() as db:
             limits = await config_service.effective_limits(db, username, "ws_connect")
-        result = await rate_limit.check(
-            r, "ws_connect", username, limits.per_minute, limits.burst
-        )
+        result = await rate_limit.check(r, "ws_connect", username, limits.per_minute, limits.burst)
         if not result.allowed:
             await ws.close(code=1008, reason="Rate limit exceeded")
             return
