@@ -41,7 +41,7 @@ function loadTab(tab) {
   else if (tab === "users") loadUsers();
   else if (tab === "jobs") loadJobs();
   else if (tab === "backends") loadBackends();
-  else if (tab === "storage") loadStorage();
+  else if (tab === "config") loadConfig();
 }
 
 function statusBadge(s) {
@@ -171,6 +171,15 @@ function drawUsage() {
 }
 
 // Users
+const LIMIT_FIELDS = [
+  ["rate_submit_per_minute", "submit/min"],
+  ["burst_submit", "submit burst"],
+  ["rate_query_per_minute", "query/min"],
+  ["burst_query", "query burst"],
+  ["rate_ws_per_minute", "ws/min"],
+  ["burst_ws", "ws burst"],
+];
+
 async function loadUsers() {
   const [users, dUsers] = await Promise.all([
     fetch("/admin/users", { headers }).then(r => r.json()),
@@ -181,19 +190,43 @@ async function loadUsers() {
   const tbody = document.getElementById("users-table");
   tbody.innerHTML = users.map(u => {
     const s = statsMap[u.username] || { total_jobs: 0, done: 0, failed: 0 };
+    const hasOverrides = LIMIT_FIELDS.some(([f]) => u[f] != null);
+    const editor = LIMIT_FIELDS.map(([f, label]) =>
+      `<label style="margin-right:10px">${label} <input type="number" min="0" data-field="${f}" value="${u[f] ?? ""}" placeholder="inherit" style="width:70px"></label>`
+    ).join("");
     return `<tr>
       <td>${u.username}</td>
       <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
+      <td><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
       <td class="actions">
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
         ${u.active
           ? `<button class="btn-disable" onclick="disableUser('${u.username}')">Disable</button>`
           : `<button class="btn-enable" onclick="enableUser('${u.username}')">Enable</button>`}
       </td>
-    </tr>`;
+    </tr>
+    <tr id="limits-${u.username}" style="display:none"><td colspan="8">
+      ${editor}
+      <button onclick="saveLimits('${u.username}')">Save limits</button>
+      <span class="muted">(empty = inherit default)</span>
+    </td></tr>`;
   }).join("");
+}
+
+function toggleLimits(username) {
+  const row = document.getElementById(`limits-${username}`);
+  row.style.display = row.style.display === "none" ? "" : "none";
+}
+
+async function saveLimits(username) {
+  const body = {};
+  document.querySelectorAll(`#limits-${username} input`).forEach(i => {
+    body[i.dataset.field] = i.value === "" ? null : parseInt(i.value);
+  });
+  await fetch(`/admin/users/${username}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+  loadUsers();
 }
 
 document.getElementById("add-user-form").addEventListener("submit", async e => {
@@ -276,20 +309,35 @@ async function deleteBackend(id) {
   }
 }
 
-// Storage
-async function loadStorage() {
-  const data = await fetch("/admin/storage-config", { headers }).then(r => r.json());
-  const form = document.getElementById("storage-form");
-  form.innerHTML = data.map(c => `<div class="storage-row">
-    <label>${c.bucket}</label>
-    <input type="number" value="${c.ttl_minutes}" data-bucket="${c.bucket}"> minutes
-  </div>`).join("") + `<button onclick="saveStorage()" style="margin-top:12px;padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:4px;cursor:pointer">Save</button>`;
+// Config (rate limit defaults + storage TTLs)
+const LIMIT_CLASSES = ["submit", "query", "ws_connect"];
+
+async function loadConfig() {
+  const cfg = await fetch("/admin/config", { headers }).then(r => r.json());
+  const tbody = document.getElementById("config-limits");
+  tbody.innerHTML = LIMIT_CLASSES.map(cls => {
+    const v = cfg[`rate_limit.${cls}`] || {};
+    return `<tr><td>${cls}</td>
+      <td><input type="number" min="1" data-cfg="rate_limit.${cls}" data-field="per_minute" value="${v.per_minute ?? ""}" style="width:90px"></td>
+      <td><input type="number" min="0" data-cfg="rate_limit.${cls}" data-field="burst" value="${v.burst ?? ""}" style="width:90px"></td></tr>`;
+  }).join("");
+  const storage = document.getElementById("config-storage");
+  const storageKeys = Object.keys(cfg).filter(k => k.startsWith("storage."));
+  storage.innerHTML = storageKeys.length
+    ? storageKeys.map(k => `<div class="storage-row"><label>${k}</label><input type="number" data-key="${k}" value="${cfg[k]}"> minutes</div>`).join("")
+    : `<p class="muted">No storage TTLs configured.</p>`;
 }
 
-async function saveStorage() {
-  const inputs = document.querySelectorAll("#storage-form input");
-  const configs = Array.from(inputs).map(i => ({ bucket: i.dataset.bucket, ttl_minutes: parseInt(i.value) }));
-  await fetch("/admin/storage-config", { method: "PUT", headers, body: JSON.stringify(configs) });
+async function saveConfig() {
+  const values = {};
+  document.querySelectorAll("#config-limits input").forEach(i => {
+    values[i.dataset.cfg] = values[i.dataset.cfg] || {};
+    values[i.dataset.cfg][i.dataset.field] = parseInt(i.value);
+  });
+  document.querySelectorAll("#config-storage input").forEach(i => {
+    values[i.dataset.key] = parseInt(i.value);
+  });
+  await fetch("/admin/config", { method: "PUT", headers, body: JSON.stringify(values) });
   alert("Saved");
 }
 
