@@ -44,14 +44,15 @@
         <input name="username" placeholder="Username" required>
         <button type="submit">Add User</button>
       </form>
-      <table><thead><tr><th>Username</th><th>Active</th><th>Created</th><th>Jobs</th><th>Done</th><th>Failed</th><th>Limits</th><th>Actions</th></tr></thead><tbody id="users-table"></tbody></table>
+      <table><thead><tr><th id="th-username" onclick="setUsersSort('username')" style="cursor:pointer">Username</th><th>Active</th><th id="th-created" onclick="setUsersSort('created')" style="cursor:pointer">Created</th><th>Jobs</th><th>Done</th><th>Failed</th><th>Limits</th><th>Actions</th></tr></thead><tbody id="users-table"></tbody></table>
     </div>
 
     <div id="jobs" class="tab-content">
       <div class="filters">
         <input id="jobs-filter-user" placeholder="Username">
         <select id="jobs-filter-status"><option value="">All</option><option>queued</option><option>running</option><option>done</option><option>failed</option></select>
-        <button onclick="loadJobs()">Filter</button>
+        <button onclick="jobsOffset=0;loadJobs()">Filter</button>
+        <button class="secondary" onclick="clearJobsFilters()">Clear</button>
       </div>
       <table><thead><tr><th>Job ID</th><th>User</th><th>Status</th><th>Format</th><th>Submitted</th><th>Finished</th></tr></thead><tbody id="jobs-table"></tbody></table>
       <div class="pagination" id="jobs-pagination"></div>
@@ -76,9 +77,20 @@
       </table>
       <h2 style="margin:20px 0 12px">Storage TTLs</h2>
       <div id="config-storage"></div>
-      <button onclick="saveConfig()" style="margin-top:12px;padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:4px;cursor:pointer">Save</button>
+      <button onclick="saveConfig()" style="margin-top:12px">Save</button>
     </div>
   </div>
+  <dialog id="key-dialog">
+    <article>
+      <header><strong id="key-title">API Key</strong></header>
+      <p>Copy this now — it won't be shown again.</p>
+      <div class="key-reveal">
+        <input id="key-value" readonly onfocus="this.select()">
+        <button onclick="copyKey(this)">Copy</button>
+      </div>
+      <footer><button onclick="closeKey()">Done</button></footer>
+    </article>
+  </dialog>
   <script src="/static/dashboard.js"></script>
 </body>
 </html>

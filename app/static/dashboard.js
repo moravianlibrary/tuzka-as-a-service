@@ -19,6 +19,29 @@ async function ensureAuth() {
   }
 }
 
+// Reveal a freshly minted key once, in a copyable field (it is never stored
+// server-side, so this is the only chance to grab it).
+function showKey(title, key) {
+  document.getElementById("key-title").textContent = title;
+  document.getElementById("key-value").value = key;
+  document.getElementById("key-dialog").setAttribute("open", "");
+}
+function closeKey() {
+  document.getElementById("key-dialog").removeAttribute("open");
+}
+async function copyKey(btn) {
+  const input = document.getElementById("key-value");
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    input.select();
+    document.execCommand("copy"); // fallback for non-secure (http) contexts
+  }
+  const label = btn.textContent;
+  btn.textContent = "Copied!";
+  setTimeout(() => { btn.textContent = label; }, 1200);
+}
+
 async function logout() {
   await fetch("/dashboard/logout", { method: "POST", headers });
   location.reload();
@@ -94,9 +117,26 @@ async function loadUsage() {
     : `<tr><td colspan="2" class="muted">No jobs in the last 30 days.</td></tr>`;
 }
 
-// Up to 5 line slots, each a fixed color; pick which client (or All / none) per slot.
-const USAGE_SLOT_COLORS = ["#1a1a2e", "#4e79a7", "#f28e2b", "#59a14f", "#e15759"];
-let usageData = null; // { elId, days, totals, series, users:[ranked] }
+// Stacked-area usage: the top-N users each get their own band (coloured along a
+// sequential gradient), and every remaining user is folded into a "rest" band.
+// Use 1, 2 or 3 stops here — series are sampled evenly along them.
+const USAGE_GRADIENT = ["#f28e2b", "#4e79a7"]; // orange -> blue
+const USAGE_REST_COLOR = "#c9ccd3";
+let usageData = null; // { days, totals, series, users:[ranked desc by total] }
+
+function hexToRgb(h) {
+  const v = parseInt(h.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+// t in [0,1] mapped across the gradient stops
+function rampColor(t) {
+  const s = USAGE_GRADIENT;
+  if (s.length === 1) return s[0];
+  const seg = t * (s.length - 1);
+  const i = Math.min(Math.floor(seg), s.length - 2);
+  const f = seg - i, a = hexToRgb(s[i]), b = hexToRgb(s[i + 1]);
+  return `rgb(${a.map((c, k) => Math.round(c + (b[k] - c) * f)).join(",")})`;
+}
 
 function renderUsage(u, elId) {
   const el = document.getElementById(elId);
@@ -109,48 +149,44 @@ function renderUsage(u, elId) {
     .map(usr => ({ usr, total: u.series[usr].reduce((a, b) => a + b, 0) }))
     .sort((a, b) => b.total - a.total)
     .map(r => r.usr);
-  usageData = { elId, days: u.days, totals, series: u.series, users };
+  usageData = { days: u.days, totals, series: u.series, users };
 
-  // default slots: All users, then the top 4 clients
-  const defaults = ["__all__", ...users.slice(0, 4)];
-  const options = (sel) =>
-    `<option value="">— none —</option>`
-    + `<option value="__all__"${sel === "__all__" ? " selected" : ""}>All users</option>`
-    + users.map(usr => `<option value="${usr}"${sel === usr ? " selected" : ""}>${usr}</option>`).join("");
-  const slots = USAGE_SLOT_COLORS.map((c, i) =>
-    `<div class="uslot"><i style="background:${c}"></i><select data-slot="${i}" onchange="drawUsage()">${options(defaults[i] || "")}</select></div>`
-  ).join("");
-
-  el.innerHTML = `<div class="uslots">${slots}</div><div id="usage-svg" class="usage-svg"></div>`;
+  const topN = Math.min(users.length, 4); // default
+  el.innerHTML = `<div class="uslots">
+      <label class="uslot">Users shown
+        <input id="usage-topn" type="number" min="1" max="${users.length}" value="${topN}" style="width:64px" onchange="drawUsage()">
+      </label>
+      <span id="usage-legend" class="uslots"></span>
+    </div>
+    <div id="usage-svg" class="usage-svg"></div>`;
   drawUsage();
 }
 
 function drawUsage() {
-  const { elId, days, totals, series } = usageData;
-  const el = document.getElementById(elId);
-  const chosen = [];
-  el.querySelectorAll("select[data-slot]").forEach(sel => {
-    if (!sel.value) return;
-    const data = sel.value === "__all__" ? totals : series[sel.value];
-    if (!data) return;
-    chosen.push({
-      name: sel.value === "__all__" ? "All users" : sel.value,
-      color: USAGE_SLOT_COLORS[+sel.dataset.slot],
-      data,
-    });
-  });
+  const { days, totals, series, users } = usageData;
+  const n = days.length;
+  let topN = parseInt(document.getElementById("usage-topn").value) || 1;
+  topN = Math.max(1, Math.min(topN, users.length));
 
-  const target = document.getElementById("usage-svg");
-  if (!chosen.length) {
-    target.innerHTML = `<p class="muted">Select a client to plot.</p>`;
-    return;
+  const shown = users.slice(0, topN);
+  const rest = users.slice(topN);
+  const stack = shown.map((usr, j) => ({
+    name: usr,
+    color: rampColor(shown.length > 1 ? j / (shown.length - 1) : 0),
+    data: series[usr],
+  }));
+  if (rest.length) {
+    stack.push({
+      name: `rest (${rest.length})`,
+      color: USAGE_REST_COLOR,
+      data: days.map((_, i) => rest.reduce((s, usr) => s + series[usr][i], 0)),
+    });
   }
 
   const W = 920, H = 280, padL = 40, padR = 14, padT = 14, padB = 30;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-  const n = days.length;
   const xAt = i => padL + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1));
-  const max = Math.max(1, ...chosen.flatMap(s => s.data));
+  const max = Math.max(1, ...totals);
   const yAt = v => padT + plotH - (v / max) * plotH;
 
   const grid = [0, max / 2, max].map(t => {
@@ -162,44 +198,60 @@ function drawUsage() {
     (i % 5 === 0 || i === n - 1)
       ? `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#999">${dayLabel(d)}</text>`
       : "").join("");
-  const lines = chosen.map(s => {
-    const pts = s.data.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(" ");
-    return `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${pts}"/>`;
+
+  // stack the bands bottom-up
+  const cum = new Array(n).fill(0);
+  const areas = stack.map(s => {
+    const lower = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`).reverse();
+    for (let i = 0; i < n; i++) cum[i] += s.data[i];
+    const upper = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`);
+    return `<polygon points="${upper.join(" ")} ${lower.join(" ")}" fill="${s.color}" fill-opacity="0.9" stroke="#fff" stroke-width="0.5"/>`;
   }).join("");
 
-  target.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img">${grid}${xlabels}${lines}</svg>`;
+  document.getElementById("usage-legend").innerHTML = stack.map(s =>
+    `<span class="uslot"><i style="background:${s.color}"></i>${s.name}</span>`).join("");
+  document.getElementById("usage-svg").innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img">${grid}${areas}${xlabels}</svg>`;
 }
 
-// Users
-const LIMIT_FIELDS = [
-  ["rate_submit_per_minute", "submit/min"],
-  ["burst_submit", "submit burst"],
-  ["rate_query_per_minute", "query/min"],
-  ["burst_query", "query burst"],
-  ["rate_ws_per_minute", "ws/min"],
-  ["burst_ws", "ws burst"],
+// Users — one row per rate-limit class, same shape as the Config tab table.
+const LIMIT_ROWS = [
+  ["submit", "rate_submit_per_minute", "burst_submit"],
+  ["query", "rate_query_per_minute", "burst_query"],
+  ["ws", "rate_ws_per_minute", "burst_ws"],
 ];
+
+let usersSort = "username"; // "username" (A→Z) | "created" (newest first)
+function setUsersSort(key) { usersSort = key; loadUsers(); }
 
 async function loadUsers() {
   const [users, dUsers] = await Promise.all([
     fetch("/admin/users", { headers }).then(r => r.json()),
     fetch("/dashboard/users", { headers }).then(r => r.json()),
   ]);
+  users.sort((a, b) => usersSort === "created"
+    ? new Date(b.created_at) - new Date(a.created_at)
+    : a.username.localeCompare(b.username));
+  document.getElementById("th-username").textContent = "Username" + (usersSort === "username" ? " ▾" : "");
+  document.getElementById("th-created").textContent = "Created" + (usersSort === "created" ? " ▾" : "");
   const statsMap = {};
   dUsers.forEach(u => { statsMap[u.username] = u; });
   const tbody = document.getElementById("users-table");
   tbody.innerHTML = users.map(u => {
     const s = statsMap[u.username] || { total_jobs: 0, done: 0, failed: 0 };
-    const hasOverrides = LIMIT_FIELDS.some(([f]) => u[f] != null);
-    const editor = LIMIT_FIELDS.map(([f, label]) =>
-      `<label style="margin-right:10px">${label} <input type="number" min="0" data-field="${f}" value="${u[f] ?? ""}" placeholder="inherit" style="width:70px"></label>`
-    ).join("");
+    const hasOverrides = LIMIT_ROWS.some(([, pm, b]) => u[pm] != null || u[b] != null);
+    const editor = `<table>
+      <thead><tr><th>Class</th><th>Per minute</th><th>Burst</th></tr></thead>
+      <tbody>${LIMIT_ROWS.map(([cls, pm, b]) => `<tr><td>${cls}</td>
+        <td><input type="number" min="0" data-field="${pm}" value="${u[pm] ?? ""}" placeholder="inherit" style="width:90px"></td>
+        <td><input type="number" min="0" data-field="${b}" value="${u[b] ?? ""}" placeholder="inherit" style="width:90px"></td></tr>`).join("")}</tbody>
+    </table>`;
     return `<tr>
       <td>${u.username}</td>
       <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
-      <td><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
+      <td class="actions"><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
       <td class="actions">
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
         ${u.active
@@ -234,7 +286,7 @@ document.getElementById("add-user-form").addEventListener("submit", async e => {
   const fd = new FormData(e.target);
   const resp = await fetch("/admin/users", { method: "POST", headers, body: JSON.stringify({ username: fd.get("username") }) });
   const data = await resp.json();
-  if (data.api_key) alert("API Key (save it!): " + data.api_key);
+  if (data.api_key) showKey(`API key for ${fd.get("username")}`, data.api_key);
   e.target.reset();
   loadUsers();
 });
@@ -242,7 +294,7 @@ document.getElementById("add-user-form").addEventListener("submit", async e => {
 async function rotateKey(username) {
   const resp = await fetch(`/admin/users/${username}/rotate-key`, { method: "POST", headers });
   const data = await resp.json();
-  if (data.api_key) alert("New API Key: " + data.api_key);
+  if (data.api_key) showKey(`New API key for ${username}`, data.api_key);
   loadUsers();
 }
 
@@ -258,6 +310,12 @@ async function enableUser(username) {
 
 // Jobs
 let jobsOffset = 0;
+function clearJobsFilters() {
+  document.getElementById("jobs-filter-user").value = "";
+  document.getElementById("jobs-filter-status").value = "";
+  jobsOffset = 0;
+  loadJobs();
+}
 async function loadJobs() {
   const user = document.getElementById("jobs-filter-user").value;
   const status = document.getElementById("jobs-filter-status").value;
