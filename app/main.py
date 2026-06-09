@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="taas", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="taas", version="0.2.0", lifespan=lifespan)
 
     app.include_router(jobs.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/admin")
