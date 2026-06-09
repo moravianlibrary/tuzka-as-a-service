@@ -369,6 +369,13 @@ async function deleteBackend(id) {
 
 // Config (rate limit defaults + storage TTLs)
 const LIMIT_CLASSES = ["submit", "query", "ws_connect"];
+const STORAGE_LABELS = {
+  "storage.incoming_ttl_minutes": "Incoming files",
+  "storage.results_ttl_minutes": "Results",
+};
+function storageLabel(k) {
+  return STORAGE_LABELS[k] || k.replace(/^storage\./, "").replace(/_ttl_minutes$/, "").replace(/_/g, " ");
+}
 
 async function loadConfig() {
   const cfg = await fetch("/admin/config", { headers }).then(r => r.json());
@@ -382,7 +389,7 @@ async function loadConfig() {
   const storage = document.getElementById("config-storage");
   const storageKeys = Object.keys(cfg).filter(k => k.startsWith("storage."));
   storage.innerHTML = storageKeys.length
-    ? storageKeys.map(k => `<div class="storage-row"><label>${k}</label><input type="number" data-key="${k}" value="${cfg[k]}"> minutes</div>`).join("")
+    ? storageKeys.map(k => `<div class="storage-row"><label>${storageLabel(k)}</label><input type="number" data-key="${k}" value="${cfg[k]}"> minutes</div>`).join("")
     : `<p class="muted">No storage TTLs configured.</p>`;
 }
 
