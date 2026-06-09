@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 
 import redis.asyncio as aioredis
@@ -171,22 +172,25 @@ async def get_dashboard_backends(
     backends = result.scalars().all()
 
     engine_client = EngineClient()
+
+    async def probe(b: Backend) -> DashboardBackend:
+        inflight, healthy = await asyncio.gather(
+            get_backend_inflight(r, b.id),
+            engine_client.healthcheck(b.url),
+        )
+        return DashboardBackend(
+            id=b.id,
+            url=b.url,
+            label=b.label,
+            enabled=b.enabled,
+            max_inflight=b.max_inflight,
+            inflight_now=inflight,
+            healthy=healthy,
+        )
+
     try:
-        dashboard_backends = []
-        for b in backends:
-            inflight = await get_backend_inflight(r, b.id)
-            healthy = await engine_client.healthcheck(b.url)
-            dashboard_backends.append(
-                DashboardBackend(
-                    id=b.id,
-                    url=b.url,
-                    label=b.label,
-                    enabled=b.enabled,
-                    max_inflight=b.max_inflight,
-                    inflight_now=inflight,
-                    healthy=healthy,
-                )
-            )
-        return dashboard_backends
+        # Probe every backend concurrently so one slow/unreachable host can't
+        # serialise the whole response (worst case ~= one healthcheck timeout).
+        return await asyncio.gather(*(probe(b) for b in backends))
     finally:
         await engine_client.close()
