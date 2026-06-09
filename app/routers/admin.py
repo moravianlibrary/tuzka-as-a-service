@@ -10,7 +10,15 @@ from app.models.backend import Backend
 from app.models.db import get_db
 from app.models.user import User
 from app.schemas.backend import BackendCreate, BackendResponse, BackendUpdate
-from app.schemas.user import SetKeyRequest, UserCreate, UserList, UserResponse
+from app.schemas.user import (
+    EffectiveLimits,
+    SetKeyRequest,
+    UserCreate,
+    UserLimitOverrides,
+    UserLimitsResponse,
+    UserList,
+    UserResponse,
+)
 from app.services import config as config_service
 from app.services.auth import (
     encrypt_backend_key,
@@ -28,7 +36,17 @@ router = APIRouter(dependencies=[Depends(require_master)])
 async def list_users(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).order_by(User.created_at.desc()))
     return [
-        UserList(username=u.username, active=u.active, created_at=u.created_at)
+        UserList(
+            username=u.username,
+            active=u.active,
+            created_at=u.created_at,
+            rate_submit_per_minute=u.rate_submit_per_minute,
+            burst_submit=u.burst_submit,
+            rate_query_per_minute=u.rate_query_per_minute,
+            burst_query=u.burst_query,
+            rate_ws_per_minute=u.rate_ws_per_minute,
+            burst_ws=u.burst_ws,
+        )
         for u in result.scalars().all()
     ]
 
@@ -92,6 +110,47 @@ async def set_key(username: str, body: SetKeyRequest, db: AsyncSession = Depends
     await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
     await db.commit()
     return {"status": "key updated"}
+
+
+@router.patch("/users/{username}", response_model=UserLimitsResponse)
+async def update_user_limits(
+    username: str,
+    body: UserLimitOverrides,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # exclude_unset: only fields present in the request change;
+    # an explicit null clears the override back to inherit.
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(user, field, value)
+    await db.commit()
+    await db.refresh(user)
+    config_service.invalidate_user(username)
+
+    # Resolve each class and flatten back into the override column names so the
+    # effective view mirrors the overrides shape (every field non-null).
+    resolved: dict[str, int] = {}
+    for cls, (per_col, burst_col) in config_service.USER_OVERRIDE_COLUMNS.items():
+        limits = await config_service.effective_limits(db, username, cls)
+        resolved[per_col] = limits.per_minute
+        resolved[burst_col] = limits.burst
+
+    return UserLimitsResponse(
+        username=username,
+        overrides=UserLimitOverrides(
+            rate_submit_per_minute=user.rate_submit_per_minute,
+            burst_submit=user.burst_submit,
+            rate_query_per_minute=user.rate_query_per_minute,
+            burst_query=user.burst_query,
+            rate_ws_per_minute=user.rate_ws_per_minute,
+            burst_ws=user.burst_ws,
+        ),
+        effective=EffectiveLimits(**resolved),
+    )
 
 
 # --- Backends ---

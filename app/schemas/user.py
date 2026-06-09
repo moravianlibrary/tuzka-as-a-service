@@ -12,10 +12,35 @@ class UserResponse(BaseModel):
     api_key: str
 
 
-class UserList(BaseModel):
+class UserLimitOverrides(BaseModel):
+    rate_submit_per_minute: int | None = None
+    burst_submit: int | None = None
+    rate_query_per_minute: int | None = None
+    burst_query: int | None = None
+    rate_ws_per_minute: int | None = None
+    burst_ws: int | None = None
+
+
+class UserList(UserLimitOverrides):
     username: str
     active: bool
     created_at: datetime
+
+
+class EffectiveLimits(BaseModel):
+    # Same fields as UserLimitOverrides but fully resolved, so never null.
+    rate_submit_per_minute: int
+    burst_submit: int
+    rate_query_per_minute: int
+    burst_query: int
+    rate_ws_per_minute: int
+    burst_ws: int
+
+
+class UserLimitsResponse(BaseModel):
+    username: str
+    overrides: UserLimitOverrides
+    effective: EffectiveLimits
 
 
 class SetKeyRequest(BaseModel):
