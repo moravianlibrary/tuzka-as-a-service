@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,10 +8,10 @@ from app.config import Settings
 from app.deps import get_settings, require_master
 from app.models.backend import Backend
 from app.models.db import get_db
-from app.models.storage_config import StorageConfig
 from app.models.user import User
 from app.schemas.backend import BackendCreate, BackendResponse, BackendUpdate
 from app.schemas.user import SetKeyRequest, UserCreate, UserList, UserResponse
+from app.services import config as config_service
 from app.services.auth import (
     encrypt_backend_key,
     generate_key,
@@ -186,25 +188,17 @@ async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
     return {"status": "deleted"}
 
 
-# --- Storage Config ---
+# --- Config ---
 
 
-@router.get("/storage-config")
-async def get_storage_config(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(StorageConfig))
-    return [{"bucket": sc.bucket, "ttl_minutes": sc.ttl_minutes} for sc in result.scalars().all()]
+@router.get("/config")
+async def get_config(db: AsyncSession = Depends(get_db)):
+    return await config_service.get_all(db)
 
 
-@router.put("/storage-config")
-async def update_storage_config(configs: list[dict], db: AsyncSession = Depends(get_db)):
-    for cfg in configs:
-        result = await db.execute(
-            select(StorageConfig).where(StorageConfig.bucket == cfg["bucket"])
-        )
-        sc = result.scalar_one_or_none()
-        if sc:
-            sc.ttl_minutes = cfg["ttl_minutes"]
-        else:
-            db.add(StorageConfig(bucket=cfg["bucket"], ttl_minutes=cfg["ttl_minutes"]))
-    await db.commit()
+@router.put("/config")
+async def update_config(values: dict[str, Any], db: AsyncSession = Depends(get_db)):
+    if not values:
+        raise HTTPException(status_code=400, detail="Empty config payload")
+    await config_service.set_values(db, values)
     return {"status": "updated"}

@@ -2,11 +2,10 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.models.storage_config import StorageConfig
+from app.services.config import get_storage_ttl_minutes
 from app.services.storage import (
     delete_objects,
     get_incoming_client,
@@ -34,23 +33,17 @@ async def main() -> None:
     while True:
         try:
             async with session_factory() as db:
-                # Get storage configs
-                result = await db.execute(select(StorageConfig))
-                configs = result.scalars().all()
-
-                for cfg in configs:
-                    client = bucket_clients.get(cfg.bucket)
-                    if not client:
-                        continue
-
-                    cutoff = datetime.utcnow() - timedelta(minutes=cfg.ttl_minutes)
-                    expired = await list_expired_objects(client, cfg.bucket, cutoff)
+                ttls = await get_storage_ttl_minutes(db, list(bucket_clients.keys()))
+                for bucket, ttl_minutes in ttls.items():
+                    client = bucket_clients[bucket]
+                    cutoff = datetime.utcnow() - timedelta(minutes=ttl_minutes)
+                    expired = await list_expired_objects(client, bucket, cutoff)
                     if expired:
                         # Delete in batches of 1000
                         for i in range(0, len(expired), 1000):
                             batch = expired[i : i + 1000]
-                            await delete_objects(client, cfg.bucket, batch)
-                            logger.info(f"Deleted {len(batch)} expired objects from {cfg.bucket}")
+                            await delete_objects(client, bucket, batch)
+                            logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
 
                 # Postgres cleanup: old job_results and jobs
                 cutoff_90d = datetime.utcnow() - timedelta(days=90)
