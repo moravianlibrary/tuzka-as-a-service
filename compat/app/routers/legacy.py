@@ -1,9 +1,13 @@
 import asyncio
+import hashlib
+import time
 from uuid import uuid4
 
 import zstandard
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from starlette.responses import Response
+
+from ..retry import request_with_retry
 
 router = APIRouter()
 
@@ -15,16 +19,32 @@ def get_api_key(request: Request) -> str:
     return key
 
 
+_valid_keys: dict[str, float] = {}
+VALIDATE_CACHE_TTL_SECONDS = 30.0
+
+
 async def validate_api_key(request: Request, api_key: str) -> None:
-    """Verify the api-key is a valid taas user key by calling a protected endpoint."""
+    """Verify the api-key is a valid taas user key by calling a protected endpoint.
+
+    Successful validations are cached briefly so legacy polling loops don't
+    burn the user's query rate limit on every compat call.
+    """
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    now = time.monotonic()
+    expires = _valid_keys.get(key_hash)
+    if expires and now < expires:
+        return
     http = request.app.state.http
-    resp = await http.get(
+    resp = await request_with_retry(
+        http,
+        "GET",
         "/api/v1/jobs",
         headers={"X-API-Key": api_key},
         params={"limit": 1},
     )
     if resp.status_code == 401:
         raise HTTPException(401, "Invalid api-key")
+    _valid_keys[key_hash] = now + VALIDATE_CACHE_TTL_SECONDS
 
 
 @router.post("/post_processing_request")
@@ -88,7 +108,9 @@ async def upload_image(
     if engine_cfg.domain:
         form_data["domain"] = engine_cfg.domain
 
-    resp = await http.post(
+    resp = await request_with_retry(
+        http,
+        "POST",
         "/api/v1/jobs",
         headers={"X-API-Key": api_key},
         files=files_data,
@@ -113,13 +135,20 @@ async def request_status(request: Request, request_id: str):
     if not job_ids:
         raise HTTPException(404, "Request not found")
 
+    # Spread the per-image status fan-out so a large request doesn't blow
+    # through the user's query limit in one burst.
+    sem = asyncio.Semaphore(4)
+
     async def check_status(fname: str, job_id: str | None) -> tuple[str, dict]:
         if job_id is None:
             return fname, {"state": "WAITING"}
-        resp = await http.get(
-            f"/api/v1/jobs/{job_id}",
-            headers={"X-API-Key": api_key},
-        )
+        async with sem:
+            resp = await request_with_retry(
+                http,
+                "GET",
+                f"/api/v1/jobs/{job_id}",
+                headers={"X-API-Key": api_key},
+            )
         if resp.status_code != 200:
             return fname, {"state": "PROCESSING"}
         data = resp.json()
@@ -151,7 +180,9 @@ async def download_results(
         raise HTTPException(404, "File not found")
 
     # Check job status
-    resp = await http.get(
+    resp = await request_with_retry(
+        http,
+        "GET",
         f"/api/v1/jobs/{job_id}",
         headers={"X-API-Key": api_key},
     )
@@ -163,7 +194,9 @@ async def download_results(
         raise HTTPException(400, detail="not processed yet")
 
     # Get result URLs
-    resp = await http.get(
+    resp = await request_with_retry(
+        http,
+        "GET",
         f"/api/v1/jobs/{job_id}/result",
         headers={"X-API-Key": api_key},
     )
