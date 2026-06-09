@@ -150,16 +150,40 @@ async def get_usage(
     )
     rows = result.all()
 
+    # Same window, grouped by status instead of user, for the status chart.
+    status_result = await db.execute(
+        select(day_col.label("day"), Job.status, func.count().label("c"))
+        .where(Job.submitted_at >= start)
+        .group_by(day_col, Job.status)
+    )
+    status_rows = status_result.all()
+
     day_list = [(start + timedelta(days=i)).date().isoformat() for i in range(days)]
     day_index = {d: i for i, d in enumerate(day_list)}
+
+    def day_of(row):
+        return row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
+
     users = sorted({row.username for row in rows})
     series = {u: [0] * days for u in users}
     for row in rows:
-        day = row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
-        if day in day_index:
-            series[row.username][day_index[day]] = row.c
+        if (i := day_index.get(day_of(row))) is not None:
+            series[row.username][i] = row.c
 
-    return {"days": day_list, "users": users, "series": series}
+    # Fixed status set/order so the chart's colours and legend stay stable.
+    statuses = ["done", "failed", "queued", "running"]
+    status_series = {s: [0] * days for s in statuses}
+    for row in status_rows:
+        if row.status in status_series and (i := day_index.get(day_of(row))) is not None:
+            status_series[row.status][i] = row.c
+
+    return {
+        "days": day_list,
+        "users": users,
+        "series": series,
+        "statuses": statuses,
+        "status_series": status_series,
+    }
 
 
 @router.get("/backends", response_model=list[DashboardBackend])

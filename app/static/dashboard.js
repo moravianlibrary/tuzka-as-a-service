@@ -105,6 +105,7 @@ async function loadOverview() {
 // Usage (last 30 days, per user)
 async function loadUsage() {
   const u = await fetch("/dashboard/usage?days=30", { headers }).then(r => r.json());
+  renderStatusChart(u, "status-chart");
   renderUsage(u, "usage-chart");
 
   // per-user totals over the window
@@ -162,9 +163,43 @@ function renderUsage(u, elId) {
   drawUsage();
 }
 
-function drawUsage() {
-  const { days, totals, series, users } = usageData;
+// Render a stacked-area chart (bands stacked bottom->top) into targetEl, with a
+// swatch legend in legendEl. stack: [{ name, color, data:number[] }].
+function drawStackedArea(targetEl, legendEl, days, stack) {
   const n = days.length;
+  const W = 920, H = 280, padL = 40, padR = 14, padT = 14, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const xAt = i => padL + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1));
+  const totals = days.map((_, i) => stack.reduce((s, ser) => s + ser.data[i], 0));
+  const max = Math.max(1, ...totals);
+  const yAt = v => padT + plotH - (v / max) * plotH;
+
+  const grid = [0, max / 2, max].map(t => {
+    const y = yAt(t).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eee"/>`
+      + `<text x="${padL - 6}" y="${(+y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#999">${Math.round(t)}</text>`;
+  }).join("");
+  const xlabels = days.map((d, i) =>
+    (i % 5 === 0 || i === n - 1)
+      ? `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#999">${dayLabel(d)}</text>`
+      : "").join("");
+
+  const cum = new Array(n).fill(0);
+  const areas = stack.map(s => {
+    const lower = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`).reverse();
+    for (let i = 0; i < n; i++) cum[i] += s.data[i];
+    const upper = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`);
+    return `<polygon points="${upper.join(" ")} ${lower.join(" ")}" fill="${s.color}" fill-opacity="0.9" stroke="#fff" stroke-width="0.5"/>`;
+  }).join("");
+
+  if (legendEl) legendEl.innerHTML = stack.map(s =>
+    `<span class="uslot"><i style="background:${s.color}"></i>${s.name}</span>`).join("");
+  targetEl.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img">${grid}${areas}${xlabels}</svg>`;
+}
+
+function drawUsage() {
+  const { days, series, users } = usageData;
   let topN = parseInt(document.getElementById("usage-topn").value) || 1;
   topN = Math.max(1, Math.min(topN, users.length));
 
@@ -182,36 +217,35 @@ function drawUsage() {
       data: days.map((_, i) => rest.reduce((s, usr) => s + series[usr][i], 0)),
     });
   }
+  drawStackedArea(
+    document.getElementById("usage-svg"),
+    document.getElementById("usage-legend"),
+    days, stack,
+  );
+}
 
-  const W = 920, H = 280, padL = 40, padR = 14, padT = 14, padB = 30;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const xAt = i => padL + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1));
-  const max = Math.max(1, ...totals);
-  const yAt = v => padT + plotH - (v / max) * plotH;
+// Status-over-time stacked area: fixed series/colours matching the status
+// badges; "failed" sits on top (last) so its thin band stays visible.
+const STATUS_COLORS = { done: "#28a745", running: "#f0ad4e", queued: "#5bc0de", failed: "#dc3545" };
+const STATUS_ORDER = ["done", "running", "queued", "failed"]; // bottom -> top
 
-  const grid = [0, max / 2, max].map(t => {
-    const y = yAt(t).toFixed(1);
-    return `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eee"/>`
-      + `<text x="${padL - 6}" y="${(+y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#999">${Math.round(t)}</text>`;
-  }).join("");
-  const xlabels = days.map((d, i) =>
-    (i % 5 === 0 || i === n - 1)
-      ? `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#999">${dayLabel(d)}</text>`
-      : "").join("");
-
-  // stack the bands bottom-up
-  const cum = new Array(n).fill(0);
-  const areas = stack.map(s => {
-    const lower = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`).reverse();
-    for (let i = 0; i < n; i++) cum[i] += s.data[i];
-    const upper = cum.map((c, i) => `${xAt(i).toFixed(1)},${yAt(c).toFixed(1)}`);
-    return `<polygon points="${upper.join(" ")} ${lower.join(" ")}" fill="${s.color}" fill-opacity="0.9" stroke="#fff" stroke-width="0.5"/>`;
-  }).join("");
-
-  document.getElementById("usage-legend").innerHTML = stack.map(s =>
-    `<span class="uslot"><i style="background:${s.color}"></i>${s.name}</span>`).join("");
-  document.getElementById("usage-svg").innerHTML =
-    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img">${grid}${areas}${xlabels}</svg>`;
+function renderStatusChart(u, elId) {
+  const el = document.getElementById(elId);
+  const ss = u.status_series || {};
+  const hasAny = Object.values(ss).some(arr => arr.some(v => v > 0));
+  if (!hasAny) {
+    el.innerHTML = `<p class="muted">No jobs in the last ${u.days.length} days.</p>`;
+    return;
+  }
+  el.innerHTML = `<span id="status-legend" class="uslots"></span><div id="status-svg" class="usage-svg"></div>`;
+  const stack = STATUS_ORDER
+    .filter(s => ss[s])
+    .map(s => ({ name: s, color: STATUS_COLORS[s], data: ss[s] }));
+  drawStackedArea(
+    document.getElementById("status-svg"),
+    document.getElementById("status-legend"),
+    u.days, stack,
+  );
 }
 
 // Users — one row per rate-limit class, same shape as the Config tab table.
