@@ -66,10 +66,10 @@ async function loadOverview() {
   ]);
   const cards = document.getElementById("stat-cards");
   cards.innerHTML = `
-    <div class="card"><h3>Total Jobs</h3><div class="value">${stats.total_jobs}</div></div>
-    <div class="card"><h3>Today</h3><div class="value">${stats.jobs_today}</div></div>
-    <div class="card"><h3>Avg Duration</h3><div class="value">${stats.avg_duration_seconds ? stats.avg_duration_seconds.toFixed(1) + "s" : "-"}</div></div>
-    ${Object.entries(stats.jobs_by_status).map(([k, v]) => `<div class="card"><h3>${k}</h3><div class="value">${v}</div></div>`).join("")}
+    <article class="card"><h3>Total Jobs</h3><div class="value">${stats.total_jobs}</div></article>
+    <article class="card"><h3>Today</h3><div class="value">${stats.jobs_today}</div></article>
+    <article class="card"><h3>Avg Duration</h3><div class="value">${stats.avg_duration_seconds ? stats.avg_duration_seconds.toFixed(1) + "s" : "-"}</div></article>
+    ${Object.entries(stats.jobs_by_status).map(([k, v]) => `<article class="card"><h3>${k}</h3><div class="value">${v}</div></article>`).join("")}
   `;
   const tbody = document.getElementById("overview-backends");
   tbody.innerHTML = backends.map(b => `<tr>
