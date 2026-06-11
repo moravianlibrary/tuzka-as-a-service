@@ -17,6 +17,11 @@ CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[Any, float]] = {}
 
 STORAGE_TTL_DEFAULT_MINUTES = 60
+JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS = 900
+JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
+JOB_RETENTION_DEFAULT_DAYS = 90
+PRESIGNED_TTL_DEFAULT_MINUTES = 60
+STATE_TTL_MARGIN_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -137,3 +142,34 @@ async def get_storage_ttl_minutes(db: AsyncSession, buckets: list[str]) -> dict[
         value = await get_value(db, f"storage.{bucket}_ttl_minutes")
         out[bucket] = int(value) if value is not None else STORAGE_TTL_DEFAULT_MINUTES
     return out
+
+
+async def get_job_queued_timeout_seconds(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.queued_timeout_seconds")
+    return int(value) if value is not None else JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS
+
+
+async def get_job_running_timeout_seconds(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.running_timeout_seconds")
+    return int(value) if value is not None else JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS
+
+
+async def get_job_retention_days(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.retention_days")
+    return int(value) if value is not None else JOB_RETENTION_DEFAULT_DAYS
+
+
+async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
+    value = await get_value(db, "presigned.ttl_minutes")
+    return int(value) if value is not None else PRESIGNED_TTL_DEFAULT_MINUTES
+
+
+async def get_state_ttl_seconds(db: AsyncSession) -> int:
+    """Redis job-state TTL: long enough to outlive the full queued+running lifecycle.
+
+    Computed (not configured) so it can never be set below the running timeout, which
+    would let a running job's Redis state expire before it can be harvested or reaped.
+    """
+    queued = await get_job_queued_timeout_seconds(db)
+    running = await get_job_running_timeout_seconds(db)
+    return queued + running + STATE_TTL_MARGIN_SECONDS
