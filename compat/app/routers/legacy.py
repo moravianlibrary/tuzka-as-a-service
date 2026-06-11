@@ -280,31 +280,18 @@ async def download_results(
     if job_data["status"] != "done":
         raise HTTPException(400, detail="not processed yet")
 
-    # Get result URLs
-    resp = await request_with_retry(
+    # Fetch the artifact through taas over the internal network. taas's presigned
+    # /result URLs are signed for the public MinIO host, which this shim can't reach,
+    # so we use the streaming download endpoint instead.
+    target_fmt = "alto" if format == "alto" else "txt"
+    download_resp = await request_with_retry(
         http,
         "GET",
-        f"/api/v1/jobs/{job_id}/result",
+        f"/api/v1/jobs/{job_id}/result/{target_fmt}/download",
         headers={"X-API-Key": api_key},
     )
-    if resp.status_code != 200:
-        raise HTTPException(resp.status_code, resp.text)
-
-    results = resp.json()["results"]
-
-    # Find matching format
-    target_fmt = "alto" if format == "alto" else "txt"
-    result_entry = None
-    for r in results:
-        if r["fmt"] == target_fmt:
-            result_entry = r
-            break
-
-    if not result_entry:
+    if download_resp.status_code == 404:
         raise HTTPException(404, f"No {format} result available")
-
-    # Download and decompress
-    download_resp = await http.get(result_entry["url"])
     if download_resp.status_code != 200:
         raise HTTPException(502, "Failed to download result")
 

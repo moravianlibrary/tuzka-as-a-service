@@ -2,7 +2,7 @@ import os
 import time
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -219,6 +219,55 @@ async def get_job_result(
         entries.append(JobResultEntry(fmt=jr.fmt, url=jr.presigned_url))
 
     return JobResultResponse(results=entries)
+
+
+@router.get(
+    "/jobs/{job_id}/result/{fmt}/download",
+    summary="Download a finished job's stored OCR artifact",
+    responses={
+        202: {"description": "Job accepted but not finished yet; retry later"},
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Job not found, or no result in the requested format"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+        500: {"description": "Job processing failed"},
+    },
+)
+async def download_job_result(
+    job_id: UUID,
+    fmt: str,
+    username: str = Depends(rate_limit_query()),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Stream a finished job's stored OCR artifact (zstd-compressed) through taas.
+
+    Unlike ``/result`` — which returns presigned URLs signed for the *public* MinIO
+    endpoint, for external clients — this proxies the object straight from internal
+    storage. It exists for callers that share taas's network (e.g. the compat shim)
+    and therefore cannot reach the public presign host. Requires a valid API key and
+    only resolves jobs owned by the authenticated user.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == "failed":
+        raise HTTPException(status_code=500, detail=job.error or "Job failed")
+    if job.status != "done":
+        raise HTTPException(status_code=202, detail="Job not completed yet")
+
+    res = await db.execute(
+        select(JobResult).where(JobResult.job_id == job_id, JobResult.fmt == fmt)
+    )
+    if not res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail=f"No {fmt} result available")
+
+    ext_map = {"alto": "xml", "txt": "txt"}
+    obj_path = f"{username}/{job.external_id}.{ext_map.get(fmt, fmt)}.zst"
+    results_client = storage.get_results_client(settings)
+    data = await storage.get_object(results_client, settings.minio_results_bucket, obj_path)
+    return Response(content=data, media_type="application/octet-stream")
 
 
 @router.get(

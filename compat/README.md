@@ -18,7 +18,7 @@ flowchart LR
     legacy -->|request_status| compat
     compat -->|GET /api/v1/jobs/...| api
     legacy -->|download_results| compat
-    compat -->|fetch presigned + zstd-decompress| api
+    compat -->|GET .../result/{fmt}/download + zstd-decompress| api
     compat -.->|raw ALTO / txt| legacy
 ```
 
@@ -26,8 +26,11 @@ flowchart LR
   (`compat:{request_id}` + per-file job IDs, expiring after `COMPAT_TTL_SECONDS`).
 - `upload_image` forwards each page to taas `POST /api/v1/jobs` (with the request's engine
   `domain` and `fmt`) and remembers the returned `job_id`.
-- `download_results` fetches the taas presigned URL **server-side**, decompresses the zstd
-  payload, and returns raw ALTO XML or plain text — so the legacy client gets the bytes directly.
+- `download_results` streams the artifact from taas **server-side** (via
+  `GET /api/v1/jobs/{job_id}/result/{fmt}/download`, over the internal network),
+  decompresses the zstd payload, and returns raw ALTO XML or plain text — so the legacy
+  client gets the bytes directly. It does not use the presigned `/result` URLs, which are
+  signed for the public MinIO host this shim can't reach.
 
 ## Authentication
 

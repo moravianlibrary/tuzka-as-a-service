@@ -36,7 +36,8 @@ Interactive OpenAPI docs are served at <http://localhost:8080/docs> (Swagger UI)
 |---|---|---|
 | `POST` | `/jobs` | multipart: `image` (required), `uuid` (required — caller's `external_id`, must be a valid UUID, unique per user), `fmt` (`alto`\|`txt`\|`multi`, default `multi`), `domain?` → `202 {job_id, external_id, status}` |
 | `GET` | `/jobs/{job_id}` | job status |
-| `GET` | `/jobs/{job_id}/result` | `{results:[{fmt, url}]}` — presigned URLs (regenerated if expired) |
+| `GET` | `/jobs/{job_id}/result` | `{results:[{fmt, url}]}` — presigned URLs (public endpoint, regenerated if expired) |
+| `GET` | `/jobs/{job_id}/result/{fmt}/download` | stream the stored artifact through taas (internal endpoint; for callers that can't reach the public presign host, e.g. compat) |
 | `GET` | `/jobs?status=&limit=&offset=` | paginated list (scoped to the user) |
 
 ### Admin — `/admin` (master key)
