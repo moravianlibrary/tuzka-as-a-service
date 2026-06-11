@@ -17,6 +17,7 @@ from app.schemas.job import (
     JobStatus,
     JobSubmitResponse,
 )
+from app.services import config as config_service
 from app.services import redis_jobs, storage
 
 router = APIRouter()
@@ -100,6 +101,7 @@ async def submit_job(
     await db.refresh(job)
 
     # Enqueue in Redis
+    state_ttl = await config_service.get_state_ttl_seconds(db)
     await redis_jobs.enqueue_job(
         r,
         str(job.id),
@@ -111,6 +113,7 @@ async def submit_job(
             "ext": ext,
             "submitted_at": str(time.time()),
         },
+        state_ttl,
     )
 
     return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
