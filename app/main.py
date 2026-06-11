@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -71,6 +71,11 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     templates = Jinja2Templates(directory=str(static_dir))
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        """Redirect the bare root to the dashboard."""
+        return RedirectResponse(url="/dashboard")
 
     @app.get("/dashboard", tags=["Dashboard"], summary="Dashboard UI", response_class=HTMLResponse)
     async def dashboard_page(request: Request):
