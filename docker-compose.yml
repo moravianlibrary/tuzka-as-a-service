@@ -35,6 +35,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_INCOMING_ACCESS_KEY:-minioincoming}
       MINIO_ROOT_PASSWORD: ${MINIO_INCOMING_SECRET_KEY:-minioincoming}
+      MINIO_SITE_REGION: ${MINIO_REGION:-eu-central-1}
     ports:
       - "9000:9000"
     volumes:
@@ -53,6 +54,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_RESULTS_ACCESS_KEY:-minioresults}
       MINIO_ROOT_PASSWORD: ${MINIO_RESULTS_SECRET_KEY:-minioresults}
+      MINIO_SITE_REGION: ${MINIO_REGION:-eu-central-1}
     ports:
       - "9010:9010"
     volumes:

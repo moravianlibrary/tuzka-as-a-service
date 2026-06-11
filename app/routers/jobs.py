@@ -194,7 +194,7 @@ async def get_job_result(
     res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
     job_results = res.scalars().all()
 
-    results_client = storage.get_results_client(settings)
+    results_client = storage.get_results_public_client(settings)
     entries = []
     from datetime import datetime
 

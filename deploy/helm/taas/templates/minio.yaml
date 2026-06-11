@@ -35,6 +35,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "taas.fullname" $ }}-secret
                   key: MINIO_{{ $key | upper }}_SECRET_KEY
+            - name: MINIO_SITE_REGION
+              value: {{ $.Values.minio.region | quote }}
           ports:
             - name: api
               containerPort: {{ $.Values.minio.port }}

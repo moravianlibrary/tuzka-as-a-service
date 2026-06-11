@@ -6,25 +6,52 @@ from miniopy_async import Minio
 from app.config import Settings
 
 
-def get_incoming_client(settings: Settings) -> Minio:
-    url = settings.minio_incoming_url.replace("http://", "").replace("https://", "")
-    secure = settings.minio_incoming_url.startswith("https://")
+def _make_client(url: str, access_key: str, secret_key: str, region: str) -> Minio:
+    endpoint = url.replace("http://", "").replace("https://", "")
     return Minio(
-        url,
-        access_key=settings.minio_incoming_access_key,
-        secret_key=settings.minio_incoming_secret_key,
-        secure=secure,
+        endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
+        secure=url.startswith("https://"),
+        # Pin the region so the SDK never issues a GetBucketLocation lookup against the
+        # endpoint. That matters for the presign client, whose endpoint (the public URL)
+        # is not reachable from this process — presigning must be a purely local operation.
+        region=region,
+    )
+
+
+def get_incoming_client(settings: Settings) -> Minio:
+    return _make_client(
+        settings.minio_incoming_url,
+        settings.minio_incoming_access_key,
+        settings.minio_incoming_secret_key,
+        settings.minio_region,
     )
 
 
 def get_results_client(settings: Settings) -> Minio:
-    url = settings.minio_results_url.replace("http://", "").replace("https://", "")
-    secure = settings.minio_results_url.startswith("https://")
-    return Minio(
-        url,
-        access_key=settings.minio_results_access_key,
-        secret_key=settings.minio_results_secret_key,
-        secure=secure,
+    """Client for results storage I/O (put/get/list/delete), reached over the internal network."""
+    return _make_client(
+        settings.minio_results_url,
+        settings.minio_results_access_key,
+        settings.minio_results_secret_key,
+        settings.minio_region,
+    )
+
+
+def get_results_public_client(settings: Settings) -> Minio:
+    """Client used only to presign result URLs.
+
+    Presigned URLs are SigV4-signed against the client's endpoint host, so they must be
+    signed for an address the *download client* can reach. ``minio_results_public_url``
+    provides that externally-reachable endpoint; when unset we fall back to the internal
+    URL (correct when clients share the network, e.g. local dev with localhost).
+    """
+    return _make_client(
+        settings.minio_results_public_url or settings.minio_results_url,
+        settings.minio_results_access_key,
+        settings.minio_results_secret_key,
+        settings.minio_region,
     )
 
 

@@ -100,6 +100,9 @@ minio:
     repository: minio/mc
     tag: "latest"
   port: 9000
+  # -- S3 region for MinIO (MINIO_SITE_REGION) and the presigned-URL signatures. The app's
+  # signer and the server must agree on this value, so it's set in one place for both.
+  region: eu-central-1
   incoming:
     bucket: incoming
     storage:
@@ -107,6 +110,10 @@ minio:
       storageClassName: ""
   results:
     bucket: results
+    # -- Externally-reachable MinIO endpoint used to presign result URLs (clients must reach
+    # it; presigned URLs are SigV4-signed against this host). Empty => use the in-cluster URL,
+    # which only works for clients inside the cluster. Set to your public MinIO endpoint.
+    publicUrl: ""
     storage:
       size: 20Gi
       storageClassName: ""

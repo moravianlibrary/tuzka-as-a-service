@@ -9,7 +9,9 @@ data:
   MINIO_INCOMING_URL: {{ printf "http://%s-minio-incoming:%v" (include "taas.fullname" .) .Values.minio.port | quote }}
   MINIO_INCOMING_BUCKET: {{ .Values.minio.incoming.bucket | quote }}
   MINIO_RESULTS_URL: {{ printf "http://%s-minio-results:%v" (include "taas.fullname" .) .Values.minio.port | quote }}
+  MINIO_RESULTS_PUBLIC_URL: {{ .Values.minio.results.publicUrl | quote }}
   MINIO_RESULTS_BUCKET: {{ .Values.minio.results.bucket | quote }}
+  MINIO_REGION: {{ .Values.minio.region | quote }}
   ALLOWED_EXTENSIONS: {{ .Values.config.allowedExtensions | quote }}
   MAX_UPLOAD_BYTES: {{ .Values.config.maxUploadBytes | quote }}
   SUBMIT_TICK_SECONDS: {{ .Values.config.submitTickSeconds | quote }}

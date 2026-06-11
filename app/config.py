@@ -16,9 +16,16 @@ class Settings(BaseSettings):
 
     # MinIO results
     minio_results_url: str = "http://localhost:9010"
+    # Externally-reachable endpoint used only to presign result URLs. SigV4 signs the
+    # endpoint host, so it must be an address download clients can reach. Empty => use
+    # minio_results_url (fine when clients share the network).
+    minio_results_public_url: str = ""
     minio_results_access_key: str = "minioresults"
     minio_results_secret_key: str = "minioresults"
     minio_results_bucket: str = "results"
+    # S3 region embedded in presigned-URL signatures. Pinned (not auto-discovered) so
+    # presigning needs no GetBucketLocation network call; must match MINIO_SITE_REGION.
+    minio_region: str = "eu-central-1"
 
     # Auth
     master_key: str = ""

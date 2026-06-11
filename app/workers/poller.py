@@ -20,7 +20,12 @@ from app.services.redis_jobs import (
     set_done,
     set_failed,
 )
-from app.services.storage import get_results_client, presign_get, put_object
+from app.services.storage import (
+    get_results_client,
+    get_results_public_client,
+    presign_get,
+    put_object,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller-worker")
@@ -33,6 +38,7 @@ async def main() -> None:
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     engine_client = EngineClient()
     results_client = get_results_client(settings)
+    results_public_client = get_results_public_client(settings)
     cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
 
     backend_keys: dict[int, str | None] = {}
@@ -118,7 +124,7 @@ async def main() -> None:
                     logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
 
                     presigned_url = await presign_get(
-                        results_client,
+                        results_public_client,
                         settings.minio_results_bucket,
                         obj_path,
                         settings.presigned_ttl_minutes,
