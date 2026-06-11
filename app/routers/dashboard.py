@@ -227,6 +227,7 @@ async def get_dashboard_backends(
 ):
     """List configured backends with their config plus live state, probing every backend
     concurrently for current in-flight count (Redis) and health (engine healthcheck).
+    Disabled backends are not health-probed (``healthy`` is reported as ``null``).
     Requires a master key."""
     result = await db.execute(select(Backend).order_by(Backend.id))
     backends = result.scalars().all()
@@ -234,10 +235,15 @@ async def get_dashboard_backends(
     engine_client = EngineClient()
 
     async def probe(b: Backend) -> DashboardBackend:
-        inflight, healthy = await asyncio.gather(
-            get_backend_inflight(r, b.id),
-            engine_client.healthcheck(b.url),
-        )
+        # Don't health-probe a disabled backend: it's intentionally out of
+        # rotation, so hitting it would be wasted load and misleading noise.
+        if b.enabled:
+            inflight, healthy = await asyncio.gather(
+                get_backend_inflight(r, b.id),
+                engine_client.healthcheck(b.url),
+            )
+        else:
+            inflight, healthy = await get_backend_inflight(r, b.id), None
         return DashboardBackend(
             id=b.id,
             url=b.url,

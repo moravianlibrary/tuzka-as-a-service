@@ -32,7 +32,7 @@ header h1 { font-size: 1.4rem; margin: 0; color: #fff; }
 .status { padding: 3px 10px; border-radius: 12px; font-size: 0.8rem; }
 .status-done { background: #d4edda; color: #155724; } .status-failed { background: #f8d7da; color: #721c24; }
 .status-running { background: #fff3cd; color: #856404; } .status-queued { background: #d1ecf1; color: #0c5460; }
-.health-ok { color: #28a745; } .health-bad { color: #dc3545; }
+.health-ok { color: #28a745; } .health-bad { color: #dc3545; } .health-na { color: #868e96; }
 
 /* Keep horizontal toolbars and in-row buttons sized to content */
 form.inline, .filters, .pagination, .usage-chart .uslots { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

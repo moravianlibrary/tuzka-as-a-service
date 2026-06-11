@@ -25,4 +25,4 @@ class DashboardBackend(BaseModel):
     enabled: bool
     max_inflight: int
     inflight_now: int
-    healthy: bool
+    healthy: bool | None = None

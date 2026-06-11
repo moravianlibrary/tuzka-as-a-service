@@ -98,7 +98,7 @@ async function loadOverview() {
   tbody.innerHTML = backends.map(b => `<tr>
     <td>${b.id}</td><td>${b.url}</td><td>${b.label || "-"}</td>
     <td>${b.inflight_now} / ${b.max_inflight}</td>
-    <td class="${b.healthy ? "health-ok" : "health-bad"}">${b.healthy ? "OK" : "DOWN"}</td>
+    ${healthCell(b.healthy)}
   </tr>`).join("");
 }
 
@@ -378,9 +378,17 @@ async function loadBackends() {
   tbody.innerHTML = data.map(b => `<tr>
     <td>${b.id}</td><td>${b.url}</td><td>${b.label || "-"}</td>
     <td>${b.enabled}</td><td>${b.max_inflight}</td><td>${b.inflight_now}</td>
-    <td class="${b.healthy ? "health-ok" : "health-bad"}">${b.healthy ? "OK" : "DOWN"}</td>
-    <td class="actions"><button onclick="deleteBackend(${b.id})">Delete</button></td>
+    ${healthCell(b.healthy)}
+    <td class="actions">${b.enabled
+      ? `<button class="btn-disable" onclick="disableBackend(${b.id})">Disable</button>`
+      : `<button class="btn-enable" onclick="enableBackend(${b.id})">Enable</button>`}</td>
   </tr>`).join("");
+}
+
+// Disabled backends aren't probed, so healthy is null -> show a neutral dash.
+function healthCell(healthy) {
+  if (healthy === null) return `<td class="health-na">—</td>`;
+  return `<td class="${healthy ? "health-ok" : "health-bad"}">${healthy ? "OK" : "DOWN"}</td>`;
 }
 
 document.getElementById("add-backend-form").addEventListener("submit", async e => {
@@ -394,11 +402,20 @@ document.getElementById("add-backend-form").addEventListener("submit", async e =
   loadBackends();
 });
 
-async function deleteBackend(id) {
-  if (confirm("Delete backend?")) {
-    await fetch(`/admin/backends/${id}`, { method: "DELETE", headers });
+async function disableBackend(id) {
+  if (confirm("Disable backend? It will be taken out of rotation.")) {
+    await fetch(`/admin/backends/${id}`, {
+      method: "PATCH", headers, body: JSON.stringify({ enabled: false }),
+    });
     loadBackends();
   }
+}
+
+async function enableBackend(id) {
+  await fetch(`/admin/backends/${id}`, {
+    method: "PATCH", headers, body: JSON.stringify({ enabled: true }),
+  });
+  loadBackends();
 }
 
 // Config (rate limit defaults + storage TTLs)

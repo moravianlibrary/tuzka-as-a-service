@@ -354,29 +354,6 @@ async def update_backend(
     )
 
 
-@router.delete(
-    "/backends/{backend_id}",
-    summary="Delete a backend",
-    responses={
-        404: {"description": "Backend not found"},
-        401: {"description": "Missing or invalid master key"},
-    },
-)
-async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
-    """Permanently delete a backend.
-
-    Requires a valid master key. Unlike user deactivation, this hard-deletes the
-    backend row from the database.
-    """
-    result = await db.execute(select(Backend).where(Backend.id == backend_id))
-    backend = result.scalar_one_or_none()
-    if not backend:
-        raise HTTPException(status_code=404, detail="Backend not found")
-    await db.delete(backend)
-    await db.commit()
-    return {"status": "deleted"}
-
-
 # --- Config ---
 
 
