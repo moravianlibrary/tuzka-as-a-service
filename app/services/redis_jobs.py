@@ -8,10 +8,10 @@ from app.config import Settings
 settings = Settings()
 
 
-async def enqueue_job(r: aioredis.Redis, job_id: str, metadata: dict) -> None:
+async def enqueue_job(r: aioredis.Redis, job_id: str, metadata: dict, state_ttl: int) -> None:
     key = f"job:{job_id}"
     await r.hset(key, mapping=metadata)
-    await r.expire(key, settings.job_ttl_seconds)
+    await r.expire(key, state_ttl)
     await r.zadd("jobs:pending", {job_id: metadata.get("submitted_at", time.time())})
 
 
@@ -39,6 +39,7 @@ async def set_running(
     engine_job_id: str,
     backend_url: str,
     backend_id: int,
+    state_ttl: int,
 ) -> None:
     key = f"job:{job_id}"
     await r.hset(
@@ -51,12 +52,12 @@ async def set_running(
             "next_poll_at": str(time.time() + settings.poll_backoff_initial),
         },
     )
-    await r.expire(key, settings.job_ttl_seconds)
+    await r.expire(key, state_ttl)
     await r.sadd("jobs:inflight", job_id)
     await r.incr(f"backend:{backend_id}:inflight")
 
 
-async def set_done(r: aioredis.Redis, job_id: str) -> None:
+async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
     backend_id = meta.get("backend_id") if meta else None
@@ -64,13 +65,13 @@ async def set_done(r: aioredis.Redis, job_id: str) -> None:
         key,
         mapping={"status": "done", "finished_at": str(time.time())},
     )
-    await r.expire(key, settings.job_ttl_seconds)
+    await r.expire(key, state_ttl)
     await r.srem("jobs:inflight", job_id)
     if backend_id:
         await r.decr(f"backend:{backend_id}:inflight")
 
 
-async def set_failed(r: aioredis.Redis, job_id: str, error: str) -> None:
+async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int) -> None:
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
     backend_id = meta.get("backend_id") if meta else None
@@ -78,7 +79,7 @@ async def set_failed(r: aioredis.Redis, job_id: str, error: str) -> None:
         key,
         mapping={"status": "failed", "error": error, "finished_at": str(time.time())},
     )
-    await r.expire(key, settings.job_ttl_seconds)
+    await r.expire(key, state_ttl)
     await r.srem("jobs:inflight", job_id)
     if backend_id:
         await r.decr(f"backend:{backend_id}:inflight")
