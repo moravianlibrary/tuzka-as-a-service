@@ -17,7 +17,6 @@ data:
   SUBMIT_TICK_SECONDS: {{ .Values.config.submitTickSeconds | quote }}
   POLLER_TICK_SECONDS: {{ .Values.config.pollerTickSeconds | quote }}
   POLLER_HARVEST_CONCURRENCY: {{ .Values.config.pollerHarvestConcurrency | quote }}
-  JOB_TTL_SECONDS: {{ .Values.config.jobTtlSeconds | quote }}
   POLL_BACKOFF_INITIAL: {{ .Values.config.pollBackoffInitial | quote }}
   POLL_BACKOFF_MAX: {{ .Values.config.pollBackoffMax | quote }}
   ZSTD_COMPRESSION_LEVEL: {{ .Values.config.zstdCompressionLevel | quote }}
@@ -25,4 +24,3 @@ data:
   RATE_LIMIT_QUERY_PER_MINUTE: {{ .Values.config.rateLimitQueryPerMinute | quote }}
   RATE_LIMIT_WS_CONNECTS_PER_MINUTE: {{ .Values.config.rateLimitWsConnectsPerMinute | quote }}
   WS_CATCH_UP_SECONDS: {{ .Values.config.wsCatchUpSeconds | quote }}
-  PRESIGNED_TTL_MINUTES: {{ .Values.config.presignedTtlMinutes | quote }}

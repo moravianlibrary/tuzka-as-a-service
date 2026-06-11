@@ -39,7 +39,6 @@ class Settings(BaseSettings):
     submit_tick_seconds: float = 2.0
     poller_tick_seconds: float = 2.0
     poller_harvest_concurrency: int = 10
-    job_ttl_seconds: int = 3600
     poll_backoff_initial: float = 2.0
     poll_backoff_max: float = 30.0
 
@@ -48,9 +47,6 @@ class Settings(BaseSettings):
 
     # WebSocket
     ws_catch_up_seconds: int = 120
-
-    # Presigned URLs
-    presigned_ttl_minutes: int = 60
 
     # extra=ignore: stale env entries must not crash startup
     model_config = {"env_file": ".env.local", "extra": "ignore"}
