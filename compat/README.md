@@ -36,7 +36,9 @@ Clients send the legacy `api-key` header. compat forwards it to taas as `X-API-K
 
 ## Endpoints
 
-All require the `api-key` header.
+All require the `api-key` header. Interactive OpenAPI docs are served at
+<http://localhost:8001/docs> (Swagger UI), <http://localhost:8001/redoc> (ReDoc),
+and <http://localhost:8001/openapi.json> (raw schema).
 
 | Method | Path | Purpose |
 |---|---|---|

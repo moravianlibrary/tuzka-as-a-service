@@ -27,6 +27,9 @@ For the project overview and quickstart, see the [root README](../README.md).
 
 ## API
 
+Interactive OpenAPI docs are served at <http://localhost:8080/docs> (Swagger UI),
+<http://localhost:8080/redoc> (ReDoc), and <http://localhost:8080/openapi.json> (raw schema).
+
 ### Jobs — `/api/v1` (user key, rate-limited)
 
 | Method | Path | Notes |
@@ -39,7 +42,7 @@ For the project overview and quickstart, see the [root README](../README.md).
 ### Admin — `/admin` (master key)
 
 `GET/POST /users`, `DELETE /users/{u}` (deactivate), `POST /users/{u}/rotate-key`,
-`PUT /users/{u}/key`, `GET/POST /backends`, `PATCH/DELETE /backends/{id}`,
+`PUT /users/{u}/key`, `GET/POST /backends`, `PATCH /backends/{id}` (incl. enable/disable),
 `GET/PUT /storage-config`. Creating/rotating a user returns the raw `api_key` **once**.
 
 ### Dashboard — `/dashboard` (master key)
