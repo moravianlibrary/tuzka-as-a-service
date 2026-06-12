@@ -9,14 +9,11 @@ Components:
 {{- if .Values.compat.enabled }}
   - Compat:     {{ include "taas.fullname" . }}-compat  (port {{ .Values.compat.port }})
 {{- end }}
-{{- if .Values.ocrEngines }}
-  - OCR engines (auto-registered as backends):
-  {{- range $e := .Values.ocrEngines }}
-      {{ include "taas.fullname" $ }}-ocr-engine-{{ $e.name }}
-  {{- end }}
+{{- if .Values.ocrEngine.enabled }}
+  - OCR engine: {{ include "taas.fullname" . }}-ocr-engine (StatefulSet, autoscaling: {{ .Values.ocrEngine.autoscaling.mode }}, {{ .Values.ocrEngine.autoscaling.minReplicas }}-{{ .Values.ocrEngine.autoscaling.maxReplicas }} replicas; {{ .Values.ocrEngine.autoscaling.maxReplicas }} backends auto-registered)
 {{- else }}
 
-NOTE: no in-cluster OCR engines. Register backends via the admin API:
+NOTE: no in-cluster OCR engine. Register backends via the admin API:
   POST /admin/backends  (header X-Master-Key)
 {{- end }}
 
