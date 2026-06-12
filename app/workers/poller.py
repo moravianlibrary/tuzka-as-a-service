@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.job import Job, JobResult
+from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.engine_client import EngineClient
 from app.services.redis_jobs import (
@@ -112,6 +113,8 @@ async def main() -> None:
             }
 
             async with session_factory() as db:
+                presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
+                state_ttl = await config_service.get_state_ttl_seconds(db)
                 for result_fmt, obj_path, raw_bytes in results_to_store:
                     compressed = cctx.compress(raw_bytes)
                     await put_object(
@@ -127,7 +130,7 @@ async def main() -> None:
                         results_public_client,
                         settings.minio_results_bucket,
                         obj_path,
-                        settings.presigned_ttl_minutes,
+                        presigned_ttl,
                     )
 
                     from datetime import timedelta
@@ -137,7 +140,7 @@ async def main() -> None:
                         fmt=result_fmt,
                         presigned_url=presigned_url,
                         presigned_until=datetime.utcnow()
-                        + timedelta(minutes=settings.presigned_ttl_minutes),
+                        + timedelta(minutes=presigned_ttl),
                     )
                     db.add(jr)
 
@@ -151,7 +154,7 @@ async def main() -> None:
                 )
                 await db.commit()
 
-            await set_done(r, job_id)
+            await set_done(r, job_id, state_ttl)
             await publish_event(r, username, event_data)
             logger.info(f"Published done event for {username}")
 
@@ -162,8 +165,9 @@ async def main() -> None:
     async def mark_failed(job_id: str, meta: dict, error: str) -> None:
         username = meta.get("username", "")
         external_id = meta.get("external_id", "")
-        await set_failed(r, job_id, error)
         async with session_factory() as db:
+            state_ttl = await config_service.get_state_ttl_seconds(db)
+            await set_failed(r, job_id, error, state_ttl)
             await db.execute(
                 update(Job)
                 .where(Job.id == job_id)
