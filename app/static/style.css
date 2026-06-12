@@ -46,7 +46,7 @@ form.inline :where(input, select, button), .filters :where(input, select, button
 .key-reveal input { margin: 0; font-family: ui-monospace, monospace; }
 .key-reveal button { width: auto; margin: 0; white-space: nowrap; }
 .storage-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
-.storage-row label { min-width: 160px; }
+.storage-row label { width: 200px; flex-shrink: 0; }
 .storage-row input { width: 90px; margin: 0; }
 .muted { color: #888; }
 td.jobid { font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: nowrap; }
