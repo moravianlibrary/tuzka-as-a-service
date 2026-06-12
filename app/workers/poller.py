@@ -3,6 +3,7 @@ import logging
 import time
 from datetime import datetime
 
+import httpx
 import redis.asyncio as aioredis
 import zstandard
 from sqlalchemy import update
@@ -18,6 +19,7 @@ from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
     publish_event,
+    release_and_requeue,
     set_done,
     set_failed,
 )
@@ -30,6 +32,21 @@ from app.services.storage import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller-worker")
+
+
+def classify_poll_result(status: str, requeues: int, max_requeues: int) -> str:
+    """Decide what to do with a polled job. Pure (no I/O) so it's unit-testable.
+
+    'unreachable' means the engine pod couldn't be reached (e.g. scaled down) — retry
+    by re-queuing until the budget is spent. Engine-reported 'failed'/'error' fail at once.
+    """
+    if status == "done":
+        return "harvest"
+    if status in ("failed", "error"):
+        return "fail"
+    if status == "unreachable":
+        return "requeue" if requeues < max_requeues else "fail"
+    return "running"
 
 
 async def main() -> None:
@@ -68,6 +85,9 @@ async def main() -> None:
                 meta["backend_url"], api_key, meta["engine_job_id"]
             )
             return (job_id, resp.get("status", "unknown"), meta)
+        except httpx.TransportError as e:
+            logger.warning(f"Engine unreachable for job {job_id}: {e}")
+            return (job_id, "unreachable", meta)
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
             return (job_id, "error", meta)
@@ -217,13 +237,21 @@ async def main() -> None:
 
             done_jobs = []
             failed_jobs = []
+            requeue_jobs = []
             running_jobs = []
 
+            async with session_factory() as db:
+                max_requeues = await config_service.get_max_requeues(db)
+
             for job_id, status, meta in statuses:
-                if status == "done":
+                requeues = int(meta.get("requeues", 0))
+                action = classify_poll_result(status, requeues, max_requeues)
+                if action == "harvest":
                     done_jobs.append((job_id, meta))
-                elif status in ("failed", "error"):
+                elif action == "fail":
                     failed_jobs.append((job_id, meta, meta.get("error", "Engine error")))
+                elif action == "requeue":
+                    requeue_jobs.append((job_id, meta))
                 else:
                     running_jobs.append((job_id, meta))
 
@@ -251,6 +279,28 @@ async def main() -> None:
             # Mark failed jobs
             for job_id, meta, error in failed_jobs:
                 await mark_failed(job_id, meta, error)
+
+            # Re-queue jobs whose engine became unreachable (scaled-down pod) so a live
+            # backend picks them up; bump the persisted requeue counter.
+            for job_id, meta in requeue_jobs:
+                async with session_factory() as db:
+                    state_ttl = await config_service.get_state_ttl_seconds(db)
+                    await release_and_requeue(
+                        r, job_id, float(meta.get("submitted_at", time.time())), state_ttl
+                    )
+                    await db.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            status="queued",
+                            engine_job_id=None,
+                            backend_id=None,
+                            requeues=Job.requeues + 1,
+                        )
+                    )
+                    await db.commit()
+                await r.hincrby(f"job:{job_id}", "requeues", 1)
+                logger.info(f"Re-queued unreachable job {job_id}")
 
         except Exception as e:
             logger.error(f"Poller worker error: {e}")
