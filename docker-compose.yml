@@ -183,6 +183,8 @@ services:
       TUZKAOCR_RESULTS_DIR: /app/results
       TUZKAOCR_SPOOL_DIR: /app/spool
       TUZKAOCR_MAX_QUEUE: 16
+      # Release ORT memory between pages (avoids the arena's sticky high-water OOM).
+      TUZKAOCR_CPU_MEM_ARENA: "false"
       TUZKAOCR_API_KEY: ${OCR_ENGINE_API_KEY:-test-engine-key}
     volumes:
       - ocr-results:/app/results
