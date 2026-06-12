@@ -1,4 +1,6 @@
-{{- if .Values.ocrEngines }}
+{{- if .Values.ocrEngine.enabled }}
+{{- $e := .Values.ocrEngine }}
+{{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,15 +36,15 @@ spec:
               API={{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port }}
               echo "waiting for API..."
               until curl -sf "$API/healthz" >/dev/null; do sleep 3; done
-              {{- range $e := .Values.ocrEngines }}
-              {{- $cfg := mergeOverwrite (deepCopy $.Values.ocrEnginesDefaults) (deepCopy $e) }}
-              {{- $url := printf "http://%s-ocr-engine-%s:%v" (include "taas.fullname" $) $e.name $cfg.port }}
-              echo "registering {{ $e.name }} -> {{ $url }}"
+              {{- $max := int $e.autoscaling.maxReplicas }}
+              {{- range $i := until $max }}
+              URL="http://{{ $name }}-{{ $i }}.{{ $name }}:{{ $e.port }}"
+              echo "registering ocr-engine-{{ $i }} -> $URL"
               curl -sf -X POST "$API/admin/backends" \
                 -H "X-Master-Key: $MASTER_KEY" \
                 -H "Content-Type: application/json" \
-                -d "{\"url\":\"{{ $url }}\",\"label\":\"{{ $e.name }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $cfg.maxInflight }}}" \
-                || echo "register {{ $e.name }} returned non-zero (backend may already exist)"
+                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }}}" \
+                || echo "register ocr-engine-{{ $i }} non-zero (may already exist)"
               {{- end }}
               echo "done"
 {{- end }}
