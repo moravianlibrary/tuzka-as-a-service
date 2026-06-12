@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.job import Job
+from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.engine_client import EngineClient, EngineFullError
 from app.services.redis_jobs import (
@@ -86,8 +87,9 @@ async def main() -> None:
             )
         except Exception as e:
             logger.error(f"Failed to read image for job {job_id}: {e}")
-            await set_failed(r, job_id, f"Failed to read image: {e}")
             async with session_factory() as db:
+                state_ttl = await config_service.get_state_ttl_seconds(db)
+                await set_failed(r, job_id, f"Failed to read image: {e}", state_ttl)
                 await db.execute(
                     update(Job).where(Job.id == job_id).values(status="failed", error=str(e))
                 )
@@ -111,11 +113,13 @@ async def main() -> None:
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
 
-            await set_running(r, job_id, engine_job_id, backend.url, backend.id)
-
             async with session_factory() as db:
                 from datetime import datetime
 
+                state_ttl = await config_service.get_state_ttl_seconds(db)
+                await set_running(
+                    r, job_id, engine_job_id, backend.url, backend.id, state_ttl
+                )
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
@@ -134,10 +138,11 @@ async def main() -> None:
 
         except Exception as e:
             logger.error(f"Failed to dispatch job {job_id}: {e}")
-            await set_failed(r, job_id, str(e))
             async with session_factory() as db:
                 from datetime import datetime
 
+                state_ttl = await config_service.get_state_ttl_seconds(db)
+                await set_failed(r, job_id, str(e), state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
