@@ -1,48 +1,42 @@
-{{- range $e := .Values.ocrEngines }}
-{{- $cfg := mergeOverwrite (deepCopy $.Values.ocrEnginesDefaults) (deepCopy $e) }}
-{{- $ename := required "each ocrEngines entry needs a name" $e.name }}
-{{- $name := printf "%s-ocr-engine-%s" (include "taas.fullname" $) $ename }}
----
+{{- if .Values.ocrEngine.enabled }}
+{{- $e := .Values.ocrEngine }}
+{{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "taas.labels" $ | nindent 4 }}
+    {{- include "taas.labels" . | nindent 4 }}
     app.kubernetes.io/component: ocr-engine
-    taas.mzk.cz/engine: {{ $ename }}
 spec:
-  replicas: 1
-  # One pod per engine fronted by its own Service, so a job's POST and its
-  # follow-up status/result GETs always hit the same pod. Recreate avoids two
-  # pods racing the (RWO) storage during a rollout.
-  strategy:
-    type: Recreate
+  serviceName: {{ $name }}
+  # Floor only; the autoscaler (HPA) owns replicas at runtime.
+  replicas: {{ $e.autoscaling.minReplicas | default 1 }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
-      {{- include "taas.selectorLabels" $ | nindent 6 }}
+      {{- include "taas.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: ocr-engine
-      taas.mzk.cz/engine: {{ $ename }}
   template:
     metadata:
       labels:
-        {{- include "taas.selectorLabels" $ | nindent 8 }}
+        {{- include "taas.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: ocr-engine
-        taas.mzk.cz/engine: {{ $ename }}
     spec:
-      {{- with $.Values.imagePullSecrets }}
+      terminationGracePeriodSeconds: {{ $e.terminationGracePeriodSeconds | default 120 }}
+      {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: ocr-engine
-          image: "{{ $cfg.image.repository }}:{{ $cfg.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          image: "{{ $e.image.repository }}:{{ $e.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: {{ $cfg.port }}
+              containerPort: {{ $e.port }}
           env:
-            {{- range $k, $v := $cfg.env }}
+            {{- range $k, $v := $e.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
@@ -53,41 +47,34 @@ spec:
             - name: TUZKAOCR_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "taas.fullname" $ }}-secret
+                  name: {{ include "taas.fullname" . }}-secret
                   key: OCR_ENGINE_API_KEY
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
           livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 60
             periodSeconds: 30
           readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 30
             periodSeconds: 10
           volumeMounts:
-            - name: results
-              mountPath: /app/results
-            - name: spool
-              mountPath: /app/spool
+            - { name: results, mountPath: /app/results }
+            - { name: spool, mountPath: /app/spool }
           resources:
-            {{- toYaml $cfg.resources | nindent 12 }}
+            {{- toYaml $e.resources | nindent 12 }}
       volumes:
         {{- range $vol := list "results" "spool" }}
-        {{- $v := index $cfg.storage $vol }}
+        {{- $v := index $e.storage $vol }}
         - name: {{ $vol }}
-          {{- if eq $v.type "pvc" }}
-          persistentVolumeClaim:
-            claimName: {{ $name }}-{{ $vol }}
-          {{- else }}
           emptyDir:
             {{- if eq $v.type "memory" }}
             medium: Memory
             {{- end }}
             sizeLimit: {{ $v.size }}
-          {{- end }}
         {{- end }}
 ---
 apiVersion: v1
@@ -95,39 +82,13 @@ kind: Service
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "taas.labels" $ | nindent 4 }}
+    {{- include "taas.labels" . | nindent 4 }}
     app.kubernetes.io/component: ocr-engine
-    taas.mzk.cz/engine: {{ $ename }}
 spec:
-  type: ClusterIP
+  clusterIP: None
   ports:
-    - port: {{ $cfg.port }}
-      targetPort: http
-      name: http
+    - { port: {{ $e.port }}, targetPort: http, name: http }
   selector:
-    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    {{- include "taas.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: ocr-engine
-    taas.mzk.cz/engine: {{ $ename }}
-{{- range $vol := list "results" "spool" }}
-{{- $v := index $cfg.storage $vol }}
-{{- if eq $v.type "pvc" }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ $name }}-{{ $vol }}
-  labels:
-    {{- include "taas.labels" $ | nindent 4 }}
-    app.kubernetes.io/component: ocr-engine
-    taas.mzk.cz/engine: {{ $ename }}
-spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- if $cfg.storage.storageClassName }}
-  storageClassName: {{ $cfg.storage.storageClassName | quote }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ $v.size }}
-{{- end }}
-{{- end }}
 {{- end }}
