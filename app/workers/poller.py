@@ -242,6 +242,7 @@ async def main() -> None:
 
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
+                state_ttl = await config_service.get_state_ttl_seconds(db)
 
             for job_id, status, meta in statuses:
                 requeues = int(meta.get("requeues", 0))
@@ -249,7 +250,11 @@ async def main() -> None:
                 if action == "harvest":
                     done_jobs.append((job_id, meta))
                 elif action == "fail":
-                    failed_jobs.append((job_id, meta, meta.get("error", "Engine error")))
+                    if status == "unreachable":
+                        err = f"engine unreachable, exceeded {max_requeues} requeue attempts"
+                    else:
+                        err = meta.get("error", "Engine error")
+                    failed_jobs.append((job_id, meta, err))
                 elif action == "requeue":
                     requeue_jobs.append((job_id, meta))
                 else:
@@ -281,26 +286,29 @@ async def main() -> None:
                 await mark_failed(job_id, meta, error)
 
             # Re-queue jobs whose engine became unreachable (scaled-down pod) so a live
-            # backend picks them up; bump the persisted requeue counter.
-            for job_id, meta in requeue_jobs:
-                async with session_factory() as db:
-                    state_ttl = await config_service.get_state_ttl_seconds(db)
+            # backend picks them up. Redis is updated first (release slot + bump the
+            # requeue counter that the budget reads); the DB column mirrors it for
+            # visibility in one batched session.
+            if requeue_jobs:
+                for job_id, meta in requeue_jobs:
                     await release_and_requeue(
                         r, job_id, float(meta.get("submitted_at", time.time())), state_ttl
                     )
-                    await db.execute(
-                        update(Job)
-                        .where(Job.id == job_id)
-                        .values(
-                            status="queued",
-                            engine_job_id=None,
-                            backend_id=None,
-                            requeues=Job.requeues + 1,
+                    await r.hincrby(f"job:{job_id}", "requeues", 1)
+                    logger.info(f"Re-queued unreachable job {job_id}")
+                async with session_factory() as db:
+                    for job_id, _meta in requeue_jobs:
+                        await db.execute(
+                            update(Job)
+                            .where(Job.id == job_id)
+                            .values(
+                                status="queued",
+                                engine_job_id=None,
+                                backend_id=None,
+                                requeues=Job.requeues + 1,
+                            )
                         )
-                    )
                     await db.commit()
-                await r.hincrby(f"job:{job_id}", "requeues", 1)
-                logger.info(f"Re-queued unreachable job {job_id}")
 
         except Exception as e:
             logger.error(f"Poller worker error: {e}")
