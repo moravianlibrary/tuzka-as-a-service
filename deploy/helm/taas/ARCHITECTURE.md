@@ -70,7 +70,7 @@ Run in weight order on `post-install` / `post-upgrade`:
 
 ```mermaid
 flowchart LR
-    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\nPOST /admin/backends\n(only if ocrEngine.enabled & register)"]
+    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\nPOST /admin/backends\n(one per ocrEngines entry)"]
 ```
 
 Jobs use `backoffLimit` + readiness retries so they tolerate the DB / MinIO / API not being

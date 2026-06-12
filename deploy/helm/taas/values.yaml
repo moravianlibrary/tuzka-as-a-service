@@ -125,23 +125,33 @@ minio:
       cpu: "1"
       memory: 1Gi
 
-# -- TuzkaOCR engine (optional). When disabled, register external backends
-#    via the admin API (POST /admin/backends).
-ocrEngine:
-  enabled: false
-  # Register this in-cluster engine as a backend via a post-install hook.
-  register: true
+# -- In-cluster TuzkaOCR engines. Defaults below apply to every entry in
+#    `ocrEngines`; each entry sets a `name` and may override any key (deep-merged).
+#    Each engine is deployed as its own Deployment + Service and auto-registered
+#    as a taas backend. Empty `ocrEngines` list => no in-cluster engines (register
+#    external backends via POST /admin/backends instead, e.g. a remote GPU box).
+ocrEnginesDefaults:
   image:
     repository: tuzkaocr
     tag: "cpu"
   port: 8000
-  maxInflight: 4
+  # taas concurrent dispatch cap for this backend. Keep MAX_QUEUE (below) >= this,
+  # or taas overflows the engine and gets 503s it must retry. Rule of thumb:
+  # maxInflight == TUZKAOCR_MAX_QUEUE, and both >= TUZKAOCR_PAGE_WORKERS.
+  maxInflight: 8
   env:
     TUZKAOCR_DEVICE: "cpu"
-    TUZKAOCR_OCR_THREADS: "4"
-    TUZKAOCR_LINE_WORKERS: "4"
+    # Recognizer runs one line at a time, so parallelism belongs at the line level,
+    # not ONNX intra-op threads (see bench/DEFAULTS.md). ocr_threads>1 is never
+    # faster for this model; a ~1-CPU scale-out engine uses line_workers=1.
+    TUZKAOCR_OCR_THREADS: "1"
+    TUZKAOCR_LINE_WORKERS: "1"
+    # 2 pages at once so CPU isn't idle while one page waits on I/O (image fetch,
+    # result write); both can run under the 2-CPU burst.
     TUZKAOCR_PAGE_WORKERS: "2"
-    TUZKAOCR_MAX_QUEUE: "16"
+    # Total active-job ceiling (running + queued) before the engine 503s. = maxInflight
+    # (2 running + up to 6 staged), so taas never overflows it and workers stay fed.
+    TUZKAOCR_MAX_QUEUE: "8"
   # -- Engine scratch volumes. Each is transient (results = finished ALTO/txt,
   #    auto-swept per MAX_JOB_AGE_HOURS once the poller harvests it; spool =
   #    upload spillover, only used for uploads >8 MiB). `type` selects the
@@ -171,14 +181,26 @@ ocrEngine:
       memory: 4Gi
       ephemeral-storage: 1Gi
 
+# -- Engines to deploy + register. Empty = none. Each item: a `name` (required)
+#    plus any keys from ocrEnginesDefaults to override (deep-merged).
+ocrEngines: []
+#   - name: cpu-1
+#   - name: cpu-2
+#       maxInflight: 4
+#       env: { TUZKAOCR_LINE_WORKERS: "2", TUZKAOCR_MAX_QUEUE: "4" }  # spend burst on latency
+#       resources: { limits: { cpu: "4" } }
+
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
   allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
   maxUploadBytes: "104857600"
-  submitTickSeconds: "2.0"
-  pollerTickSeconds: "2.0"
+  # Tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps backend slots
+  # turning over near the job time without hammering the engine. Backoff still
+  # adapts upward (to pollBackoffMax) for slow/dense GPU jobs.
+  submitTickSeconds: "1.0"
+  pollerTickSeconds: "1.0"
   pollerHarvestConcurrency: "10"
-  pollBackoffInitial: "2.0"
+  pollBackoffInitial: "1.0"
   pollBackoffMax: "30.0"
   zstdCompressionLevel: "3"
   rateLimitSubmitPerMinute: "60"

@@ -29,18 +29,35 @@ helm install taas ./deploy/helm/taas \
 
 Post-install hooks create the MinIO buckets and run `alembic upgrade head`.
 
-## In-cluster TuzkaOCR engine
+## In-cluster TuzkaOCR engines
 
-```bash
-helm upgrade --install taas ./deploy/helm/taas \
-  --set ocrEngine.enabled=true \
-  --set secrets.ocrEngineApiKey=$(openssl rand -hex 16) \
-  ... (secrets as above)
+Define one entry per engine under `ocrEngines`; each is deployed (its own Deployment +
+Service) and auto-registered as a taas backend by a post-install hook. `ocrEnginesDefaults`
+holds the shared config; each entry needs a `name` and may override any key (deep-merged):
+
+```yaml
+ocrEngines:
+  - name: cpu-1
+  - name: cpu-2
+    maxInflight: 4
+    env: { TUZKAOCR_LINE_WORKERS: "2", TUZKAOCR_MAX_QUEUE: "4" }
+    resources: { limits: { cpu: "4" } }
 ```
 
-With `ocrEngine.enabled` and `ocrEngine.register` (default), a post-install hook registers
-the engine as a backend (`POST /admin/backends`). Otherwise register external backends via
-the admin API yourself.
+An **empty `ocrEngines`** list deploys no engines — register external backends (e.g. a remote
+GPU box) yourself via `POST /admin/backends`.
+
+Each engine is one pod behind its own Service, so a job's submit and its status/result polls
+always hit the same pod (the engine keeps job state locally). **Scaling:** add/remove list
+entries and `helm upgrade`. Scale-down removes the Deployment/Service but does **not**
+deregister the backend — the orphan fails its health check (skipped by the submit worker) and
+any in-flight job is failed by the reaper; disable it via the dashboard/API to tidy up.
+
+**Tuning** (`ocrEnginesDefaults`): the recognizer is single-line, so use `OCR_THREADS=1` and
+parallelize at the line level (see `bench/DEFAULTS.md`). Defaults target a ~1-CPU scale-out
+engine: `LINE_WORKERS=1`, `PAGE_WORKERS=2` (overlap I/O), `maxInflight=8`. Keep
+`TUZKAOCR_MAX_QUEUE == maxInflight` (and both ≥ `PAGE_WORKERS`) so taas never overflows the
+engine's queue. Scale throughput by adding engines, not threads.
 
 ## Exposure (Ingress / Gateway API)
 
@@ -106,16 +123,16 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `minio.results.bucket` | `results` | Results bucket |
 | `minio.{incoming,results}.storage.size` | `20Gi` | MinIO PVC sizes |
 
-### OCR engine
+### OCR engines
 
 | Key | Default | Description |
 |---|---|---|
-| `ocrEngine.enabled` | `false` | Deploy the in-cluster TuzkaOCR engine |
-| `ocrEngine.register` | `true` | Auto-register it as a backend (hook) |
-| `ocrEngine.image.repository` / `.tag` | `tuzkaocr` / `cpu` | Engine image |
-| `ocrEngine.maxInflight` | `4` | Backend concurrency at registration |
-| `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env |
-| `ocrEngine.storage.{results,spool}.size` | `10Gi` / `5Gi` | Engine PVCs |
+| `ocrEngines` | `[]` | List of engines to deploy + register. Empty = none. Each item needs a `name`; may override any `ocrEnginesDefaults` key |
+| `ocrEnginesDefaults.image.repository` / `.tag` | `tuzkaocr` / `cpu` | Engine image |
+| `ocrEnginesDefaults.maxInflight` | `8` | Backend concurrency at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
+| `ocrEnginesDefaults.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=2`, `MAX_QUEUE=8`) |
+| `ocrEnginesDefaults.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`/`pvc`) |
+| `ocrEnginesDefaults.resources` | req 0.5 CPU / limit 2 CPU | Per-engine resources |
 
 ### App tunables (`config.*`)
 
