@@ -1,0 +1,51 @@
+{{- if .Values.ocrEngine.enabled }}
+{{- $e := .Values.ocrEngine }}
+{{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
+{{- if eq $e.autoscaling.mode "hpa" }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ $name }}
+  minReplicas: {{ $e.autoscaling.minReplicas }}
+  maxReplicas: {{ $e.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $e.autoscaling.hpa.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ $e.autoscaling.hpa.scaleDownStabilizationSeconds }}
+{{- else if eq $e.autoscaling.mode "keda" }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ $name }}
+  minReplicaCount: {{ $e.autoscaling.minReplicas }}
+  maxReplicaCount: {{ $e.autoscaling.maxReplicas }}
+  triggers:
+    - type: redis
+      metadata:
+        address: {{ $e.autoscaling.keda.redisAddress | quote }}
+        listName: {{ $e.autoscaling.keda.listName | quote }}
+        listLength: {{ $e.autoscaling.keda.listLength | quote }}
+{{- end }}
+{{- end }}
