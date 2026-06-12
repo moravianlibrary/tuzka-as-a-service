@@ -35,11 +35,13 @@ class Settings(BaseSettings):
     allowed_extensions: list[str] = [".tif", ".tiff", ".jpg", ".jpeg", ".png"]
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
 
-    # Workers
-    submit_tick_seconds: float = 2.0
-    poller_tick_seconds: float = 2.0
+    # Workers. Ticks tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps
+    # backend slots turning over near the job time. Backoff still adapts upward
+    # (to poll_backoff_max) for slow/dense GPU jobs.
+    submit_tick_seconds: float = 1.0
+    poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10
-    poll_backoff_initial: float = 2.0
+    poll_backoff_initial: float = 1.0
     poll_backoff_max: float = 30.0
 
     # Compression

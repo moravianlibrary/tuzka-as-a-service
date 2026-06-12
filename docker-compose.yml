@@ -175,7 +175,7 @@ services:
     image: tuzkaocr:cpu
     environment:
       TUZKAOCR_DEVICE: cpu
-      TUZKAOCR_OCR_THREADS: 4
+      TUZKAOCR_OCR_THREADS: 1
       TUZKAOCR_LINE_WORKERS: 4
       TUZKAOCR_PAGE_WORKERS: 2
       TUZKAOCR_HEIGHT_SCALE: "1.0"
