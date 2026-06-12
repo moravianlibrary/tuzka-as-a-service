@@ -95,6 +95,25 @@ async def requeue_job(r: aioredis.Redis, job_id: str, original_score: float) -> 
     await r.zadd("jobs:pending", {job_id: original_score})
 
 
+async def release_and_requeue(r: aioredis.Redis, job_id: str, score: float, state_ttl: int) -> None:
+    """Release an in-flight job's slot and put it back on the pending queue.
+
+    For jobs whose engine pod became unreachable: drop it from the inflight set,
+    release the (idempotent) backend counter, reset the hash to queued, and re-add to
+    jobs:pending so the submit worker dispatches it to a healthy backend.
+    """
+    key = f"job:{job_id}"
+    meta = await get_job(r, job_id)
+    backend_id = meta.get("backend_id") if meta else None
+    removed = await r.srem("jobs:inflight", job_id)
+    if backend_id and removed:
+        await r.decr(f"backend:{backend_id}:inflight")
+    await r.hset(key, mapping={"status": "queued"})
+    await r.hdel(key, "engine_job_id", "backend_url", "backend_id")
+    await r.expire(key, state_ttl)
+    await r.zadd("jobs:pending", {job_id: score})
+
+
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:
     members = await r.smembers("jobs:inflight")
     return {m.decode() if isinstance(m, bytes) else m for m in members}
