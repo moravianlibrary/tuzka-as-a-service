@@ -70,7 +70,7 @@ Run in weight order on `post-install` / `post-upgrade`:
 
 ```mermaid
 flowchart LR
-    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\nPOST /admin/backends\n(one per ocrEngines entry)"]
+    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\nPOST /admin/backends\n(one per engine ordinal + each tunnelOcrEngines entry)"]
 ```
 
 Jobs use `backoffLimit` + readiness retries so they tolerate the DB / MinIO / API not being
@@ -106,6 +106,35 @@ sequenceDiagram
 The legacy path is identical but enters through `compat` (`/legacy/*`, prefix stripped),
 which translates the PERO API to the taas API and returns decompressed ALTO/text directly.
 
+## Off-cluster engines (reverse tunnel)
+
+For a GPU box that can dial out but accepts no inbound (NAT/firewall), set
+`tunnel.enabled` + `tunnelOcrEngines`. The chart deploys an `frps` server; the box runs
+the engine + an `frpc` client that dials in and reverse-tunnels its engine port. Each
+tunnel engine gets a `<release>-tunnel-engine-<name>` ClusterIP Service that is just a
+port-alias to the socket frps opens — so the `backend-register` hook registers it
+exactly like an in-cluster engine, and the workers can't tell the difference.
+
+```mermaid
+flowchart LR
+    subgraph box["GPU box (outbound only)"]
+        eng["TuzkaOCR :8000"]
+        frpc["frpc"]
+    end
+    subgraph cl["cluster"]
+        frps["frps Deployment\n(NodePort :32700)"]
+        svc["tunnel-engine-gpu1\nClusterIP :8000"]
+        w["submit / poller"]
+    end
+    frpc -- dials --> frps
+    frps -. reverse tunnel .-> frpc
+    frpc --> eng
+    w --> svc --> frps
+```
+
+Box-side setup lives in [`deploy/gpu-box/`](../../gpu-box/README.md). The only inbound
+the box needs is its outbound reach to the frps NodePort (or a LoadBalancer).
+
 ## Scaling & state
 
 | Concern | Approach |
@@ -114,7 +143,7 @@ which translates the PERO API to the taas API and returns decompressed ALTO/text
 | Queue / pub-sub | single Redis StatefulSet (1 replica) with a PVC |
 | Database | CloudNativePG `Cluster` (`cnpg.instances` for HA) |
 | Object storage | two single-node MinIO StatefulSets (incoming / results) |
-| OCR engine | optional StatefulSet; or register external backends via the admin API |
+| OCR engine | optional StatefulSet; off-cluster GPU boxes via FRP reverse tunnel (`tunnel` + `tunnelOcrEngines`); or register external backends via the admin API |
 
 > The bundled Redis / MinIO are single-replica. For production-grade HA, point the app at a
 > managed Redis and S3-compatible storage (set `config`/`secrets` accordingly) and treat the

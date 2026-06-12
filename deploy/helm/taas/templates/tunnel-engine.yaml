@@ -1,0 +1,49 @@
+{{- if .Values.tunnelOcrEngines }}
+{{- if not .Values.tunnel.enabled }}
+{{- fail "tunnelOcrEngines is set but tunnel.enabled is false — enable the frps server (tunnel.enabled: true) so the off-cluster engines have a tunnel endpoint to dial." }}
+{{- end }}
+{{- /* Validate up front: names must be DNS-1123 labels (they land in Service names),
+       and remotePorts must be unique (frps opens one listener per port; dupes collide). */}}
+{{- $names := list }}
+{{- $ports := list }}
+{{- range $e := .Values.tunnelOcrEngines }}
+{{- $n := required "each tunnelOcrEngines entry needs a name" $e.name }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $n) }}
+{{- fail (printf "tunnelOcrEngines name %q is not a valid DNS-1123 label (lowercase alphanumeric and '-', must start/end alphanumeric)" $n) }}
+{{- end }}
+{{- $p := required (printf "tunnelOcrEngines entry %q needs a remotePort" $n) $e.remotePort }}
+{{- if has (toString $p) $ports }}
+{{- fail (printf "tunnelOcrEngines remotePort %v is used more than once — each engine needs a unique remotePort" $p) }}
+{{- end }}
+{{- $names = append $names $n }}
+{{- $ports = append $ports (toString $p) }}
+{{- end }}
+{{- $frps := printf "%s-frps" (include "taas.fullname" .) }}
+{{- range $e := .Values.tunnelOcrEngines }}
+{{- $cfg := mergeOverwrite (deepCopy $.Values.tunnelOcrEnginesDefaults) (deepCopy $e) }}
+{{- $ename := required "each tunnelOcrEngines entry needs a name" $e.name }}
+{{- $remote := required (printf "tunnelOcrEngines entry %q needs a remotePort" $ename) $e.remotePort }}
+---
+# Off-cluster engine {{ $ename }}: a plain ClusterIP Service that is only a port-alias
+# to the socket frps opens for this engine's reverse tunnel. The selector targets the
+# frps pod (NOT an engine pod) — frps forwards the traffic down the tunnel to frpc on
+# the GPU box, which delivers it to the local TuzkaOCR at remotePort {{ $remote }}.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-tunnel-engine-%s" (include "taas.fullname" $) $ename }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-engine
+    taas.mzk.cz/engine: {{ $ename }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $cfg.port }}
+      targetPort: {{ $remote }}
+      name: http
+  selector:
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+{{- end }}
+{{- end }}

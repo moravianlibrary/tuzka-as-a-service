@@ -1,0 +1,21 @@
+# frpc config for an off-cluster TuzkaOCR engine (GPU box behind NAT).
+# Values are rendered by frp at startup from environment variables (see compose.yaml
+# / .env), so this file does NOT need editing — set the .env instead.
+#
+# This dials the in-cluster frps (the <release>-frps NodePort) and opens a reverse
+# tunnel: traffic that hits remotePort on the frps pod is delivered to the local
+# TuzkaOCR engine. The cluster reaches it via the <release>-tunnel-engine-<name> Service.
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+[[proxies]]
+name = "{{ .Envs.FRP_PROXY_NAME }}"
+type = "tcp"
+# The engine container on this box (compose service name "tuzkaocr") + its HTTP port.
+localIP = "tuzkaocr"
+localPort = {{ .Envs.FRP_LOCAL_PORT }}
+# MUST equal this engine's tunnelOcrEngines[].remotePort in the Helm values.
+remotePort = {{ .Envs.FRP_REMOTE_PORT }}

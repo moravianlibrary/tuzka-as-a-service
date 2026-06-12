@@ -1,0 +1,66 @@
+# Off-cluster TuzkaOCR engine for a GPU box behind NAT.
+#
+# Runs the GPU OCR engine + an frpc reverse-tunnel client that dials the in-cluster
+# frps server. The box needs only OUTBOUND access to <FRP_SERVER_ADDR>:<FRP_SERVER_PORT>
+# (the taas <release>-frps NodePort). Configure via a .env file (see .env.example).
+#
+# Two ways to get the engine, selected by COMPOSE_PROFILES in .env (default: registry):
+#   registry -> pull a prebuilt image (OCR_IMAGE):   docker compose up -d
+#   build    -> build from a local checkout in ./TuzkaOCR:
+#               docker compose --profile build up -d --build
+# frpc runs under both profiles. The build service exposes the network alias "tuzkaocr"
+# so frpc reaches it the same way regardless of mode.
+
+# Shared engine config (both run modes). YAML merge via <<.
+x-tuzkaocr-common: &tuzkaocr-common
+  restart: unless-stopped
+  environment:
+    # MUST match the cluster's secrets.ocrEngineApiKey so taas can authenticate.
+    TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+    TUZKAOCR_DEVICE: ${OCR_DEVICE:-cuda}
+  # GPU access (NVIDIA). Needs nvidia-container-toolkit on the host.
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - { driver: nvidia, count: all, capabilities: [gpu] }
+  # No published ports: the engine is reached ONLY through the tunnel.
+  expose:
+    - "8000"
+
+services:
+  # Option A — prebuilt image from a registry.
+  tuzkaocr:
+    <<: *tuzkaocr-common
+    profiles: ["registry"]
+    image: ${OCR_IMAGE:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.1.1}
+
+  # Option B — build from a local repo checkout in ./TuzkaOCR.
+  tuzkaocr-build:
+    <<: *tuzkaocr-common
+    profiles: ["build"]
+    image: ${OCR_IMAGE:-tuzkaocr:local}
+    build:
+      context: ${OCR_BUILD_CONTEXT:-./TuzkaOCR}
+      dockerfile: ${OCR_DOCKERFILE:-Dockerfile}
+    # Reachable as "tuzkaocr" (what frpc.toml points at) even though the service name differs.
+    networks:
+      default:
+        aliases: ["tuzkaocr"]
+
+  frpc:
+    image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
+    profiles: ["registry", "build"]
+    restart: unless-stopped
+    # No depends_on: frp keeps retrying the local engine until it answers, so this
+    # works whichever engine service (registry or build) is active.
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRP_SERVER_ADDR: ${FRP_SERVER_ADDR:?set FRP_SERVER_ADDR (a cluster node IP) in .env}
+      FRP_SERVER_PORT: ${FRP_SERVER_PORT:-32700}
+      FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN (== cluster secrets.frpToken) in .env}
+      FRP_PROXY_NAME: ${ENGINE_NAME:-gpu1}
+      # The port TuzkaOCR listens on inside its container (fixed by the image).
+      FRP_LOCAL_PORT: "8000"
+      FRP_REMOTE_PORT: ${REMOTE_PORT:?set REMOTE_PORT (== tunnelOcrEngines[].remotePort) in .env}

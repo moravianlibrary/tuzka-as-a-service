@@ -1,4 +1,4 @@
-{{- if .Values.ocrEngine.enabled }}
+{{- if or .Values.ocrEngine.enabled .Values.tunnelOcrEngines }}
 {{- $e := .Values.ocrEngine }}
 {{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: batch/v1
@@ -36,6 +36,7 @@ spec:
               API={{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port }}
               echo "waiting for API..."
               until curl -sf "$API/healthz" >/dev/null; do sleep 3; done
+              {{- if $.Values.ocrEngine.enabled }}
               {{- $max := int $e.autoscaling.maxReplicas }}
               {{- range $i := until $max }}
               URL="http://{{ $name }}-{{ $i }}.{{ $name }}:{{ $e.port }}"
@@ -45,6 +46,17 @@ spec:
                 -H "Content-Type: application/json" \
                 -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }}}" \
                 || echo "register ocr-engine-{{ $i }} non-zero (may already exist)"
+              {{- end }}
+              {{- end }}
+              {{- range $te := $.Values.tunnelOcrEngines }}
+              {{- $tcfg := mergeOverwrite (deepCopy $.Values.tunnelOcrEnginesDefaults) (deepCopy $te) }}
+              {{- $turl := printf "http://%s-tunnel-engine-%s:%v" (include "taas.fullname" $) $te.name $tcfg.port }}
+              echo "registering tunnel engine {{ $te.name }} -> {{ $turl }}"
+              curl -sf -X POST "$API/admin/backends" \
+                -H "X-Master-Key: $MASTER_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $te.name }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }}}" \
+                || echo "register {{ $te.name }} non-zero (may already exist)"
               {{- end }}
               echo "done"
 {{- end }}

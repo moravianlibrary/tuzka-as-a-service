@@ -165,6 +165,54 @@ ocrEngine:
       listName: "ocr-jobs"
       listLength: "5"
 
+# -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
+#    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
+#    engine + an `frpc` client that dials this in-cluster `frps` server; frps re-exposes
+#    each engine's port inside the cluster, and taas consumes it as an ordinary
+#    ClusterIP Service (see `tunnelOcrEngines`). No app changes — the remoteness is
+#    transparent. Required when `tunnelOcrEngines` is non-empty. Box-side: deploy/gpu-box/.
+tunnel:
+  enabled: false
+  image:
+    repository: snowdreamtech/frps
+    tag: "0.61.1"
+  # frps control-plane (bind) port inside the pod. frpc dials this (via the Service
+  # below); the actual reverse tunnels are opened on the per-engine `remotePort`s.
+  controlPort: 7000
+  service:
+    # NodePort (MVP, bare metal) or LoadBalancer (cloud / MetalLB). This Service is
+    # the ONLY thing the GPU box dials. For LoadBalancer, `nodePort` is ignored.
+    type: NodePort
+    # The port the GPU box dials: <any-node-ip>:<nodePort>. Must be in the cluster's
+    # node-port range (default 30000–32767) and reachable from the box's network.
+    nodePort: 32700
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 128Mi }
+
+# -- Defaults applied to every `tunnelOcrEngines` entry (deep-merged).
+tunnelOcrEnginesDefaults:
+  # Logical Service port taas registers + connects to in-cluster. Equals the engine's
+  # HTTP port on the box (frpc's localPort). Usually leave at 8000.
+  port: 8000
+  # taas concurrent dispatch cap for this backend (see ocrEngine.maxInflight).
+  maxInflight: 8
+
+# -- Off-cluster engines reached via the tunnel above. Empty = none. Each item:
+#      name       (required) -> Service named <release>-tunnel-engine-<name>, registered
+#                               as a backend exactly like an in-cluster engine.
+#      remotePort (required) -> the port frps opens on its pod for THIS engine's reverse
+#                               tunnel; the box's frpc must request the same value.
+#                               MUST be unique across all tunnelOcrEngines.
+#    Plus any tunnelOcrEnginesDefaults key to override (port, maxInflight).
+#    Requires `tunnel.enabled: true`.
+tunnelOcrEngines: []
+#   - name: gpu1
+#     remotePort: 8000
+#     maxInflight: 16
+#   - name: gpu2
+#     remotePort: 8001
+
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
   allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
@@ -194,6 +242,9 @@ secrets:
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "replaceMe"
   ocrEngineApiKey: "replaceMe"
+  # Shared secret authenticating frpc (GPU box) to the in-cluster frps. Must match
+  # the box's frpc auth.token. Only used when tunnel.enabled.
+  frpToken: "replaceMe"
 
 # -- Exposure. Each target is exposed via an Ingress, a Gateway API HTTPRoute,
 #    or not at all  (kind: ingress | gateway | none):

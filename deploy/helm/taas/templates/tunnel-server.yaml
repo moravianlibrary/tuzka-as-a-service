@@ -1,0 +1,99 @@
+{{- if .Values.tunnel.enabled }}
+{{- $t := .Values.tunnel }}
+{{- $name := printf "%s-frps" (include "taas.fullname" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+data:
+  frps.toml: |
+    bindPort = {{ $t.controlPort }}
+    auth.method = "token"
+    # Rendered by frp at startup from the FRP_TOKEN env var (Go-template config).
+    auth.token = "{{`{{ .Envs.FRP_TOKEN }}`}}"
+    # Restrict the reverse-tunnel ports frpc may open to exactly the engines below
+    # (default-deny: an empty list allows nothing).
+    allowPorts = [
+    {{- range $e := .Values.tunnelOcrEngines }}
+      { single = {{ required (printf "tunnelOcrEngines entry %q needs a remotePort" $e.name) $e.remotePort }} },
+    {{- end }}
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+spec:
+  replicas: 1
+  # Single stateful rendezvous point; never run two frps racing the same ports.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tunnel-server
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tunnel-server
+      annotations:
+        checksum/config: {{ printf "%v-%v" $t.controlPort (toYaml .Values.tunnelOcrEngines) | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frps
+          image: "{{ $t.image.repository }}:{{ $t.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-c", "/etc/frp/frps.toml"]
+          env:
+            - name: FRP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" . }}-secret
+                  key: FRP_TOKEN
+          # Only the control port is declared. Each engine's reverse-tunnel port is
+          # opened by frps at runtime (from frpc's request) and reached in-cluster via
+          # its tunnel-engine Service's numeric targetPort — declaring them here would
+          # add nothing and risk invalid/duplicate port names.
+          ports:
+            - { name: control, containerPort: {{ $t.controlPort }} }
+          volumeMounts:
+            - { name: config, mountPath: /etc/frp }
+          resources:
+            {{- toYaml $t.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+spec:
+  # The only endpoint the off-cluster GPU box dials (frps control plane).
+  type: {{ $t.service.type }}
+  ports:
+    - name: control
+      port: {{ $t.controlPort }}
+      targetPort: control
+      {{- if eq $t.service.type "NodePort" }}
+      nodePort: {{ $t.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+{{- end }}

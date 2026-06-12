@@ -29,35 +29,40 @@ helm install taas ./deploy/helm/taas \
 
 Post-install hooks create the MinIO buckets and run `alembic upgrade head`.
 
-## In-cluster TuzkaOCR engines
+## In-cluster TuzkaOCR engine
 
-Define one entry per engine under `ocrEngines`; each is deployed (its own Deployment +
-Service) and auto-registered as a taas backend by a post-install hook. `ocrEnginesDefaults`
-holds the shared config; each entry needs a `name` and may override any key (deep-merged):
+Set `ocrEngine.enabled: true` to deploy a single TuzkaOCR **StatefulSet** whose replica
+count is driven by an autoscaler. Each pod has stable per-ordinal DNS
+(`<release>-ocr-engine-<i>.<release>-ocr-engine`), so a job's submit and its status/result
+polls always hit the same pod (the engine keeps job state locally). A post-install hook
+pre-registers **one backend per ordinal** `0 .. maxReplicas-1`; ordinals that aren't running
+yet fail their health check and are skipped by the submit worker until the autoscaler brings
+them up.
 
 ```yaml
-ocrEngines:
-  - name: cpu-1
-  - name: cpu-2
-    maxInflight: 4
-    env: { TUZKAOCR_LINE_WORKERS: "2", TUZKAOCR_MAX_QUEUE: "4" }
-    resources: { limits: { cpu: "4" } }
+ocrEngine:
+  enabled: true
+  maxInflight: 4            # taas dispatch cap PER POD (keep == TUZKAOCR_MAX_QUEUE)
+  autoscaling:
+    mode: hpa              # none | hpa | keda
+    minReplicas: 1
+    maxReplicas: 8         # also the number of backends pre-registered
+    hpa: { targetCPUUtilizationPercentage: 70, scaleDownStabilizationSeconds: 300 }
 ```
 
-An **empty `ocrEngines`** list deploys no engines — register external backends (e.g. a remote
-GPU box) yourself via `POST /admin/backends`.
+When `ocrEngine.enabled: false`, no engine is deployed — register external backends (e.g. a
+remote GPU box) via `POST /admin/backends`, or reverse-tunnel an off-cluster engine in (see
+the next section).
 
-Each engine is one pod behind its own Service, so a job's submit and its status/result polls
-always hit the same pod (the engine keeps job state locally). **Scaling:** add/remove list
-entries and `helm upgrade`. Scale-down removes the Deployment/Service but does **not**
-deregister the backend — the orphan fails its health check (skipped by the submit worker) and
-any in-flight job is failed by the reaper; disable it via the dashboard/API to tidy up.
+**Scaling:** `hpa` scales on CPU; `keda` scales on the Redis job-queue length
+(`autoscaling.keda.*`); `none` pins the count at `minReplicas`. Raising `maxReplicas` later
+needs a `helm upgrade` so the register hook adds the new ordinals' backends.
 
-**Tuning** (`ocrEnginesDefaults`): the recognizer is single-line, so use `OCR_THREADS=1` and
-parallelize at the line level (see `bench/DEFAULTS.md`). Defaults target a ~1-CPU scale-out
-engine: `LINE_WORKERS=1`, `PAGE_WORKERS=2` (overlap I/O), `maxInflight=8`. Keep
+**Tuning** (`ocrEngine.env`): the recognizer is single-line, so use `OCR_THREADS=1` and
+parallelize at the line level (see `bench/DEFAULTS.md`). Defaults target a ~1-CPU pod:
+`LINE_WORKERS=1`, `PAGE_WORKERS=2` (overlap I/O), `maxInflight=4`. Keep
 `TUZKAOCR_MAX_QUEUE == maxInflight` (and both ≥ `PAGE_WORKERS`) so taas never overflows the
-engine's queue. Scale throughput by adding engines, not threads.
+engine's queue. Scale throughput by adding replicas, not threads.
 
 ## Exposure (Ingress / Gateway API)
 
@@ -123,16 +128,39 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `minio.results.bucket` | `results` | Results bucket |
 | `minio.{incoming,results}.storage.size` | `20Gi` | MinIO PVC sizes |
 
-### OCR engines
+### OCR engine
 
 | Key | Default | Description |
 |---|---|---|
-| `ocrEngines` | `[]` | List of engines to deploy + register. Empty = none. Each item needs a `name`; may override any `ocrEnginesDefaults` key |
-| `ocrEnginesDefaults.image.repository` / `.tag` | `tuzkaocr` / `cpu` | Engine image |
-| `ocrEnginesDefaults.maxInflight` | `8` | Backend concurrency at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
-| `ocrEnginesDefaults.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=2`, `MAX_QUEUE=8`) |
-| `ocrEnginesDefaults.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`/`pvc`) |
-| `ocrEnginesDefaults.resources` | req 0.5 CPU / limit 2 CPU | Per-engine resources |
+| `ocrEngine.enabled` | `false` | Deploy the in-cluster TuzkaOCR StatefulSet + autoscaler + per-ordinal backend registration |
+| `ocrEngine.image.repository` / `.tag` | `…/tuzkaocr` / `1.1.1` | Engine image |
+| `ocrEngine.maxInflight` | `4` | Backend concurrency **per pod** at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
+| `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=2`, `MAX_QUEUE=4`) |
+| `ocrEngine.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`) |
+| `ocrEngine.resources` | req 0.5 CPU / limit 2 CPU | Per-pod resources |
+| `ocrEngine.autoscaling.mode` | `hpa` | `none` (pin to `minReplicas`) / `hpa` (CPU) / `keda` (Redis queue length) |
+| `ocrEngine.autoscaling.{minReplicas,maxReplicas}` | `1` / `8` | Replica bounds; `maxReplicas` = number of backends pre-registered |
+| `ocrEngine.autoscaling.hpa.*` | 70% / 300s | HPA CPU target + scale-down stabilization window |
+| `ocrEngine.autoscaling.keda.*` | — | KEDA Redis trigger (`redisAddress`, `listName`, `listLength`) when `mode: keda` |
+
+### Off-cluster engines via reverse tunnel (`tunnel.*`, `tunnelOcrEngines`)
+
+For a GPU box that can dial out but accepts no inbound, run the engine off-cluster and
+reverse-tunnel it in with FRP. The chart deploys an `frps` server and exposes each tunnel
+engine as a `<release>-tunnel-engine-<name>` Service registered like any backend. Box-side
+setup: [`deploy/gpu-box/`](../../gpu-box/README.md).
+
+| Key | Default | Description |
+|---|---|---|
+| `tunnel.enabled` | `false` | Deploy the in-cluster `frps` server. Required when `tunnelOcrEngines` is set |
+| `tunnel.image.repository` / `.tag` | `snowdreamtech/frps` / `0.61.1` | frps image |
+| `tunnel.controlPort` | `7000` | frps control (bind) port inside the pod |
+| `tunnel.service.type` | `NodePort` | `NodePort` (bare metal) or `LoadBalancer` (cloud / MetalLB) — the box dials this |
+| `tunnel.service.nodePort` | `32700` | Port the box dials (`<node-ip>:<nodePort>`); ignored for `LoadBalancer` |
+| `tunnelOcrEngines` | `[]` | Off-cluster engines. Each item: `name` + `remotePort` (unique); may override `tunnelOcrEnginesDefaults` |
+| `tunnelOcrEnginesDefaults.port` | `8000` | Logical Service port taas registers (== engine HTTP port on the box) |
+| `tunnelOcrEnginesDefaults.maxInflight` | `8` | Backend concurrency at registration |
+| `secrets.frpToken` | `replaceMe` | Shared secret authenticating frpc↔frps (== box `FRP_TOKEN`) |
 
 ### App tunables (`config.*`)
 
