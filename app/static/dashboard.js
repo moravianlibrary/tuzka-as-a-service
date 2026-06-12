@@ -424,6 +424,12 @@ const STORAGE_LABELS = {
   "storage.incoming_ttl_minutes": "Incoming files",
   "storage.results_ttl_minutes": "Results",
 };
+const POLICY_LABELS = {
+  "jobs.queued_timeout_seconds": ["Queued timeout", "seconds"],
+  "jobs.running_timeout_seconds": ["Running timeout", "seconds"],
+  "jobs.retention_days": ["Job record retention", "days"],
+  "presigned.ttl_minutes": ["Presigned URL TTL", "minutes"],
+};
 function storageLabel(k) {
   return STORAGE_LABELS[k] || k.replace(/^storage\./, "").replace(/_ttl_minutes$/, "").replace(/_/g, " ");
 }
@@ -442,6 +448,13 @@ async function loadConfig() {
   storage.innerHTML = storageKeys.length
     ? storageKeys.map(k => `<div class="storage-row"><label>${storageLabel(k)}</label><input type="number" data-key="${k}" value="${cfg[k]}"> minutes</div>`).join("")
     : `<p class="muted">No storage TTLs configured.</p>`;
+  const policy = document.getElementById("config-policy");
+  if (policy) {
+    policy.innerHTML = Object.entries(POLICY_LABELS).map(([k, [label, unit]]) =>
+      `<div class="storage-row"><label>${label}</label>` +
+      `<input type="number" min="1" data-key="${k}" value="${cfg[k] ?? ""}"> ${unit}</div>`
+    ).join("");
+  }
 }
 
 async function saveConfig() {
@@ -451,6 +464,9 @@ async function saveConfig() {
     values[i.dataset.cfg][i.dataset.field] = parseInt(i.value);
   });
   document.querySelectorAll("#config-storage input").forEach(i => {
+    values[i.dataset.key] = parseInt(i.value);
+  });
+  document.querySelectorAll("#config-policy input").forEach(i => {
     values[i.dataset.key] = parseInt(i.value);
   });
   await fetch("/admin/config", { method: "PUT", headers, body: JSON.stringify(values) });
