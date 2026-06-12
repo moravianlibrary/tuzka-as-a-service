@@ -33,3 +33,4 @@ clients/java/target/
 !.vscode/settings.json
 .ruff_cache/
 *.log
+test.jpg
