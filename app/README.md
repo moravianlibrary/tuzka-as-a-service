@@ -94,8 +94,17 @@ Each runs as its own process (one container per worker in compose):
 ```bash
 python -m app.workers.submit    # dequeue → dispatch to a healthy backend
 python -m app.workers.poller    # poll engine status → harvest + store results → publish events
-python -m app.workers.cleanup   # TTL cleanup of buckets and old DB rows
+python -m app.workers.cleanup   # reaper (every ~60s) + TTL cleanup of buckets and old DB rows (~10 min)
 ```
+
+The cleanup worker also runs a **reaper** every ~60s: jobs stuck in `queued` past
+`jobs.queued_timeout_seconds` (default 900) or `running` past
+`jobs.running_timeout_seconds` (default 300) are marked `failed`, their backend slot
+released, and a WS `failed` event emitted. These timeouts, job-record retention
+(`jobs.retention_days`, default 90), and the presigned-URL window
+(`presigned.ttl_minutes`, default 60) live in the DB `config` table (editable via
+`PUT /admin/config` and the dashboard). The Redis job-state TTL is computed as
+`queued + running + 60s`.
 
 ## Running
 
