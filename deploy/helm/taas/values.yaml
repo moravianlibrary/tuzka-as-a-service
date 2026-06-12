@@ -178,7 +178,6 @@ config:
   submitTickSeconds: "2.0"
   pollerTickSeconds: "2.0"
   pollerHarvestConcurrency: "10"
-  jobTtlSeconds: "3600"
   pollBackoffInitial: "2.0"
   pollBackoffMax: "30.0"
   zstdCompressionLevel: "3"
@@ -186,7 +185,6 @@ config:
   rateLimitQueryPerMinute: "120"
   rateLimitWsConnectsPerMinute: "5"
   wsCatchUpSeconds: "120"
-  presignedTtlMinutes: "60"
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:

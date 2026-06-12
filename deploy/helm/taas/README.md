@@ -120,8 +120,10 @@ helm upgrade --install taas ./deploy/helm/taas \
 ### App tunables (`config.*`)
 
 Non-secret `app/config.Settings` fields — `allowedExtensions`, `maxUploadBytes`, worker ticks
-(`submitTickSeconds`, `pollerTickSeconds`, `pollerHarvestConcurrency`, `pollBackoff*`,
-`jobTtlSeconds`), `zstdCompressionLevel`, `rateLimit*`, `wsCatchUpSeconds`, `presignedTtlMinutes`.
+(`submitTickSeconds`, `pollerTickSeconds`, `pollerHarvestConcurrency`, `pollBackoff*`),
+`zstdCompressionLevel`, `rateLimit*`, `wsCatchUpSeconds`. Job timeouts, retention, and the
+presigned-URL TTL are runtime config in the DB `config` table (see the dashboard / `PUT /admin/config`),
+not Helm values.
 
 ### Secrets (`secrets.*`)
 

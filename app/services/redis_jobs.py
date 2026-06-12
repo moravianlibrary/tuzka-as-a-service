@@ -66,8 +66,11 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
         mapping={"status": "done", "finished_at": str(time.time())},
     )
     await r.expire(key, state_ttl)
-    await r.srem("jobs:inflight", job_id)
-    if backend_id:
+    # Only decrement when srem actually removed the job: makes slot-release
+    # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
+    # can't double-decrement the backend counter.
+    removed = await r.srem("jobs:inflight", job_id)
+    if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
 
 
@@ -80,8 +83,11 @@ async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int)
         mapping={"status": "failed", "error": error, "finished_at": str(time.time())},
     )
     await r.expire(key, state_ttl)
-    await r.srem("jobs:inflight", job_id)
-    if backend_id:
+    # Only decrement when srem actually removed the job: makes slot-release
+    # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
+    # can't double-decrement the backend counter.
+    removed = await r.srem("jobs:inflight", job_id)
+    if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
 
 
