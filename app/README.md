@@ -101,7 +101,7 @@ The cleanup worker also runs a **reaper** every ~60s: jobs stuck in `queued` pas
 `jobs.queued_timeout_seconds` (default 900) or `running` past
 `jobs.running_timeout_seconds` (default 300) are marked `failed`, their backend slot
 released, and a WS `failed` event emitted. These timeouts, job-record retention
-(`jobs.retention_days`, default 90), and the presigned-URL window
+(`jobs.retention_days`, default 90; `-1` keeps rows forever), and the presigned-URL window
 (`presigned.ttl_minutes`, default 60) live in the DB `config` table (editable via
 `PUT /admin/config` and the dashboard). The Redis job-state TTL is computed as
 `queued + running + 60s`.

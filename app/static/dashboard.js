@@ -427,9 +427,11 @@ const STORAGE_LABELS = {
 const POLICY_LABELS = {
   "jobs.queued_timeout_seconds": ["Queued timeout", "seconds"],
   "jobs.running_timeout_seconds": ["Running timeout", "seconds"],
-  "jobs.retention_days": ["Job record retention", "days"],
+  "jobs.retention_days": ["Job record retention", "days (-1 = keep forever)"],
   "presigned.ttl_minutes": ["Presigned URL TTL", "minutes"],
 };
+// Retention accepts -1 (disable); the other policy values must be >= 1.
+const POLICY_MIN = { "jobs.retention_days": -1 };
 function storageLabel(k) {
   return STORAGE_LABELS[k] || k.replace(/^storage\./, "").replace(/_ttl_minutes$/, "").replace(/_/g, " ");
 }
@@ -452,7 +454,7 @@ async function loadConfig() {
   if (policy) {
     policy.innerHTML = Object.entries(POLICY_LABELS).map(([k, [label, unit]]) =>
       `<div class="storage-row"><label>${label}</label>` +
-      `<input type="number" min="1" data-key="${k}" value="${cfg[k] ?? ""}"> ${unit}</div>`
+      `<input type="number" min="${POLICY_MIN[k] ?? 1}" data-key="${k}" value="${cfg[k] ?? ""}"> ${unit}</div>`
     ).join("");
   }
 }

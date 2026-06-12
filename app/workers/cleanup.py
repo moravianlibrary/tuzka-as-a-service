@@ -61,25 +61,29 @@ async def main() -> None:
                                     f"Deleted {len(batch)} expired objects from {bucket}"
                                 )
 
+                    # retention_days <= 0 disables row deletion (keep jobs forever).
+                    # Guard required: a negative value would make the cutoff a future
+                    # timestamp and delete every finished job.
                     retention_days = await config_service.get_job_retention_days(db)
-                    cutoff_ret = datetime.utcnow() - timedelta(days=retention_days)
+                    if retention_days > 0:
+                        cutoff_ret = datetime.utcnow() - timedelta(days=retention_days)
 
-                    from sqlalchemy import text
+                        from sqlalchemy import text
 
-                    await db.execute(
-                        text(
-                            "DELETE FROM job_results WHERE job_id IN "
-                            "(SELECT id FROM jobs WHERE finished_at < :cutoff)"
-                        ),
-                        {"cutoff": cutoff_ret},
-                    )
-                    result = await db.execute(
-                        text("DELETE FROM jobs WHERE finished_at < :cutoff"),
-                        {"cutoff": cutoff_ret},
-                    )
-                    if result.rowcount:
-                        logger.info(f"Cleaned up {result.rowcount} old job records")
-                    await db.commit()
+                        await db.execute(
+                            text(
+                                "DELETE FROM job_results WHERE job_id IN "
+                                "(SELECT id FROM jobs WHERE finished_at < :cutoff)"
+                            ),
+                            {"cutoff": cutoff_ret},
+                        )
+                        result = await db.execute(
+                            text("DELETE FROM jobs WHERE finished_at < :cutoff"),
+                            {"cutoff": cutoff_ret},
+                        )
+                        if result.rowcount:
+                            logger.info(f"Cleaned up {result.rowcount} old job records")
+                        await db.commit()
             except Exception as e:
                 logger.error(f"Cleanup worker error: {e}")
 
