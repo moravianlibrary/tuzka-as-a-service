@@ -82,3 +82,11 @@ async def test_overrides_from_config_rows():
     assert await cfg.get_job_retention_days(db) == 30
     cfg._cache.clear()
     assert await cfg.get_presigned_ttl_minutes(db) == 15
+
+
+@pytest.mark.asyncio
+async def test_max_requeues_default_and_override():
+    cfg._cache.clear()
+    assert await cfg.get_max_requeues(_FakeDB({})) == 3
+    cfg._cache.clear()
+    assert await cfg.get_max_requeues(_FakeDB({"jobs.max_requeues": 5})) == 5

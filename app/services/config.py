@@ -20,6 +20,7 @@ STORAGE_TTL_DEFAULT_MINUTES = 60
 JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS = 900
 JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
 JOB_RETENTION_DEFAULT_DAYS = 90
+JOB_MAX_REQUEUES_DEFAULT = 3
 PRESIGNED_TTL_DEFAULT_MINUTES = 60
 STATE_TTL_MARGIN_SECONDS = 60
 
@@ -162,6 +163,11 @@ async def get_job_retention_days(db: AsyncSession) -> int:
 async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
     value = await get_value(db, "presigned.ttl_minutes")
     return int(value) if value is not None else PRESIGNED_TTL_DEFAULT_MINUTES
+
+
+async def get_max_requeues(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.max_requeues")
+    return int(value) if value is not None else JOB_MAX_REQUEUES_DEFAULT
 
 
 async def get_state_ttl_seconds(db: AsyncSession) -> int:
