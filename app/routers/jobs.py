@@ -202,6 +202,7 @@ async def get_job_result(
     from datetime import datetime
 
     now = datetime.utcnow()
+    presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
     for jr in job_results:
         # Refresh presigned URL if expired (stored as naive UTC)
         if not jr.presigned_url or (jr.presigned_until and jr.presigned_until < now):
@@ -212,11 +213,11 @@ async def get_job_result(
                 results_client,
                 settings.minio_results_bucket,
                 obj_path,
-                settings.presigned_ttl_minutes,
+                presigned_ttl,
             )
             from datetime import timedelta
 
-            jr.presigned_until = now + timedelta(minutes=settings.presigned_ttl_minutes)
+            jr.presigned_until = now + timedelta(minutes=presigned_ttl)
             await db.commit()
 
         entries.append(JobResultEntry(fmt=jr.fmt, url=jr.presigned_url))
