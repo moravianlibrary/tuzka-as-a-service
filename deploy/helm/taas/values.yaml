@@ -125,77 +125,45 @@ minio:
       cpu: "1"
       memory: 1Gi
 
-# -- In-cluster TuzkaOCR engines. Defaults below apply to every entry in
-#    `ocrEngines`; each entry sets a `name` and may override any key (deep-merged).
-#    Each engine is deployed as its own Deployment + Service and auto-registered
-#    as a taas backend. Empty `ocrEngines` list => no in-cluster engines (register
-#    external backends via POST /admin/backends instead, e.g. a remote GPU box).
-ocrEnginesDefaults:
+# -- In-cluster TuzkaOCR engine. A StatefulSet of identical pods (stable per-ordinal
+#    DNS) auto-registered as taas backends; an autoscaler sets the replica count.
+ocrEngine:
+  enabled: false
   image:
-    repository: tuzkaocr
-    tag: "cpu"
+    repository: registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr
+    tag: "1.1.1"
   port: 8000
-  # taas concurrent dispatch cap for this backend. Keep MAX_QUEUE (below) >= this,
-  # or taas overflows the engine and gets 503s it must retry. Rule of thumb:
-  # maxInflight == TUZKAOCR_MAX_QUEUE, and both >= TUZKAOCR_PAGE_WORKERS.
-  maxInflight: 8
+  # taas concurrent dispatch cap PER POD. Keep TUZKAOCR_MAX_QUEUE >= this.
+  maxInflight: 4
   env:
     TUZKAOCR_DEVICE: "cpu"
-    # Recognizer runs one line at a time, so parallelism belongs at the line level,
-    # not ONNX intra-op threads (see bench/DEFAULTS.md). ocr_threads>1 is never
-    # faster for this model; a ~1-CPU scale-out engine uses line_workers=1.
     TUZKAOCR_OCR_THREADS: "1"
     TUZKAOCR_LINE_WORKERS: "1"
-    # 2 pages at once so CPU isn't idle while one page waits on I/O (image fetch,
-    # result write); both can run under the 2-CPU burst.
     TUZKAOCR_PAGE_WORKERS: "2"
-    # Total active-job ceiling (running + queued) before the engine 503s. = maxInflight
-    # (2 running + up to 6 staged), so taas never overflows it and workers stay fed.
-    TUZKAOCR_MAX_QUEUE: "8"
-    # Disable ONNX Runtime's CPU arena: it otherwise grows to the peak layout-model
-    # activation working set (~1.3 GiB/page) and never returns it to the OS, so memory
-    # sticks at the high-water mark and OOMs. Off => ~45% lower peak, releases between
-    # pages, with negligible throughput cost on this workload. See bench/ENGINE_MEMORY.md.
+    TUZKAOCR_MAX_QUEUE: "4"
+    # Release ORT memory between pages (see bench/ENGINE_MEMORY.md) — avoids OOM.
     TUZKAOCR_CPU_MEM_ARENA: "false"
-  # -- Engine scratch volumes. Each is transient (results = finished ALTO/txt,
-  #    auto-swept per MAX_JOB_AGE_HOURS once the poller harvests it; spool =
-  #    upload spillover, only used for uploads >8 MiB). `type` selects the
-  #    backing:
-  #      memory   -> emptyDir on tmpfs (RAM-backed, fastest; its usage counts
-  #                  against resources.limits.memory below). Default.
-  #      emptyDir -> emptyDir on node disk (counts against ephemeral-storage).
-  #      pvc      -> a PersistentVolumeClaim (survives pod restarts; uses
-  #                  storageClassName).
-  #    `size` is the emptyDir sizeLimit (memory/emptyDir) or the PVC request.
-  #    Bump `spool` (or move it to disk/pvc) if you ingest very large images.
   storage:
     storageClassName: ""
-    results:
-      type: memory
-      size: 128Mi
-    spool:
-      type: memory
-      size: 256Mi
+    results: { type: memory, size: 128Mi }
+    spool:   { type: memory, size: 256Mi }
   resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-      ephemeral-storage: 256Mi
-    limits:
-      cpu: "2"
-      # With CPU_MEM_ARENA off, PAGE_WORKERS=2 peaks ~1.5 GiB (measured). 3Gi leaves
-      # headroom for larger scans + the tmpfs scratch above; raise if you bump PAGE_WORKERS.
-      memory: 3Gi
-      ephemeral-storage: 1Gi
-
-# -- Engines to deploy + register. Empty = none. Each item: a `name` (required)
-#    plus any keys from ocrEnginesDefaults to override (deep-merged).
-ocrEngines: []
-#   - name: cpu-1
-#   - name: cpu-2
-#       maxInflight: 4
-#       env: { TUZKAOCR_LINE_WORKERS: "2", TUZKAOCR_MAX_QUEUE: "4" }  # spend burst on latency
-#       resources: { limits: { cpu: "4" } }
+    requests: { cpu: 500m, memory: 1Gi, ephemeral-storage: 256Mi }
+    limits:   { cpu: "2",  memory: 3Gi, ephemeral-storage: 1Gi }
+  # Long enough to drain in-flight jobs on scale-down before SIGKILL.
+  terminationGracePeriodSeconds: 120
+  autoscaling:
+    mode: hpa                # none | hpa | keda
+    minReplicas: 1
+    # Upper bound on replicas AND on the number of backend rows taas pre-registers.
+    maxReplicas: 8
+    hpa:
+      targetCPUUtilizationPercentage: 70
+      scaleDownStabilizationSeconds: 300
+    keda:                    # only used when mode=keda (requires KEDA installed)
+      redisAddress: ""       # e.g. "<release>-redis:6379"
+      listName: "ocr-jobs"
+      listLength: "5"
 
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
