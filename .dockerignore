@@ -1,0 +1,13 @@
+# Whitelist approach: the root build context is ~1.7GB (TuzkaOCR, venvs, bench,
+# test-data). Ignore everything, then re-include only what the api/worker images
+# actually need, so `docker build` ships a tiny context.
+*
+
+!app
+!alembic
+!alembic.ini
+!pyproject.toml
+
+# Re-excludes inside the whitelisted dirs.
+**/__pycache__
+**/*.py[cod]

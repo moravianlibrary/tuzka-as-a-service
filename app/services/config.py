@@ -19,7 +19,6 @@ _cache: dict[str, tuple[Any, float]] = {}
 STORAGE_TTL_DEFAULT_MINUTES = 60
 JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS = 900
 JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
-JOB_RETENTION_DEFAULT_DAYS = 90
 JOB_MAX_REQUEUES_DEFAULT = 3
 PRESIGNED_TTL_DEFAULT_MINUTES = 60
 STATE_TTL_MARGIN_SECONDS = 60
@@ -153,11 +152,6 @@ async def get_job_queued_timeout_seconds(db: AsyncSession) -> int:
 async def get_job_running_timeout_seconds(db: AsyncSession) -> int:
     value = await get_value(db, "jobs.running_timeout_seconds")
     return int(value) if value is not None else JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS
-
-
-async def get_job_retention_days(db: AsyncSession) -> int:
-    value = await get_value(db, "jobs.retention_days")
-    return int(value) if value is not None else JOB_RETENTION_DEFAULT_DAYS
 
 
 async def get_presigned_ttl_minutes(db: AsyncSession) -> int:

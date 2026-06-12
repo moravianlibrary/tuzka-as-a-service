@@ -19,6 +19,7 @@ class Job(Base):
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)
     engine_job_id: Mapped[str | None] = mapped_column(default=None)
+    engine_version: Mapped[str | None] = mapped_column(default=None)
     backend_id: Mapped[int | None] = mapped_column(ForeignKey("backends.id"), default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     requeues: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")

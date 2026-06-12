@@ -21,6 +21,13 @@ class UserLimitOverrides(BaseModel):
     burst_ws: int | None = None
 
 
+class UserUpdate(UserLimitOverrides):
+    """PATCH body for a user: rate-limit overrides plus optional enable/disable —
+    mirrors how `BackendUpdate` bundles `enabled` with the backend's other fields."""
+
+    active: bool | None = None
+
+
 class UserList(UserLimitOverrides):
     username: str
     active: bool

@@ -226,10 +226,10 @@ config:
   pollBackoffInitial: "1.0"
   pollBackoffMax: "30.0"
   zstdCompressionLevel: "3"
-  rateLimitSubmitPerMinute: "60"
-  rateLimitQueryPerMinute: "120"
-  rateLimitWsConnectsPerMinute: "5"
   wsCatchUpSeconds: "120"
+  logLevel: "INFO"
+  # NOTE: rate limits are runtime config in the DB `config` table (rate_limit.*),
+  # editable via the dashboard / PUT /admin/config — not env/Helm values.
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:

@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -53,9 +54,20 @@ TAGS_METADATA = [
 
 
 def create_app() -> FastAPI:
+    # Uvicorn configures only its own loggers, leaving the root logger unset, so app
+    # `logging.getLogger(...)` records (routers, services) were silently dropped.
+    # Configure the root logger here — same approach the workers already use — so app
+    # logs reach stdout. force=True wins over any prior basicConfig from imports.
+    settings = Settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+
     app = FastAPI(
         title="taas",
-        version="0.3.0",
+        version="0.4.0",
         lifespan=lifespan,
         description=DESCRIPTION,
         license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},

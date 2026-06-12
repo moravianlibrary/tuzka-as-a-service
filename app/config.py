@@ -50,5 +50,8 @@ class Settings(BaseSettings):
     # WebSocket
     ws_catch_up_seconds: int = 120
 
+    # Logging
+    log_level: str = "INFO"
+
     # extra=ignore: stale env entries must not crash startup
     model_config = {"env_file": ".env.local", "extra": "ignore"}

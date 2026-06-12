@@ -20,7 +20,5 @@ data:
   POLL_BACKOFF_INITIAL: {{ .Values.config.pollBackoffInitial | quote }}
   POLL_BACKOFF_MAX: {{ .Values.config.pollBackoffMax | quote }}
   ZSTD_COMPRESSION_LEVEL: {{ .Values.config.zstdCompressionLevel | quote }}
-  RATE_LIMIT_SUBMIT_PER_MINUTE: {{ .Values.config.rateLimitSubmitPerMinute | quote }}
-  RATE_LIMIT_QUERY_PER_MINUTE: {{ .Values.config.rateLimitQueryPerMinute | quote }}
-  RATE_LIMIT_WS_CONNECTS_PER_MINUTE: {{ .Values.config.rateLimitWsConnectsPerMinute | quote }}
   WS_CATCH_UP_SECONDS: {{ .Values.config.wsCatchUpSeconds | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}

@@ -1,13 +1,14 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.deps import get_settings, require_master
 from app.models.backend import Backend
 from app.models.db import get_db
+from app.models.job import Job
 from app.models.user import User
 from app.schemas.backend import BackendCreate, BackendResponse, BackendUpdate
 from app.schemas.user import (
@@ -18,6 +19,7 @@ from app.schemas.user import (
     UserLimitsResponse,
     UserList,
     UserResponse,
+    UserUpdate,
 )
 from app.services import config as config_service
 from app.services.auth import (
@@ -89,47 +91,35 @@ async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
 
 @router.delete(
     "/users/{username}",
-    summary="Deactivate a user",
+    summary="Delete a user",
     responses={
         404: {"description": "User not found"},
+        409: {"description": "User still has jobs"},
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def deactivate_user(username: str, db: AsyncSession = Depends(get_db)):
-    """Soft-disable a user by setting ``active=False``.
+async def delete_user(username: str, db: AsyncSession = Depends(get_db)):
+    """Permanently delete a user.
 
-    Requires a valid master key. The user and their key hash are retained, so the
-    account can later be re-enabled; this does not delete the user.
-    """
-    result = await db.execute(select(User).where(User.username == username))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    await db.execute(update(User).where(User.username == username).values(active=False))
-    await db.commit()
-    return {"status": "deactivated"}
-
-
-@router.post(
-    "/users/{username}/enable",
-    summary="Enable a user",
-    responses={
-        404: {"description": "User not found"},
-        401: {"description": "Missing or invalid master key"},
-    },
-)
-async def enable_user(username: str, db: AsyncSession = Depends(get_db)):
-    """Re-activate a previously deactivated user by setting ``active=True``.
-
+    Refuses with **409** while any jobs still reference the user (they hold a
+    foreign key); once retention has aged those jobs out the user can be deleted.
+    To take a user out of service without deleting, disable them via ``PATCH``.
     Requires a valid master key.
     """
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    await db.execute(update(User).where(User.username == username).values(active=True))
+    job_count = await db.scalar(
+        select(func.count()).select_from(Job).where(Job.username == username)
+    )
+    if job_count:
+        raise HTTPException(
+            status_code=409, detail=f"User still has {job_count} job(s); cannot delete"
+        )
+    await db.delete(user)
     await db.commit()
-    return {"status": "enabled"}
+    return {"status": "deleted"}
 
 
 @router.post(
@@ -186,7 +176,7 @@ async def set_key(username: str, body: SetKeyRequest, db: AsyncSession = Depends
 @router.patch(
     "/users/{username}",
     response_model=UserLimitsResponse,
-    summary="Update rate-limit overrides",
+    summary="Update a user (rate-limit overrides and/or enable/disable)",
     responses={
         404: {"description": "User not found"},
         401: {"description": "Missing or invalid master key"},
@@ -194,22 +184,24 @@ async def set_key(username: str, body: SetKeyRequest, db: AsyncSession = Depends
 )
 async def update_user_limits(
     username: str,
-    body: UserLimitOverrides,
+    body: UserUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update per-user rate-limit overrides and return the resolved effective limits.
+    """Update a user's rate-limit overrides and/or ``active`` flag (enable/disable),
+    returning the resolved effective limits. Mirrors ``PATCH /backends/{id}``.
 
-    Requires a valid master key. Only fields present in the request are changed;
-    an explicit null clears an override so that class inherits the global default.
-    Cached limits for the user are invalidated so changes take effect immediately.
+    Requires a valid master key. Only fields present in the request are changed; an
+    explicit null clears an override so that class inherits the global default.
+    Disabling keeps the user and key hash so they can be re-enabled. Cached limits
+    are invalidated so changes take effect immediately.
     """
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # exclude_unset: only fields present in the request change;
-    # an explicit null clears the override back to inherit.
+    # exclude_unset: only fields present in the request change; an explicit null
+    # clears a rate-limit override back to inherit. `active` toggles enable/disable.
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(user, field, value)
     await db.commit()
@@ -352,6 +344,39 @@ async def update_backend(
         max_inflight=backend.max_inflight,
         created_at=backend.created_at,
     )
+
+
+@router.delete(
+    "/backends/{backend_id}",
+    summary="Delete a backend",
+    responses={
+        404: {"description": "Backend not found"},
+        409: {"description": "Backend still has jobs"},
+        401: {"description": "Missing or invalid master key"},
+    },
+)
+async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
+    """Permanently delete a backend.
+
+    Refuses with **409** while any jobs still reference it (foreign key); once
+    retention has aged those jobs out the backend can be deleted. To take a backend
+    out of rotation without deleting, disable it via ``PATCH {"enabled": false}``.
+    Requires a valid master key.
+    """
+    result = await db.execute(select(Backend).where(Backend.id == backend_id))
+    backend = result.scalar_one_or_none()
+    if not backend:
+        raise HTTPException(status_code=404, detail="Backend not found")
+    job_count = await db.scalar(
+        select(func.count()).select_from(Job).where(Job.backend_id == backend_id)
+    )
+    if job_count:
+        raise HTTPException(
+            status_code=409, detail=f"Backend still has {job_count} job(s); cannot delete"
+        )
+    await db.delete(backend)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 # --- Config ---

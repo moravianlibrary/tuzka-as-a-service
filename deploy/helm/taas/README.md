@@ -166,9 +166,16 @@ setup: [`deploy/gpu-box/`](../../gpu-box/README.md).
 
 Non-secret `app/config.Settings` fields — `allowedExtensions`, `maxUploadBytes`, worker ticks
 (`submitTickSeconds`, `pollerTickSeconds`, `pollerHarvestConcurrency`, `pollBackoff*`),
-`zstdCompressionLevel`, `rateLimit*`, `wsCatchUpSeconds`. Job timeouts, retention, and the
-presigned-URL TTL are runtime config in the DB `config` table (see the dashboard / `PUT /admin/config`),
-not Helm values.
+`zstdCompressionLevel`, `wsCatchUpSeconds`, `logLevel`. Job timeouts and the presigned-URL TTL
+are runtime config in the DB `config` table (see the dashboard / `PUT /admin/config`), not Helm
+values.
+
+**Two config sources, no overlap.** Settings (env/Helm) carry *infrastructure* and process
+tuning; the DB `config` table carries *runtime policy* (`jobs.*` timeouts, `presigned.ttl_minutes`,
+`storage.*_ttl_minutes`, `rate_limit.*`). No key is read from both, so an env var and a DB value
+can never disagree. Env-only knobs (e.g. `zstdCompressionLevel`, `wsCatchUpSeconds`, `logLevel`)
+are deliberately not DB-tunable. **Job-record retention is hardcoded to 30 days** in the cleanup
+worker — it is neither a Helm value nor a DB config key.
 
 ### Secrets (`secrets.*`)
 

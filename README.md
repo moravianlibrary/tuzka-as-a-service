@@ -112,7 +112,7 @@ prints a preview — the ALTO XML and the OCR text extracted from it. Controls:
 
 ```bash
 make infra                                  # postgres + redis + minio in Docker
-pip install -e .                            # taas + deps
+pip install -e ".[api]"                     # taas + web/api deps (workers need only `.`)
 alembic upgrade head
 cp .env.local.example .env.local            # adjust if needed
 uvicorn app.main:app --reload --port 8080

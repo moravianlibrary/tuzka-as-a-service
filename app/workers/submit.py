@@ -112,6 +112,7 @@ async def main() -> None:
                 backend.url, api_key, image_bytes, filename, fmt, domain
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
+            engine_version = await engine_client.get_version(backend.url)
 
             async with session_factory() as db:
                 from datetime import datetime
@@ -127,6 +128,7 @@ async def main() -> None:
                         status="running",
                         started_at=datetime.utcnow(),
                         engine_job_id=engine_job_id,
+                        engine_version=engine_version,
                         backend_id=backend.id,
                     )
                 )

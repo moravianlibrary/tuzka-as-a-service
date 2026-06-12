@@ -100,11 +100,19 @@ python -m app.workers.cleanup   # reaper (every ~60s) + TTL cleanup of buckets a
 The cleanup worker also runs a **reaper** every ~60s: jobs stuck in `queued` past
 `jobs.queued_timeout_seconds` (default 900) or `running` past
 `jobs.running_timeout_seconds` (default 300) are marked `failed`, their backend slot
-released, and a WS `failed` event emitted. These timeouts, job-record retention
-(`jobs.retention_days`, default 90; `-1` keeps rows forever), and the presigned-URL window
+released, and a WS `failed` event emitted. These timeouts and the presigned-URL window
 (`presigned.ttl_minutes`, default 60) live in the DB `config` table (editable via
 `PUT /admin/config` and the dashboard). The Redis job-state TTL is computed as
 `queued + running + 60s`.
+
+**Job-record retention is hardcoded to 30 days** (`RETENTION_DAYS` in
+`app/workers/cleanup.py`) — it is *not* operator-tunable. On its heavy sweep the
+cleanup worker rolls each whole day that has aged past 30 days into the permanent
+`job_daily_stats` table (per `day × username × engine_version × domain`: counts plus
+the processing-time distribution — avg/stddev/min/max and exact p50/p95/p99) and then
+deletes the raw `jobs`/`job_results` rows. The rollup is one advisory-locked
+transaction with `ON CONFLICT DO NOTHING`, so it is safe to re-run. Aggregated stats
+are kept forever and downloadable as CSV via `GET /dashboard/stats.csv?year=`.
 
 ## Running
 
@@ -114,7 +122,7 @@ Locally:
 
 ```bash
 make infra                     # postgres + redis + minio in Docker
-pip install -e ..              # installs taas
+pip install -e "..[api]"       # taas + web/api deps (workers need only `..`)
 alembic upgrade head           # apply migrations (config in ../alembic)
 cp ../.env.local.example ../.env.local
 uvicorn app.main:app --reload --port 8080

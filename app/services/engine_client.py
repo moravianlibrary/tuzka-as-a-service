@@ -1,4 +1,9 @@
+import time
+
 import httpx
+
+# How long a fetched engine version is trusted before re-querying the engine.
+_VERSION_CACHE_TTL_SECONDS = 300.0
 
 
 class EngineFullError(Exception):
@@ -8,9 +13,31 @@ class EngineFullError(Exception):
 class EngineClient:
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(timeout=60.0)
+        # url -> (version, fetched_at); avoids an OpenAPI fetch on every dispatch.
+        self._version_cache: dict[str, tuple[str | None, float]] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def get_version(self, url: str) -> str | None:
+        """Return the engine's reported version (`info.version` from its OpenAPI
+        schema), cached per-url for a short TTL. Best-effort: returns ``None`` if the
+        engine is unreachable or the schema lacks a version, so dispatch never fails
+        on a version lookup."""
+        cached = self._version_cache.get(url)
+        if cached and time.time() - cached[1] < _VERSION_CACHE_TTL_SECONDS:
+            return cached[0]
+
+        version: str | None = None
+        try:
+            resp = await self._client.get(f"{url}/openapi.json", timeout=5.0)
+            resp.raise_for_status()
+            version = resp.json().get("info", {}).get("version")
+        except Exception:
+            version = None
+
+        self._version_cache[url] = (version, time.time())
+        return version
 
     async def process(
         self,

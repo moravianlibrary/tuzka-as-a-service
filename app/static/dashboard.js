@@ -47,20 +47,37 @@ async function logout() {
   location.reload();
 }
 
-// Tab switching
+// Tab switching — the active tab is mirrored to ?tab= so a refresh (or a shared
+// link) reopens the same tab.
+const TABS = ["overview", "users", "jobs", "backends", "config"];
+
+function currentTabFromUrl() {
+  const t = new URLSearchParams(location.search).get("tab");
+  return TABS.includes(t) ? t : "overview";
+}
+
+function activateTab(tab, { push = false } = {}) {
+  if (!TABS.includes(tab)) tab = "overview";
+  document.querySelectorAll("#tabs button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll(".tab-content").forEach(t =>
+    t.classList.toggle("active", t.id === tab));
+  const url = `?tab=${tab}`;
+  if (push) history.pushState({ tab }, "", url);
+  else history.replaceState({ tab }, "", url);
+  loadTab(tab);
+}
+
 document.querySelectorAll("#tabs button").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("#tabs button").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById(btn.dataset.tab).classList.add("active");
-    loadTab(btn.dataset.tab);
-  });
+  btn.addEventListener("click", () => activateTab(btn.dataset.tab, { push: true }));
 });
+
+// Back/forward navigation between tabs.
+window.addEventListener("popstate", e =>
+  activateTab((e.state && e.state.tab) || currentTabFromUrl()));
 
 function loadTab(tab) {
   if (tab === "overview") loadOverview();
-  else if (tab === "usage") loadUsage();
   else if (tab === "users") loadUsers();
   else if (tab === "jobs") loadJobs();
   else if (tab === "backends") loadBackends();
@@ -74,6 +91,20 @@ function statusBadge(s) {
 // Czech locale formatting
 function fmtDate(d) {
   return d ? new Date(d).toLocaleString("cs-CZ") : "-";
+}
+
+// Wall-clock processing time of a job (started -> finished), or em-dash if it
+// never ran to completion.
+function fmtRuntime(j) {
+  if (!j.started_at || !j.finished_at) return "—";
+  const s = (new Date(j.finished_at) - new Date(j.started_at)) / 1000;
+  if (isNaN(s) || s < 0) return "—";
+  return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 // "YYYY-MM-DD" -> "DD.MM."
@@ -90,7 +121,6 @@ async function loadOverview() {
   const cards = document.getElementById("stat-cards");
   cards.innerHTML = `
     <article class="card"><h3>Total Jobs</h3><div class="value">${stats.total_jobs}</div></article>
-    <article class="card"><h3>Today</h3><div class="value">${stats.jobs_today}</div></article>
     <article class="card"><h3>Avg Duration</h3><div class="value">${stats.avg_duration_seconds ? stats.avg_duration_seconds.toFixed(1) + "s" : "-"}</div></article>
     ${Object.entries(stats.jobs_by_status).map(([k, v]) => `<article class="card"><h3>${k}</h3><div class="value">${v}</div></article>`).join("")}
   `;
@@ -100,10 +130,14 @@ async function loadOverview() {
     <td>${b.inflight_now} / ${b.max_inflight}</td>
     ${healthCell(b.healthy)}
   </tr>`).join("");
+
+  // The 30-day usage section now lives under Overview too.
+  await loadUsage();
 }
 
 // Usage (last 30 days, per user)
 async function loadUsage() {
+  populateStatsYearPicker();
   const u = await fetch("/dashboard/usage?days=30", { headers }).then(r => r.json());
   renderStatusChart(u, "status-chart");
   renderUsage(u, "usage-chart");
@@ -116,6 +150,25 @@ async function loadUsage() {
   tbody.innerHTML = totalsByUser.length
     ? totalsByUser.map(r => `<tr><td>${r.usr}</td><td>${r.total}</td></tr>`).join("")
     : `<tr><td colspan="2" class="muted">No jobs in the last 30 days.</td></tr>`;
+}
+
+// Fill the export year picker from the years that actually have data, once.
+// Defaults to the current year when present, otherwise the newest available.
+async function populateStatsYearPicker() {
+  const sel = document.getElementById("stats-year");
+  if (!sel || sel.options.length) return;
+  const { years } = await fetch("/dashboard/stats/years", { headers }).then(r => r.json());
+  const cur = new Date().getFullYear();
+  sel.innerHTML = years
+    .map(y => `<option value="${y}"${y === cur ? " selected" : ""}>${y}</option>`)
+    .join("");
+}
+
+// CSV download — the session cookie is sent automatically, so a plain navigation
+// works (no need to attach the auth header).
+function downloadStatsCsv() {
+  const year = document.getElementById("stats-year").value || new Date().getFullYear();
+  window.location = `/dashboard/stats.csv?year=${year}`;
 }
 
 // Stacked-area usage: the top-N users each get their own band (coloured along a
@@ -289,8 +342,9 @@ async function loadUsers() {
       <td class="actions">
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
         ${u.active
-          ? `<button class="btn-disable" onclick="disableUser('${u.username}')">Disable</button>`
-          : `<button class="btn-enable" onclick="enableUser('${u.username}')">Enable</button>`}
+          ? `<button class="btn-disable" onclick="setUserActive('${u.username}', false)">Disable</button>`
+          : `<button class="btn-enable" onclick="setUserActive('${u.username}', true)">Enable</button>`}
+        <button class="btn-delete" onclick="deleteUser('${u.username}')" ${s.total_jobs ? "disabled title='User still has jobs'" : ""}>Delete</button>
       </td>
     </tr>
     <tr id="limits-${u.username}" style="display:none"><td colspan="8">
@@ -332,18 +386,48 @@ async function rotateKey(username) {
   loadUsers();
 }
 
-async function disableUser(username) {
-  await fetch(`/admin/users/${username}`, { method: "DELETE", headers });
+// Enable/disable via PATCH — same mechanism as backends.
+async function setUserActive(username, active) {
+  await fetch(`/admin/users/${username}`, {
+    method: "PATCH", headers, body: JSON.stringify({ active }),
+  });
   loadUsers();
 }
 
-async function enableUser(username) {
-  await fetch(`/admin/users/${username}/enable`, { method: "POST", headers });
+async function deleteUser(username) {
+  if (!confirm(`Permanently delete user "${username}"? This cannot be undone.`)) return;
+  const resp = await fetch(`/admin/users/${username}`, { method: "DELETE", headers });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    alert(e.detail || "Delete failed");
+  }
   loadUsers();
 }
 
 // Jobs
 let jobsOffset = 0;
+let lastJobs = []; // current page, indexed by openJobDialog
+
+function openJobDialog(i) {
+  const j = lastJobs[i];
+  if (!j) return;
+  document.getElementById("job-dialog-body").innerHTML = `
+    <div class="kv"><span>Job ID</span><code>${j.job_id}</code></div>
+    <div class="kv"><span>External ID</span><code>${j.external_id || "—"}</code></div>
+    <div class="kv"><span>User</span>${j.username}</div>
+    <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
+    <div class="kv"><span>Format</span>${j.fmt}</div>
+    <div class="kv"><span>Domain</span>${j.domain || "—"}</div>
+    <div class="kv"><span>Submitted</span>${fmtDate(j.submitted_at)}</div>
+    <div class="kv"><span>Started</span>${fmtDate(j.started_at)}</div>
+    <div class="kv"><span>Finished</span>${fmtDate(j.finished_at)}</div>
+    <div class="kv"><span>Runtime</span>${fmtRuntime(j)}</div>
+    ${j.error ? `<div class="job-error"><span>Error</span><pre>${escapeHtml(j.error)}</pre></div>` : ""}`;
+  document.getElementById("job-dialog").showModal();
+}
+function closeJobDialog() {
+  document.getElementById("job-dialog").close();
+}
 function clearJobsFilters() {
   document.getElementById("jobs-filter-user").value = "";
   document.getElementById("jobs-filter-status").value = "";
@@ -357,11 +441,14 @@ async function loadJobs() {
   if (user) params.set("username", user);
   if (status) params.set("status", status);
   const data = await fetch(`/dashboard/jobs?${params}`, { headers }).then(r => r.json());
+  lastJobs = data.jobs;
   const tbody = document.getElementById("jobs-table");
-  tbody.innerHTML = data.jobs.map(j => `<tr>
+  // Rows are clickable -> full detail (incl. error) in a dialog, to keep the table
+  // compact. The Runtime column replaces the raw finished timestamp.
+  tbody.innerHTML = data.jobs.map((j, i) => `<tr class="clickable" onclick="openJobDialog(${i})">
     <td class="jobid">${j.job_id}</td>
     <td>${j.username}</td><td>${statusBadge(j.status)}</td><td>${j.fmt}</td>
-    <td>${fmtDate(j.submitted_at)}</td><td>${fmtDate(j.finished_at)}</td>
+    <td>${fmtDate(j.submitted_at)}</td><td>${fmtRuntime(j)}</td>
   </tr>`).join("");
   const pag = document.getElementById("jobs-pagination");
   const pages = Math.ceil(data.total / 50);
@@ -377,12 +464,35 @@ async function loadBackends() {
   const tbody = document.getElementById("backends-table");
   tbody.innerHTML = data.map(b => `<tr>
     <td>${b.id}</td><td>${b.url}</td><td>${b.label || "-"}</td>
-    <td>${b.enabled}</td><td>${b.max_inflight}</td><td>${b.inflight_now}</td>
+    <td>${b.enabled}</td>
+    <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px">
+      <button onclick="saveMaxInflight(${b.id})">Save</button></td>
+    <td>${b.inflight_now}</td>
     ${healthCell(b.healthy)}
     <td class="actions">${b.enabled
       ? `<button class="btn-disable" onclick="disableBackend(${b.id})">Disable</button>`
-      : `<button class="btn-enable" onclick="enableBackend(${b.id})">Enable</button>`}</td>
+      : `<button class="btn-enable" onclick="enableBackend(${b.id})">Enable</button>`}
+      <button class="btn-delete" onclick="deleteBackend(${b.id})" ${b.can_delete ? "" : "disabled title='Backend still has jobs'"}>Delete</button></td>
   </tr>`).join("");
+}
+
+async function saveMaxInflight(id) {
+  const v = parseInt(document.getElementById(`mi-${id}`).value);
+  if (!v || v < 1) { alert("Max in-flight must be ≥ 1"); return; }
+  await fetch(`/admin/backends/${id}`, {
+    method: "PATCH", headers, body: JSON.stringify({ max_inflight: v }),
+  });
+  loadBackends();
+}
+
+async function deleteBackend(id) {
+  if (!confirm(`Permanently delete backend ${id}? This cannot be undone.`)) return;
+  const resp = await fetch(`/admin/backends/${id}`, { method: "DELETE", headers });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    alert(e.detail || "Delete failed");
+  }
+  loadBackends();
 }
 
 // Disabled backends aren't probed, so healthy is null -> show a neutral dash.
@@ -427,11 +537,11 @@ const STORAGE_LABELS = {
 const POLICY_LABELS = {
   "jobs.queued_timeout_seconds": ["Queued timeout", "seconds"],
   "jobs.running_timeout_seconds": ["Running timeout", "seconds"],
-  "jobs.retention_days": ["Job record retention", "days (-1 = keep forever)"],
   "presigned.ttl_minutes": ["Presigned URL TTL", "minutes"],
 };
-// Retention accepts -1 (disable); the other policy values must be >= 1.
-const POLICY_MIN = { "jobs.retention_days": -1 };
+// Job-record retention is hardcoded to 30 days in the cleanup worker, so it is no
+// longer an operator-tunable policy.
+const POLICY_MIN = {};
 function storageLabel(k) {
   return STORAGE_LABELS[k] || k.replace(/^storage\./, "").replace(/_ttl_minutes$/, "").replace(/_/g, " ");
 }
@@ -476,4 +586,4 @@ async function saveConfig() {
 }
 
 // Initial load — verify the master key first
-ensureAuth().then(loadOverview);
+ensureAuth().then(() => activateTab(currentTabFromUrl()));

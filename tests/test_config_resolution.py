@@ -78,9 +78,7 @@ async def test_state_ttl_is_queued_plus_running_plus_margin():
 @pytest.mark.asyncio
 async def test_overrides_from_config_rows():
     cfg._cache.clear()
-    db = _FakeDB({"jobs.retention_days": 30, "presigned.ttl_minutes": 15})
-    assert await cfg.get_job_retention_days(db) == 30
-    cfg._cache.clear()
+    db = _FakeDB({"presigned.ttl_minutes": 15})
     assert await cfg.get_presigned_ttl_minutes(db) == 15
 
 

@@ -6,7 +6,6 @@ from pydantic import BaseModel
 class DashboardStats(BaseModel):
     total_jobs: int
     jobs_by_status: dict[str, int]
-    jobs_today: int
     avg_duration_seconds: float | None
 
 
@@ -16,6 +15,8 @@ class DashboardUser(BaseModel):
     done: int
     failed: int
     last_active: datetime | None
+    # No referencing jobs -> the user can be hard-deleted (else only disabled).
+    can_delete: bool = True
 
 
 class DashboardBackend(BaseModel):
@@ -26,3 +27,5 @@ class DashboardBackend(BaseModel):
     max_inflight: int
     inflight_now: int
     healthy: bool | None = None
+    # No referencing jobs -> the backend can be hard-deleted (else only disabled).
+    can_delete: bool = True

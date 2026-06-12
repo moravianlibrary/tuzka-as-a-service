@@ -50,3 +50,25 @@ form.inline :where(input, select, button), .filters :where(input, select, button
 .storage-row input { width: 90px; margin: 0; }
 .muted { color: #888; }
 td.jobid { font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: nowrap; }
+
+/* CSV export controls at the bottom of the usage tab */
+.export-row { display: flex; align-items: center; gap: 8px; margin-bottom: 32px; }
+.export-row label, .export-row button { white-space: nowrap; }
+.export-row button { width: auto; margin: 0; }
+.export-row select { width: 120px; margin: 0; }
+
+/* Clickable job rows open the detail dialog */
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #f1f3f5; }
+.btn-delete { background: #dc3545; border-color: #dc3545; color: #fff; }
+.btn-delete:hover { background: #c82333; border-color: #c82333; }
+.btn-delete:disabled { background: #e9a8ae; border-color: #e9a8ae; color: #fff; cursor: not-allowed; }
+
+/* Job detail dialog */
+#job-dialog article { min-width: 420px; max-width: 640px; }
+.kv { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid #f1f3f5; }
+.kv > span:first-child { width: 110px; flex-shrink: 0; color: #888; }
+.kv code { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+.job-error { margin-top: 10px; }
+.job-error > span { color: #888; }
+.job-error pre { white-space: pre-wrap; word-break: break-word; background: #f8d7da; color: #721c24; padding: 8px; border-radius: 4px; margin-top: 4px; }

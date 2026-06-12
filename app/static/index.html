@@ -19,7 +19,6 @@
   <div class="container">
     <nav id="tabs">
       <button class="active" data-tab="overview">Overview</button>
-      <button data-tab="usage">Usage</button>
       <button data-tab="users">Users</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="backends">Backends</button>
@@ -27,18 +26,22 @@
     </nav>
 
     <div id="overview" class="tab-content active">
+      <h2 style="margin-bottom:12px">Last 24 hours</h2>
       <div class="cards" id="stat-cards"></div>
-      <h2 style="margin-bottom:12px">Backends</h2>
+      <h2 style="margin:20px 0 12px">Backends</h2>
       <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Inflight</th><th>Health</th></tr></thead><tbody id="overview-backends"></tbody></table>
-    </div>
-
-    <div id="usage" class="tab-content">
-      <h2 style="margin-bottom:12px">Jobs by status &mdash; last 30 days</h2>
+      <h2 style="margin:20px 0 12px">Jobs by status &mdash; last 30 days</h2>
       <div id="status-chart" class="usage-chart"></div>
       <h2 style="margin:20px 0 12px">Usage per user &mdash; last 30 days</h2>
       <div id="usage-chart" class="usage-chart"></div>
-      <h2 style="margin:20px 0 12px">Totals (30 days)</h2>
+      <h2 style="margin:20px 0 12px">Totals &mdash; last 30 days</h2>
       <table><thead><tr><th>User</th><th>Jobs</th></tr></thead><tbody id="usage-users-table"></tbody></table>
+      <h2 style="margin:20px 0 12px">Export stats</h2>
+      <div class="export-row">
+        <label for="stats-year" class="muted">Export year</label>
+        <select id="stats-year"></select>
+        <button onclick="downloadStatsCsv()">Export CSV</button>
+      </div>
     </div>
 
     <div id="users" class="tab-content">
@@ -56,7 +59,7 @@
         <button onclick="jobsOffset=0;loadJobs()">Filter</button>
         <button class="secondary" onclick="clearJobsFilters()">Clear</button>
       </div>
-      <table><thead><tr><th>Job ID</th><th>User</th><th>Status</th><th>Format</th><th>Submitted</th><th>Finished</th></tr></thead><tbody id="jobs-table"></tbody></table>
+      <table><thead><tr><th>Job ID</th><th>User</th><th>Status</th><th>Format</th><th>Submitted</th><th>Runtime</th></tr></thead><tbody id="jobs-table"></tbody></table>
       <div class="pagination" id="jobs-pagination"></div>
     </div>
 
@@ -93,6 +96,13 @@
         <button onclick="copyKey(this)">Copy</button>
       </div>
       <footer><button onclick="closeKey()">Done</button></footer>
+    </article>
+  </dialog>
+  <dialog id="job-dialog">
+    <article>
+      <header><strong>Job detail</strong></header>
+      <div id="job-dialog-body"></div>
+      <footer><button onclick="closeJobDialog()">Close</button></footer>
     </article>
   </dialog>
   <script src="/static/dashboard.js"></script>
