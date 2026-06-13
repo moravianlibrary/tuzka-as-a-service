@@ -10,8 +10,15 @@ metadata:
     app.kubernetes.io/component: ocr-engine
 spec:
   serviceName: {{ $name }}
-  # Floor only; the autoscaler (HPA) owns replicas at runtime.
-  replicas: {{ $e.autoscaling.minReplicas | default 1 }}
+  {{- if eq $e.autoscaling.mode "none" }}
+  replicas: {{ $e.replicas | default 1 }}
+  {{- end }}
+  {{- /*
+    When autoscaling.mode is hpa/keda we deliberately omit spec.replicas so the
+    autoscaler is the sole owner. Declaring it (even as a "floor") makes a GitOps
+    sync or `helm upgrade` revert replicas to that value, terminating scaled-up
+    pods right after they start. The autoscaler's minReplicas is the real floor.
+  */}}
   podManagementPolicy: Parallel
   selector:
     matchLabels:
