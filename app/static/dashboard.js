@@ -93,13 +93,17 @@ function fmtDate(d) {
   return d ? new Date(d).toLocaleString("cs-CZ") : "-";
 }
 
-// Wall-clock processing time of a job (started -> finished), or em-dash if it
-// never ran to completion.
-function fmtRuntime(j) {
-  if (!j.started_at || !j.finished_at) return "—";
-  const s = (new Date(j.finished_at) - new Date(j.started_at)) / 1000;
+// Human duration between two ISO timestamps, or em-dash if either is missing.
+function fmtDuration(fromIso, toIso) {
+  if (!fromIso || !toIso) return "—";
+  const s = (new Date(toIso) - new Date(fromIso)) / 1000;
   if (isNaN(s) || s < 0) return "—";
   return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+// Total time in the system: submitted -> stored (result available).
+function fmtTimeInSystem(j) {
+  return fmtDuration(j.submitted_at, j.stored_at);
 }
 
 function escapeHtml(s) {
@@ -418,10 +422,18 @@ function openJobDialog(i) {
     <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
     <div class="kv"><span>Format</span>${j.fmt}</div>
     <div class="kv"><span>Domain</span>${j.domain || "—"}</div>
+    <hr>
     <div class="kv"><span>Submitted</span>${fmtDate(j.submitted_at)}</div>
+    <div class="kv"><span>Dispatched</span>${fmtDate(j.dispatched_at)}</div>
     <div class="kv"><span>Started</span>${fmtDate(j.started_at)}</div>
     <div class="kv"><span>Finished</span>${fmtDate(j.finished_at)}</div>
-    <div class="kv"><span>Runtime</span>${fmtRuntime(j)}</div>
+    <div class="kv"><span>Stored</span>${fmtDate(j.stored_at)}</div>
+    <hr>
+    <div class="kv"><span>Queued (taas)</span>${fmtDuration(j.submitted_at, j.dispatched_at)}</div>
+    <div class="kv"><span>Engine queue</span>${fmtDuration(j.dispatched_at, j.started_at)}</div>
+    <div class="kv"><span>OCR running</span>${fmtDuration(j.started_at, j.finished_at)}</div>
+    <div class="kv"><span>Store</span>${fmtDuration(j.finished_at, j.stored_at)}</div>
+    <div class="kv"><span>Time in system</span>${fmtDuration(j.submitted_at, j.stored_at)}</div>
     ${j.error ? `<div class="job-error"><span>Error</span><pre>${escapeHtml(j.error)}</pre></div>` : ""}`;
   document.getElementById("job-dialog").showModal();
 }
@@ -443,12 +455,12 @@ async function loadJobs() {
   const data = await fetch(`/dashboard/jobs?${params}`, { headers }).then(r => r.json());
   lastJobs = data.jobs;
   const tbody = document.getElementById("jobs-table");
-  // Rows are clickable -> full detail (incl. error) in a dialog, to keep the table
-  // compact. The Runtime column replaces the raw finished timestamp.
+  // Rows are clickable -> full lifecycle detail (incl. error) in a dialog, to keep
+  // the table compact. The table shows only submitted time + total time in system.
   tbody.innerHTML = data.jobs.map((j, i) => `<tr class="clickable" onclick="openJobDialog(${i})">
     <td class="jobid">${j.job_id}</td>
     <td>${j.username}</td><td>${statusBadge(j.status)}</td><td>${j.fmt}</td>
-    <td>${fmtDate(j.submitted_at)}</td><td>${fmtRuntime(j)}</td>
+    <td>${fmtDate(j.submitted_at)}</td><td>${fmtTimeInSystem(j)}</td>
   </tr>`).join("");
   const pag = document.getElementById("jobs-pagination");
   const pages = Math.ceil(data.total / 50);
