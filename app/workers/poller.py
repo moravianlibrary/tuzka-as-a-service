@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import redis.asyncio as aioredis
@@ -32,6 +32,20 @@ from app.services.storage import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller-worker")
+
+
+def _parse_engine_dt(value: str | None) -> datetime | None:
+    """Parse an engine ISO-8601 timestamp into a naive UTC datetime (the rest of
+    taas stores naive UTC). Returns None for missing/invalid input."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def classify_poll_result(status: str, requeues: int, max_requeues: int) -> str:
@@ -71,10 +85,10 @@ async def main() -> None:
             backend_keys[backend_id] = key
         return backend_keys[backend_id]
 
-    async def check_one(job_id: str) -> tuple[str, str, dict]:
+    async def check_one(job_id: str) -> tuple[str, str, dict, dict]:
         meta = await get_job(r, job_id)
         if not meta:
-            return (job_id, "unknown", {})
+            return (job_id, "unknown", {}, {})
 
         api_key = None
         if meta.get("backend_id"):
@@ -84,15 +98,15 @@ async def main() -> None:
             resp = await engine_client.check_status(
                 meta["backend_url"], api_key, meta["engine_job_id"]
             )
-            return (job_id, resp.get("status", "unknown"), meta)
+            return (job_id, resp.get("status", "unknown"), meta, resp)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
-            return (job_id, "unreachable", meta)
+            return (job_id, "unreachable", meta, {})
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
-            return (job_id, "error", meta)
+            return (job_id, "error", meta, {})
 
-    async def harvest(job_id: str, meta: dict) -> None:
+    async def harvest(job_id: str, meta: dict, times: dict) -> None:
         username = meta["username"]
         external_id = meta["external_id"]
         fmt = meta.get("fmt", "multi")
@@ -167,10 +181,14 @@ async def main() -> None:
                     url_key = "alto_url" if result_fmt == "alto" else "txt_url"
                     event_data[url_key] = presigned_url
 
+                done_values = {"status": "done", "stored_at": datetime.utcnow()}
+                engine_started = _parse_engine_dt(times.get("started_at"))
+                engine_finished = _parse_engine_dt(times.get("finished_at"))
+                if engine_started is not None:
+                    done_values["started_at"] = engine_started
+                done_values["finished_at"] = engine_finished or datetime.utcnow()
                 await db.execute(
-                    update(Job)
-                    .where(Job.id == job_id)
-                    .values(status="done", finished_at=datetime.utcnow())
+                    update(Job).where(Job.id == job_id).values(**done_values)
                 )
                 await db.commit()
 
@@ -206,9 +224,9 @@ async def main() -> None:
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
 
-    async def harvest_with_sem(job_id: str, meta: dict) -> None:
+    async def harvest_with_sem(job_id: str, meta: dict, times: dict) -> None:
         async with sem:
-            await harvest(job_id, meta)
+            await harvest(job_id, meta, times)
 
     logger.info("Poller worker started")
     while True:
@@ -244,11 +262,11 @@ async def main() -> None:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
 
-            for job_id, status, meta in statuses:
+            for job_id, status, meta, times in statuses:
                 requeues = int(meta.get("requeues", 0))
                 action = classify_poll_result(status, requeues, max_requeues)
                 if action == "harvest":
-                    done_jobs.append((job_id, meta))
+                    done_jobs.append((job_id, meta, times))
                 elif action == "fail":
                     if status == "unreachable":
                         err = f"engine unreachable, exceeded {max_requeues} requeue attempts"
@@ -279,7 +297,7 @@ async def main() -> None:
 
             # Harvest done jobs
             if done_jobs:
-                await asyncio.gather(*[harvest_with_sem(jid, meta) for jid, meta in done_jobs])
+                await asyncio.gather(*[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs])
 
             # Mark failed jobs
             for job_id, meta, error in failed_jobs:
