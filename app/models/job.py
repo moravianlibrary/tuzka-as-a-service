@@ -24,8 +24,10 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(default=None)
     requeues: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(default=None)
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    stored_at: Mapped[datetime | None] = mapped_column(default=None)
 
     results: Mapped[list["JobResult"]] = relationship(back_populates="job")
 
