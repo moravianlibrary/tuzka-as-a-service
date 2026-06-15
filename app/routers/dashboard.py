@@ -153,8 +153,10 @@ async def get_dashboard_jobs(
                 "fmt": j.fmt,
                 "domain": j.domain,
                 "submitted_at": j.submitted_at.isoformat() if j.submitted_at else None,
+                "dispatched_at": j.dispatched_at.isoformat() if j.dispatched_at else None,
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+                "stored_at": j.stored_at.isoformat() if j.stored_at else None,
                 "error": j.error,
             }
             for j in jobs
