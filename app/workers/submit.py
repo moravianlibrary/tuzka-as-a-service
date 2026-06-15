@@ -126,7 +126,7 @@ async def main() -> None:
                     .where(Job.id == job_id)
                     .values(
                         status="running",
-                        started_at=datetime.utcnow(),
+                        dispatched_at=datetime.utcnow(),
                         engine_job_id=engine_job_id,
                         engine_version=engine_version,
                         backend_id=backend.id,
