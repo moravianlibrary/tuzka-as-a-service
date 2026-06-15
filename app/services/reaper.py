@@ -24,7 +24,9 @@ def select_stale_jobs(jobs, now, queued_timeout, running_timeout):
     """Return [(job, reason), ...] for jobs past their phase deadline.
 
     Pure function (no I/O) so it is unit-testable. `queued` is measured from
-    `submitted_at`, `running` from `started_at` — each phase has its own clock.
+    `submitted_at`, `running` from `dispatched_at` (set when the job was handed to
+    the engine) — each phase has its own clock. A job dispatched but not yet
+    started has `dispatched_at` set, so it is still covered.
     """
     queued_cutoff = now - timedelta(seconds=queued_timeout)
     running_cutoff = now - timedelta(seconds=running_timeout)
@@ -34,8 +36,8 @@ def select_stale_jobs(jobs, now, queued_timeout, running_timeout):
             stale.append((job, f"timed out in queue after {queued_timeout}s"))
         elif (
             job.status == "running"
-            and job.started_at is not None
-            and job.started_at < running_cutoff
+            and job.dispatched_at is not None
+            and job.dispatched_at < running_cutoff
         ):
             stale.append((job, f"timed out while processing after {running_timeout}s"))
     return stale
