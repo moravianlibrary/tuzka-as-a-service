@@ -88,18 +88,18 @@ function statusBadge(s) {
   return `<span class="status status-${s}">${s}</span>`;
 }
 
-// Czech locale formatting
-function fmtDate(d) {
-  return d ? new Date(d).toLocaleString("cs-CZ") : "-";
-}
-
-// Same, with millisecond precision — used in the job detail modal where the
-// sub-second phase boundaries (dispatched/started/finished/stored) matter.
-function fmtDateMs(d) {
-  if (!d) return "-";
+// Date-time formatting: cs-CZ date + zero-padded HH:MM:SS time, rendered monospace
+// so values line up. fmtDateMs adds .mmm for the job detail modal's sub-second phases.
+function fmtDateTime(d, withMs = false) {
+  if (!d) return `<span class="mono">-</span>`;
   const dt = new Date(d);
-  return `${dt.toLocaleString("cs-CZ")}.${String(dt.getMilliseconds()).padStart(3, "0")}`;
+  const p = (n) => String(n).padStart(2, "0");
+  const time = `${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
+  const ms = withMs ? `.${String(dt.getMilliseconds()).padStart(3, "0")}` : "";
+  return `<span class="mono">${dt.toLocaleDateString("cs-CZ")} ${time}${ms}</span>`;
 }
+function fmtDate(d) { return fmtDateTime(d, false); }
+function fmtDateMs(d) { return fmtDateTime(d, true); }
 
 // Human duration between two ISO timestamps, or em-dash if either is missing.
 function fmtDuration(fromIso, toIso) {

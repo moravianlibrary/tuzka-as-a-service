@@ -25,11 +25,13 @@ function extractFn(name) {
 const ctx = { Date, Math, isNaN, String };
 vm.createContext(ctx);
 vm.runInContext(
-  `${extractFn("fmtDuration")}\n${extractFn("fmtTimeInSystem")}\n${extractFn("fmtDateMs")}\n` +
-    "this.fmtDuration = fmtDuration; this.fmtTimeInSystem = fmtTimeInSystem; this.fmtDateMs = fmtDateMs;",
+  `${extractFn("fmtDuration")}\n${extractFn("fmtTimeInSystem")}\n${extractFn("fmtDateTime")}\n` +
+    `${extractFn("fmtDate")}\n${extractFn("fmtDateMs")}\n` +
+    "this.fmtDuration = fmtDuration; this.fmtTimeInSystem = fmtTimeInSystem;" +
+    "this.fmtDate = fmtDate; this.fmtDateMs = fmtDateMs;",
   ctx,
 );
-const { fmtDuration, fmtTimeInSystem, fmtDateMs } = ctx;
+const { fmtDuration, fmtTimeInSystem, fmtDate, fmtDateMs } = ctx;
 
 // missing endpoints -> em-dash
 assert.equal(fmtDuration(null, "2026-06-15T10:00:00Z"), "—");
@@ -54,10 +56,14 @@ assert.equal(
 );
 assert.equal(fmtTimeInSystem({ submitted_at: "2026-06-15T10:00:00Z", stored_at: null }), "—");
 
-// fmtDateMs: millisecond precision (locale/TZ-independent assertions)
-assert.equal(fmtDateMs(null), "-");
-assert.ok(/\.\d{3}$/.test(fmtDateMs("2026-06-15T10:00:00.123Z")), "should end in .NNN millis");
-assert.ok(fmtDateMs("2026-06-15T10:00:00.123Z").endsWith(".123"), "millis preserved");
-assert.ok(fmtDateMs("2026-06-15T10:00:00.5Z").endsWith(".500"), "millis zero-padded to 3");
+// fmtDateMs: monospace-wrapped, zero-padded HH:MM:SS, millisecond precision.
+const strip = (s) => s.replace(/<[^>]+>/g, "");
+assert.equal(fmtDateMs(null), '<span class="mono">-</span>');
+assert.ok(fmtDateMs("2026-06-15T10:00:00.123Z").startsWith('<span class="mono">'), "wrapped in .mono");
+assert.match(strip(fmtDateMs("2026-06-15T10:00:00.123Z")), /\d{2}:\d{2}:\d{2}\.\d{3}$/, "padded HH:MM:SS.mmm");
+assert.ok(strip(fmtDateMs("2026-06-15T10:00:00.123Z")).endsWith(".123"), "millis preserved");
+assert.ok(strip(fmtDateMs("2026-06-15T10:00:00.5Z")).endsWith(".500"), "millis zero-padded to 3");
+// fmtDate: monospace, padded HH:MM:SS, no millis.
+assert.match(strip(fmtDate("2026-06-15T10:00:00Z")), /\d{2}:\d{2}:\d{2}$/, "padded HH:MM:SS, no ms");
 
 console.log("OK: dashboard formatter tests passed");

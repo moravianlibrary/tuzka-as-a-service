@@ -72,3 +72,6 @@ tr.clickable:hover { background: #f1f3f5; }
 .job-error { margin-top: 10px; }
 .job-error > span { color: #888; }
 .job-error pre { white-space: pre-wrap; word-break: break-word; background: #f8d7da; color: #721c24; padding: 8px; border-radius: 4px; margin-top: 4px; }
+
+/* Monospace date-time values (table + detail modal) so digits line up. */
+.mono { font-family: ui-monospace, monospace; white-space: nowrap; }
