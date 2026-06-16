@@ -93,6 +93,14 @@ function fmtDate(d) {
   return d ? new Date(d).toLocaleString("cs-CZ") : "-";
 }
 
+// Same, with millisecond precision — used in the job detail modal where the
+// sub-second phase boundaries (dispatched/started/finished/stored) matter.
+function fmtDateMs(d) {
+  if (!d) return "-";
+  const dt = new Date(d);
+  return `${dt.toLocaleString("cs-CZ")}.${String(dt.getMilliseconds()).padStart(3, "0")}`;
+}
+
 // Human duration between two ISO timestamps, or em-dash if either is missing.
 function fmtDuration(fromIso, toIso) {
   if (!fromIso || !toIso) return "—";
@@ -423,11 +431,11 @@ function openJobDialog(i) {
     <div class="kv"><span>Format</span>${j.fmt}</div>
     <div class="kv"><span>Domain</span>${j.domain || "—"}</div>
     <hr>
-    <div class="kv"><span>Submitted</span>${fmtDate(j.submitted_at)}</div>
-    <div class="kv"><span>Dispatched</span>${fmtDate(j.dispatched_at)}</div>
-    <div class="kv"><span>Started</span>${fmtDate(j.started_at)}</div>
-    <div class="kv"><span>Finished</span>${fmtDate(j.finished_at)}</div>
-    <div class="kv"><span>Stored</span>${fmtDate(j.stored_at)}</div>
+    <div class="kv"><span>Submitted</span>${fmtDateMs(j.submitted_at)}</div>
+    <div class="kv"><span>Dispatched</span>${fmtDateMs(j.dispatched_at)}</div>
+    <div class="kv"><span>Started</span>${fmtDateMs(j.started_at)}</div>
+    <div class="kv"><span>Finished</span>${fmtDateMs(j.finished_at)}</div>
+    <div class="kv"><span>Stored</span>${fmtDateMs(j.stored_at)}</div>
     <hr>
     <div class="kv"><span>Queued (taas)</span>${fmtDuration(j.submitted_at, j.dispatched_at)}</div>
     <div class="kv"><span>Engine queue</span>${fmtDuration(j.dispatched_at, j.started_at)}</div>

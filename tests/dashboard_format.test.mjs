@@ -22,14 +22,14 @@ function extractFn(name) {
   return src.slice(start, end);
 }
 
-const ctx = { Date, Math, isNaN };
+const ctx = { Date, Math, isNaN, String };
 vm.createContext(ctx);
 vm.runInContext(
-  `${extractFn("fmtDuration")}\n${extractFn("fmtTimeInSystem")}\n` +
-    "this.fmtDuration = fmtDuration; this.fmtTimeInSystem = fmtTimeInSystem;",
+  `${extractFn("fmtDuration")}\n${extractFn("fmtTimeInSystem")}\n${extractFn("fmtDateMs")}\n` +
+    "this.fmtDuration = fmtDuration; this.fmtTimeInSystem = fmtTimeInSystem; this.fmtDateMs = fmtDateMs;",
   ctx,
 );
-const { fmtDuration, fmtTimeInSystem } = ctx;
+const { fmtDuration, fmtTimeInSystem, fmtDateMs } = ctx;
 
 // missing endpoints -> em-dash
 assert.equal(fmtDuration(null, "2026-06-15T10:00:00Z"), "—");
@@ -53,5 +53,11 @@ assert.equal(
   "3.0s",
 );
 assert.equal(fmtTimeInSystem({ submitted_at: "2026-06-15T10:00:00Z", stored_at: null }), "—");
+
+// fmtDateMs: millisecond precision (locale/TZ-independent assertions)
+assert.equal(fmtDateMs(null), "-");
+assert.ok(/\.\d{3}$/.test(fmtDateMs("2026-06-15T10:00:00.123Z")), "should end in .NNN millis");
+assert.ok(fmtDateMs("2026-06-15T10:00:00.123Z").endsWith(".123"), "millis preserved");
+assert.ok(fmtDateMs("2026-06-15T10:00:00.5Z").endsWith(".500"), "millis zero-padded to 3");
 
 console.log("OK: dashboard formatter tests passed");
