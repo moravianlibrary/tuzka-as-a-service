@@ -42,11 +42,11 @@ them up.
 ```yaml
 ocrEngine:
   enabled: true
-  maxInflight: 4            # taas dispatch cap PER POD (keep == TUZKAOCR_MAX_QUEUE)
+  maxInflight: 2            # taas dispatch cap PER POD (keep == TUZKAOCR_MAX_QUEUE)
   autoscaling:
     mode: hpa              # none | hpa | keda
     minReplicas: 1
-    maxReplicas: 8         # also the number of backends pre-registered
+    maxReplicas: 16        # also the number of backends pre-registered
     hpa: { targetCPUUtilizationPercentage: 70, scaleDownStabilizationSeconds: 300 }
 ```
 
@@ -55,14 +55,14 @@ remote GPU box) via `POST /admin/backends`, or reverse-tunnel an off-cluster eng
 the next section).
 
 **Scaling:** `hpa` scales on CPU; `keda` scales on the Redis job-queue length
-(`autoscaling.keda.*`); `none` pins the count at `minReplicas`. Raising `maxReplicas` later
+(`autoscaling.keda.*`); `none` uses a static `ocrEngine.replicas` (default 1). Raising `maxReplicas` later
 needs a `helm upgrade` so the register hook adds the new ordinals' backends. Under a GitOps
 controller (Argo CD / Flux) the autoscaler needs a `/spec/replicas` ignore rule or scaled-up
 pods get reverted and killed — see [AUTOSCALING.md](AUTOSCALING.md).
 
 **Tuning** (`ocrEngine.env`): the recognizer is single-line, so use `OCR_THREADS=1` and
 parallelize at the line level (see `bench/DEFAULTS.md`). Defaults target a ~1-CPU pod:
-`LINE_WORKERS=1`, `PAGE_WORKERS=2` (overlap I/O), `maxInflight=4`. Keep
+`LINE_WORKERS=1`, `PAGE_WORKERS=1`, `maxInflight=2`. Keep
 `TUZKAOCR_MAX_QUEUE == maxInflight` (and both ≥ `PAGE_WORKERS`) so taas never overflows the
 engine's queue. Scale throughput by adding replicas, not threads.
 
@@ -136,12 +136,12 @@ helm upgrade --install taas ./deploy/helm/taas \
 |---|---|---|
 | `ocrEngine.enabled` | `false` | Deploy the in-cluster TuzkaOCR StatefulSet + autoscaler + per-ordinal backend registration |
 | `ocrEngine.image.repository` / `.tag` | `…/tuzkaocr` / `1.1.1` | Engine image |
-| `ocrEngine.maxInflight` | `4` | Backend concurrency **per pod** at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
-| `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=2`, `MAX_QUEUE=4`) |
+| `ocrEngine.maxInflight` | `2` | Backend concurrency **per pod** at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
+| `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=1`, `MAX_QUEUE=2`) |
 | `ocrEngine.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`) |
-| `ocrEngine.resources` | req 0.5 CPU / limit 2 CPU | Per-pod resources |
-| `ocrEngine.autoscaling.mode` | `hpa` | `none` (pin to `minReplicas`) / `hpa` (CPU) / `keda` (Redis queue length) |
-| `ocrEngine.autoscaling.{minReplicas,maxReplicas}` | `1` / `8` | Replica bounds; `maxReplicas` = number of backends pre-registered |
+| `ocrEngine.resources` | req cpu 1 / mem 1500Mi, limits cpu 1 / mem 2Gi | Per-pod resources |
+| `ocrEngine.autoscaling.mode` | `hpa` | `none` (static `ocrEngine.replicas`) / `hpa` (CPU) / `keda` (Redis queue length) |
+| `ocrEngine.autoscaling.{minReplicas,maxReplicas}` | `1` / `16` | Replica bounds; `maxReplicas` = number of backends pre-registered |
 | `ocrEngine.autoscaling.hpa.*` | 70% / 300s | HPA CPU target + scale-down stabilization window |
 | `ocrEngine.autoscaling.keda.*` | — | KEDA Redis trigger (`redisAddress`, `listName`, `listLength`) when `mode: keda` |
 
