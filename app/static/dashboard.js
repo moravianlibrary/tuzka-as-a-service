@@ -443,7 +443,7 @@ function openJobDialog(i) {
     <div class="kv"><span>Queued (taas)</span>${fmtDuration(j.submitted_at, j.dispatched_at)}</div>
     <div class="kv"><span>Engine queue</span>${fmtDuration(j.dispatched_at, j.started_at)}</div>
     <div class="kv"><span>OCR running</span>${fmtDuration(j.started_at, j.finished_at)}</div>
-    <div class="kv"><span>Store</span>${fmtDuration(j.finished_at, j.stored_at)}</div>
+    <div class="kv"><span>Harvest (poll+store)</span>${fmtDuration(j.finished_at, j.stored_at)}</div>
     <div class="kv"><span>Time in system</span>${fmtDuration(j.submitted_at, j.stored_at)}</div>
     ${j.error ? `<div class="job-error"><span>Error</span><pre>${escapeHtml(j.error)}</pre></div>` : ""}`;
   document.getElementById("job-dialog").showModal();

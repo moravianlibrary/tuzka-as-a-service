@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10
     poll_backoff_initial: float = 1.0
-    poll_backoff_max: float = 30.0
+    poll_backoff_max: float = 5.0
 
     # Compression
     zstd_compression_level: int = 3

@@ -250,7 +250,7 @@ config:
   pollerTickSeconds: "1.0"
   pollerHarvestConcurrency: "10"
   pollBackoffInitial: "1.0"
-  pollBackoffMax: "30.0"
+  pollBackoffMax: "5.0"
   zstdCompressionLevel: "3"
   wsCatchUpSeconds: "120"
   logLevel: "INFO"
