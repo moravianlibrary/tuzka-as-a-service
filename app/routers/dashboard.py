@@ -119,7 +119,11 @@ async def get_dashboard_jobs(
     """List jobs newest-first with optional username/status/from/to date filters and
     limit/offset pagination, returning the matching jobs plus the total filtered count.
     Requires a master key."""
-    query = select(Job)
+    # Outer-join the backend so we can show which engine processed each job (label
+    # falls back to url). Outer so jobs not yet dispatched (no backend_id) still appear.
+    query = select(Job, Backend.label, Backend.url).outerjoin(
+        Backend, Job.backend_id == Backend.id
+    )
     count_query = select(func.count()).select_from(Job)
 
     if username:
@@ -138,7 +142,7 @@ async def get_dashboard_jobs(
     query = query.order_by(Job.submitted_at.desc()).limit(limit).offset(offset)
 
     result = await db.execute(query)
-    jobs = result.scalars().all()
+    rows = result.all()
 
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
@@ -157,9 +161,12 @@ async def get_dashboard_jobs(
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
                 "stored_at": j.stored_at.isoformat() if j.stored_at else None,
+                "backend_id": j.backend_id,
+                "backend": backend_label or backend_url,
+                "engine_version": j.engine_version,
                 "error": j.error,
             }
-            for j in jobs
+            for j, backend_label, backend_url in rows
         ],
         "total": total,
     }

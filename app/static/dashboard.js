@@ -430,6 +430,8 @@ function openJobDialog(i) {
     <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
     <div class="kv"><span>Format</span>${j.fmt}</div>
     <div class="kv"><span>Domain</span>${j.domain || "—"}</div>
+    <div class="kv"><span>Backend</span>${j.backend || (j.backend_id ? "#" + j.backend_id : "—")}</div>
+    <div class="kv"><span>Engine version</span>${j.engine_version || "—"}</div>
     <hr>
     <div class="kv"><span>Submitted</span>${fmtDateMs(j.submitted_at)}</div>
     <div class="kv"><span>Dispatched</span>${fmtDateMs(j.dispatched_at)}</div>
