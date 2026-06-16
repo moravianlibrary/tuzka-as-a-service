@@ -53,5 +53,24 @@ spec:
         address: {{ $redisAddr | quote }}
         listName: {{ $e.autoscaling.keda.listName | quote }}
         listLength: {{ $e.autoscaling.keda.listLength | quote }}
+      {{- if $e.autoscaling.keda.redisPasswordSecret }}
+      authenticationRef:
+        name: {{ $name }}-keda-auth
+      {{- end }}
+{{- if $e.autoscaling.keda.redisPasswordSecret }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ $name }}-keda-auth
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr-engine
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: {{ $e.autoscaling.keda.redisPasswordSecret }}
+      key: {{ $e.autoscaling.keda.redisPasswordKey | default "password" }}
+{{- end }}
 {{- end }}
 {{- end }}

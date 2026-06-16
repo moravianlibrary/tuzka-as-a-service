@@ -182,6 +182,11 @@ ocrEngine:
       listLength: "5"        # ~1 replica per this many queued jobs
       pollingInterval: 15    # seconds between queue checks
       cooldownPeriod: 300    # seconds idle before scaling back toward minReplicas
+      # Set ONLY for an external password-protected Redis: the name of an existing
+      # Secret (and its key) holding the Redis password. Empty => no auth (the bundled
+      # in-cluster Redis has none).
+      redisPasswordSecret: ""
+      redisPasswordKey: "password"
 
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
