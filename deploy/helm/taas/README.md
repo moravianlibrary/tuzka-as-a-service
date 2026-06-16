@@ -19,7 +19,7 @@ for the topology and request flow.
 ```bash
 helm install taas ./deploy/helm/taas \
   --set image.registry=registry.example.com \
-  --set image.tag=0.1.0 \
+  --set image.tag=0.5.0 \
   --set secrets.masterKey=$(openssl rand -hex 16) \
   --set secrets.keyEncryptionSecret=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \
   --set secrets.postgresPassword=$(openssl rand -hex 16) \
