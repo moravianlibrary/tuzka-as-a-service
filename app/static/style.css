@@ -73,5 +73,7 @@ tr.clickable:hover { background: #f1f3f5; }
 .job-error > span { color: #888; }
 .job-error pre { white-space: pre-wrap; word-break: break-word; background: #f8d7da; color: #721c24; padding: 8px; border-radius: 4px; margin-top: 4px; }
 
-/* Monospace date-time values (table + detail modal) so digits line up. */
-.mono { font-family: ui-monospace, monospace; white-space: nowrap; }
+/* Monospace date-time values (table + detail modal) so digits line up. Match the
+   0.8rem used by the other monospace bits (.kv code, td.jobid) so they don't read
+   larger than the surrounding data. */
+.mono { font-family: ui-monospace, monospace; white-space: nowrap; font-size: 0.8rem; }
