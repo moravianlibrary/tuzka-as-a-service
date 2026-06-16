@@ -2,8 +2,18 @@ apiVersion: v1
 entries:
   taas:
   - apiVersion: v2
+    appVersion: 0.5.0
+    created: "2026-06-16T14:25:18.231693745Z"
+    description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
+    digest: 2e35cfb62086708fbbc28a6fbab21520dc220be0873c77c8a374f02dcbd2d2a5
+    name: taas
+    type: application
+    urls:
+    - https://moravianlibrary.github.io/tuzka-as-a-service/taas-0.4.0.tgz
+    version: 0.4.0
+  - apiVersion: v2
     appVersion: 0.4.0
-    created: "2026-06-12T22:56:10.772005996Z"
+    created: "2026-06-16T14:25:18.23047745Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: e0008acd5f3624776b7d793dd4b50bee2c8e890b83984c69723c362ec557870f
     name: taas
@@ -13,7 +23,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: 0.3.0
-    created: "2026-06-12T22:56:10.770875178Z"
+    created: "2026-06-16T14:25:18.229234405Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 84ae13130234cab54abd9b11740bca2b686b940f94d4febcc97aedc848f4b939
     name: taas
@@ -23,7 +33,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-06-12T22:56:10.769922624Z"
+    created: "2026-06-16T14:25:18.228221516Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 38d8f1801de7f9a9d2de32dfd359c94075554f9d0081ec4bc7249613a7abf03f
     name: taas
@@ -33,7 +43,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-06-12T22:56:10.768968528Z"
+    created: "2026-06-16T14:25:18.22629187Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 81da6025c2433c5fa4c89fa3bdfc6f0ab46e92d972c1d85cb1cde428cf531f74
     name: taas
@@ -41,4 +51,4 @@ entries:
     urls:
     - https://moravianlibrary.github.io/tuzka-as-a-service/taas-0.1.1.tgz
     version: 0.1.1
-generated: "2026-06-12T22:56:10.767908504Z"
+generated: "2026-06-16T14:25:18.225183117Z"
