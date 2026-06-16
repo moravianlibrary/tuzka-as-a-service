@@ -36,7 +36,8 @@ logger = logging.getLogger("poller-worker")
 
 def _parse_engine_dt(value: str | None) -> datetime | None:
     """Parse an engine ISO-8601 timestamp into a naive UTC datetime (the rest of
-    taas stores naive UTC). Returns None for missing/invalid input."""
+    taas stores naive UTC). Returns None for missing/invalid input. A naive engine
+    timestamp (no offset) is assumed to already be UTC and stored as-is."""
     if not value:
         return None
     try:
@@ -332,6 +333,7 @@ async def main() -> None:
                                 status="queued",
                                 engine_job_id=None,
                                 backend_id=None,
+                                dispatched_at=None,
                                 requeues=Job.requeues + 1,
                             )
                         )

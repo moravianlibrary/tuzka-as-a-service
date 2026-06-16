@@ -10,6 +10,13 @@ def test_parse_engine_dt_naive_utc_from_offset():
     assert dt.tzinfo is None
 
 
+def test_parse_engine_dt_converts_non_utc_offset_to_utc():
+    # +02:00 12:00 -> 10:00 UTC, tz stripped.
+    dt = _parse_engine_dt("2026-06-13T12:00:00+02:00")
+    assert dt == datetime(2026, 6, 13, 10, 0, 0)
+    assert dt.tzinfo is None
+
+
 def test_parse_engine_dt_handles_missing_and_invalid():
     assert _parse_engine_dt(None) is None
     assert _parse_engine_dt("") is None

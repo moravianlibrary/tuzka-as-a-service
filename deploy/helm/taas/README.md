@@ -135,7 +135,7 @@ helm upgrade --install taas ./deploy/helm/taas \
 | Key | Default | Description |
 |---|---|---|
 | `ocrEngine.enabled` | `false` | Deploy the in-cluster TuzkaOCR StatefulSet + autoscaler + per-ordinal backend registration |
-| `ocrEngine.image.repository` / `.tag` | `…/tuzkaocr` / `1.1.1` | Engine image |
+| `ocrEngine.image.repository` / `.tag` | `…/tuzkaocr` / `1.3.0` | Engine image |
 | `ocrEngine.maxInflight` | `2` | Backend concurrency **per pod** at registration (keep `== TUZKAOCR_MAX_QUEUE`) |
 | `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=1`, `MAX_QUEUE=2`) |
 | `ocrEngine.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`) |

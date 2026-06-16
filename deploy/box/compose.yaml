@@ -30,7 +30,7 @@ services:
   tuzkaocr:
     <<: *tuzkaocr-common
     profiles: ["registry"]
-    image: ${OCR_IMAGE:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.1.1}
+    image: ${OCR_IMAGE:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.3.0}
 
   # Option B — build from a local repo checkout in ./TuzkaOCR.
   tuzkaocr-build:

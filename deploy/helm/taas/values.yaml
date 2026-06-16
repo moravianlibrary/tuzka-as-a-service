@@ -129,6 +129,9 @@ minio:
 #    DNS) auto-registered as taas backends; an autoscaler sets the replica count.
 ocrEngine:
   enabled: false
+  # Static replica count, used ONLY when autoscaling.mode=none (ignored under hpa/keda,
+  # where minReplicas/maxReplicas govern). Uncomment to run a fixed pool.
+  # replicas: 1
   image:
     repository: registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr
     tag: "1.3.0"
