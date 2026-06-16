@@ -2,5 +2,5 @@ apiVersion: v2
 name: taas
 description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
 type: application
-version: 0.3.1
+version: 0.3.2
 appVersion: "0.4.0"

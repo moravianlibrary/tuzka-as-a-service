@@ -131,32 +131,46 @@ ocrEngine:
   enabled: false
   image:
     repository: registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr
-    tag: "1.1.1"
+    tag: "1.3.0"
   port: 8000
   # taas concurrent dispatch cap PER POD. Keep TUZKAOCR_MAX_QUEUE >= this.
-  maxInflight: 4
+  maxInflight: 2
   env:
     TUZKAOCR_DEVICE: "cpu"
     TUZKAOCR_OCR_THREADS: "1"
     TUZKAOCR_LINE_WORKERS: "1"
-    TUZKAOCR_PAGE_WORKERS: "2"
-    TUZKAOCR_MAX_QUEUE: "4"
+    # 1-CPU scale-out model: one page worker per 1-core pod is the most throughput-
+    # efficient shape — the engine scales poorly across cores, so per-core throughput
+    # is highest at 1 core (bench/RESULTS_POD_SHAPES.md). Scale by replicas, not pw.
+    TUZKAOCR_PAGE_WORKERS: "1"
+    TUZKAOCR_MAX_QUEUE: "2"
     # Release ORT memory between pages (see bench/ENGINE_MEMORY.md) — avoids OOM.
     TUZKAOCR_CPU_MEM_ARENA: "false"
+    # Pin native BLAS/OMP thread pools to the pod's core budget. WITHOUT these,
+    # numpy/opencv/BLAS auto-detect the NODE's full core count and spawn dozens of
+    # threads inside the pod, oversubscribing its CPU limit (bench/RESULTS_POD_SHAPES.md).
+    OMP_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    NUMEXPR_NUM_THREADS: "1"
+    VECLIB_MAXIMUM_THREADS: "1"
   storage:
     storageClassName: ""
     results: { type: memory, size: 128Mi }
     spool:   { type: memory, size: 256Mi }
+  # One core per pod (Guaranteed CPU). 1-core peak ≈ 1.3 GiB with arena off; fits 2Gi.
   resources:
-    requests: { cpu: 500m, memory: 1Gi, ephemeral-storage: 256Mi }
-    limits:   { cpu: "2",  memory: 3Gi, ephemeral-storage: 1Gi }
+    requests: { cpu: "1", memory: 1500Mi, ephemeral-storage: 256Mi }
+    limits:   { cpu: "1", memory: 2Gi,    ephemeral-storage: 1Gi }
   # Long enough to drain in-flight jobs on scale-down before SIGKILL.
   terminationGracePeriodSeconds: 120
   autoscaling:
     mode: hpa                # none | hpa | keda
     minReplicas: 1
     # Upper bound on replicas AND on the number of backend rows taas pre-registers.
-    maxReplicas: 8
+    # One core per replica — raise toward your cluster's OCR CPU budget for max
+    # throughput (throughput scales ~linearly with replica count).
+    maxReplicas: 16
     hpa:
       targetCPUUtilizationPercentage: 70
       scaleDownStabilizationSeconds: 300
