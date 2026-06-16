@@ -67,7 +67,7 @@ tr.clickable:hover { background: #f1f3f5; }
 /* Job detail dialog */
 #job-dialog article { min-width: 420px; max-width: 640px; }
 .kv { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid #f1f3f5; }
-.kv > span:first-child { width: 110px; flex-shrink: 0; color: #888; }
+.kv > span:first-child { width: 150px; flex-shrink: 0; color: #888; }
 .kv code { font-family: ui-monospace, monospace; font-size: 0.8rem; }
 .job-error { margin-top: 10px; }
 .job-error > span { color: #888; }
