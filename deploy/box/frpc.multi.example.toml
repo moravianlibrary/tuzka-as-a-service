@@ -1,0 +1,23 @@
+# Example: ONE frpc multiplexing TWO local engines (a CPU one and a GPU one) on a
+# single box. Copy to frpc.toml, edit names/ports, and mount it instead of the
+# single-engine frpc.toml. Each engine needs a UNIQUE remotePort that matches its
+# tunnelOcrEngines[].remotePort in the Helm values, and a UNIQUE name that matches
+# its tunnelOcrEngines[].name.
+serverAddr = "10.0.0.10"      # a cluster node IP (tunnel.service.nodePort host)
+serverPort = 32700
+auth.method = "token"
+auth.token = "replaceMe"      # == cluster secrets.frpToken
+
+[[proxies]]
+name = "box1-cpu"             # == tunnelOcrEngines[].name
+type = "tcp"
+localIP = "engine-cpu"        # compose service/alias of the CPU engine
+localPort = 8000
+remotePort = 8001             # == that engine's tunnelOcrEngines[].remotePort
+
+[[proxies]]
+name = "box1-gpu"
+type = "tcp"
+localIP = "engine-gpu"        # compose service/alias of the GPU engine
+localPort = 8000
+remotePort = 8002             # distinct remotePort

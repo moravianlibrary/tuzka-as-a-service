@@ -1,0 +1,37 @@
+# Example: two engines on one box — one CPU, one GPU — behind a single frpc.
+# Run: docker compose -f compose.multi.example.yaml up -d
+# (Requires nvidia-container-toolkit for the GPU service. Drop the engine-gpu
+# service + its frpc proxy for a CPU-only multi-engine box.)
+services:
+  engine-cpu:
+    image: ${OCR_IMAGE_CPU:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.3.0}
+    restart: unless-stopped
+    environment:
+      TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+      TUZKAOCR_DEVICE: cpu
+    networks: { default: { aliases: ["engine-cpu"] } }
+    expose: ["8000"]
+
+  engine-gpu:
+    image: ${OCR_IMAGE_GPU:-tuzkaocr:gpu}
+    restart: unless-stopped
+    environment:
+      TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+      TUZKAOCR_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - { driver: nvidia, count: all, capabilities: [gpu] }
+    networks: { default: { aliases: ["engine-gpu"] } }
+    expose: ["8000"]
+
+  frpc:
+    image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
+    restart: unless-stopped
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml:ro   # copy frpc.multi.example.toml -> frpc.toml
+    # No env-templating here: the multi-proxy frpc.toml is authored explicitly.
+
+networks:
+  default:

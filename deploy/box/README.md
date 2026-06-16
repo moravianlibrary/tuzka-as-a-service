@@ -78,3 +78,16 @@ Then submit a job through the taas API and confirm it returns ALTO produced on t
 - **NodePort reachability**: the node IP must be routable from the box and `nodePort`
   open in any firewall. On cloud / MetalLB, prefer `tunnel.service.type: LoadBalancer`
   and point `FRP_SERVER_ADDR`/`FRP_SERVER_PORT` at the LB.
+
+## Multiple engines on one box (CPU + GPU mix)
+
+A single box can host several engines (any CPU/GPU mix), each registered as its own
+taas backend. One `frpc` multiplexes them — one `[[proxies]]` per engine, each with a
+UNIQUE `name` and `remotePort` matching a `tunnelOcrEngines[]` entry in the Helm values.
+
+1. In the Helm values, add one `tunnelOcrEngines` entry per engine (unique `name` +
+   `remotePort`); see deploy/helm/taas/values.yaml.
+2. On the box, copy `frpc.multi.example.toml` -> `frpc.toml` and edit names/ports.
+3. Use `compose.multi.example.yaml` as a starting point (one engine service per
+   engine; GPU services carry the nvidia device reservation, CPU ones don't).
+4. `docker compose -f compose.multi.example.yaml up -d`.
