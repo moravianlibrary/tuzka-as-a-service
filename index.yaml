@@ -3,9 +3,9 @@ entries:
   taas:
   - apiVersion: v2
     appVersion: 0.5.0
-    created: "2026-06-16T14:32:59.80886378Z"
+    created: "2026-06-16T14:53:47.949844749Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
-    digest: 77a2579e96e05457f9dbb2c8b46204e07184a5e34930e963e8ff717d281476ae
+    digest: 1475b02b99f110cffa625c6a4d498d54a9d370e4cccde5cda10829edc89c77cb
     name: taas
     type: application
     urls:
@@ -13,7 +13,7 @@ entries:
     version: 0.4.0
   - apiVersion: v2
     appVersion: 0.4.0
-    created: "2026-06-16T14:32:59.80756047Z"
+    created: "2026-06-16T14:53:47.948587771Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: e0008acd5f3624776b7d793dd4b50bee2c8e890b83984c69723c362ec557870f
     name: taas
@@ -23,7 +23,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: 0.3.0
-    created: "2026-06-16T14:32:59.806407918Z"
+    created: "2026-06-16T14:53:47.947421258Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 84ae13130234cab54abd9b11740bca2b686b940f94d4febcc97aedc848f4b939
     name: taas
@@ -33,7 +33,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-06-16T14:32:59.805383358Z"
+    created: "2026-06-16T14:53:47.946478762Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 38d8f1801de7f9a9d2de32dfd359c94075554f9d0081ec4bc7249613a7abf03f
     name: taas
@@ -43,7 +43,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-06-16T14:32:59.803476612Z"
+    created: "2026-06-16T14:53:47.945553662Z"
     description: Tuzka as a Service — async OCR gateway for the TuzkaOCR engine
     digest: 81da6025c2433c5fa4c89fa3bdfc6f0ab46e92d972c1d85cb1cde428cf531f74
     name: taas
@@ -51,4 +51,4 @@ entries:
     urls:
     - https://moravianlibrary.github.io/tuzka-as-a-service/taas-0.1.1.tgz
     version: 0.1.1
-generated: "2026-06-16T14:32:59.802326994Z"
+generated: "2026-06-16T14:53:47.944465647Z"
