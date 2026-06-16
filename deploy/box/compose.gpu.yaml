@@ -1,0 +1,17 @@
+# GPU overlay for deploy/box. Adds the NVIDIA device reservation to the engine
+# services. Use only on a host with the nvidia-container-toolkit installed:
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d
+# Also set OCR_DEVICE=cuda in .env (and pick a CUDA image / Dockerfile.gpu).
+services:
+  tuzkaocr:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - { driver: nvidia, count: all, capabilities: [gpu] }
+  tuzkaocr-build:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - { driver: nvidia, count: all, capabilities: [gpu] }

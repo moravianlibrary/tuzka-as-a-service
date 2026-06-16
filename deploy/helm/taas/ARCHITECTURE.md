@@ -132,7 +132,7 @@ flowchart LR
     w --> svc --> frps
 ```
 
-Box-side setup lives in [`deploy/gpu-box/`](../../gpu-box/README.md). The only inbound
+Box-side setup lives in [`deploy/box/`](../../box/README.md). The only inbound
 the box needs is its outbound reach to the frps NodePort (or a LoadBalancer).
 
 ## Scaling & state

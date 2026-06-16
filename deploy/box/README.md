@@ -35,7 +35,7 @@ tunnelOcrEngines:
 
 ## Box side
 
-Prereqs: Docker + Compose, and (for `OCR_DEVICE=cuda`) the NVIDIA Container Toolkit.
+Prereqs: Docker + Compose.
 
 ```sh
 cp .env.example .env
@@ -43,18 +43,16 @@ cp .env.example .env
 #            OCR_API_KEY (== secrets.ocrEngineApiKey), REMOTE_PORT (== remotePort)
 ```
 
-The engine comes from one of two run modes, set by `COMPOSE_PROFILES` in `.env`:
+## Run
 
-```sh
-# Option A — prebuilt image (default, COMPOSE_PROFILES=registry):
-docker compose up -d
+CPU box (no NVIDIA toolkit required):
 
-# Option B — build from a local checkout in ./TuzkaOCR (COMPOSE_PROFILES=build):
-git clone <tuzkaocr-repo> ./TuzkaOCR      # or symlink an existing checkout
-docker compose --profile build up -d --build
+    cp .env.example .env   # fill in FRP_*, OCR_API_KEY, ENGINE_NAME, REMOTE_PORT; keep OCR_DEVICE=cpu
+    docker compose up -d
 
-docker compose logs -f frpc               # expect "start proxy success"
-```
+GPU box (needs nvidia-container-toolkit; set OCR_DEVICE=cuda and a CUDA image/Dockerfile.gpu in .env):
+
+    docker compose -f compose.yaml -f compose.gpu.yaml up -d
 
 `frpc.toml` is rendered from the `.env` (frp env templating) — don't edit it directly.
 

@@ -56,7 +56,9 @@ the next section).
 
 **Scaling:** `hpa` scales on CPU; `keda` scales on the Redis job-queue length
 (`autoscaling.keda.*`); `none` pins the count at `minReplicas`. Raising `maxReplicas` later
-needs a `helm upgrade` so the register hook adds the new ordinals' backends.
+needs a `helm upgrade` so the register hook adds the new ordinals' backends. Under a GitOps
+controller (Argo CD / Flux) the autoscaler needs a `/spec/replicas` ignore rule or scaled-up
+pods get reverted and killed — see [AUTOSCALING.md](AUTOSCALING.md).
 
 **Tuning** (`ocrEngine.env`): the recognizer is single-line, so use `OCR_THREADS=1` and
 parallelize at the line level (see `bench/DEFAULTS.md`). Defaults target a ~1-CPU pod:
@@ -148,7 +150,7 @@ helm upgrade --install taas ./deploy/helm/taas \
 For a GPU box that can dial out but accepts no inbound, run the engine off-cluster and
 reverse-tunnel it in with FRP. The chart deploys an `frps` server and exposes each tunnel
 engine as a `<release>-tunnel-engine-<name>` Service registered like any backend. Box-side
-setup: [`deploy/gpu-box/`](../../gpu-box/README.md).
+setup: [`deploy/box/`](../../box/README.md).
 
 | Key | Default | Description |
 |---|---|---|

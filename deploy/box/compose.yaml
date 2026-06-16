@@ -11,19 +11,16 @@
 # frpc runs under both profiles. The build service exposes the network alias "tuzkaocr"
 # so frpc reaches it the same way regardless of mode.
 
-# Shared engine config (both run modes). YAML merge via <<.
+# Shared engine config (both run modes). YAML merge via <<. CPU by default — the
+# NVIDIA device reservation lives in compose.gpu.yaml so a CPU-only box can run
+# `docker compose up` without the nvidia-container-toolkit. For a GPU box, add the
+# overlay: `docker compose -f compose.yaml -f compose.gpu.yaml up -d`.
 x-tuzkaocr-common: &tuzkaocr-common
   restart: unless-stopped
   environment:
     # MUST match the cluster's secrets.ocrEngineApiKey so taas can authenticate.
     TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
-    TUZKAOCR_DEVICE: ${OCR_DEVICE:-cuda}
-  # GPU access (NVIDIA). Needs nvidia-container-toolkit on the host.
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - { driver: nvidia, count: all, capabilities: [gpu] }
+    TUZKAOCR_DEVICE: ${OCR_DEVICE:-cpu}
   # No published ports: the engine is reached ONLY through the tunnel.
   expose:
     - "8000"

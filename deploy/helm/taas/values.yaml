@@ -184,7 +184,7 @@ ocrEngine:
 #    engine + an `frpc` client that dials this in-cluster `frps` server; frps re-exposes
 #    each engine's port inside the cluster, and taas consumes it as an ordinary
 #    ClusterIP Service (see `tunnelOcrEngines`). No app changes — the remoteness is
-#    transparent. Required when `tunnelOcrEngines` is non-empty. Box-side: deploy/gpu-box/.
+#    transparent. Required when `tunnelOcrEngines` is non-empty. Box-side: deploy/box/.
 tunnel:
   enabled: false
   image:
