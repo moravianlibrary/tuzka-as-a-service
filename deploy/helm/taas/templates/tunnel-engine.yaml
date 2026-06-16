@@ -11,6 +11,9 @@
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $n) }}
 {{- fail (printf "tunnelOcrEngines name %q is not a valid DNS-1123 label (lowercase alphanumeric and '-', must start/end alphanumeric)" $n) }}
 {{- end }}
+{{- if has $n $names }}
+{{- fail (printf "tunnelOcrEngines name %q is used more than once — each engine needs a unique name (it becomes a Service name)" $n) }}
+{{- end }}
 {{- $p := required (printf "tunnelOcrEngines entry %q needs a remotePort" $n) $e.remotePort }}
 {{- if has (toString $p) $ports }}
 {{- fail (printf "tunnelOcrEngines remotePort %v is used more than once — each engine needs a unique remotePort" $p) }}
