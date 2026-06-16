@@ -133,7 +133,8 @@ async function loadOverview() {
   const cards = document.getElementById("stat-cards");
   cards.innerHTML = `
     <article class="card"><h3>Total Jobs</h3><div class="value">${stats.total_jobs}</div></article>
-    <article class="card"><h3>Avg Duration</h3><div class="value">${stats.avg_duration_seconds ? stats.avg_duration_seconds.toFixed(1) + "s" : "-"}</div></article>
+    <article class="card"><h3>Avg time in system</h3><div class="value">${stats.avg_time_in_system_seconds ? stats.avg_time_in_system_seconds.toFixed(1) + "s" : "-"}</div></article>
+    <article class="card"><h3>Avg OCR running</h3><div class="value">${stats.avg_ocr_running_seconds ? stats.avg_ocr_running_seconds.toFixed(1) + "s" : "-"}</div></article>
     ${Object.entries(stats.jobs_by_status).map(([k, v]) => `<article class="card"><h3>${k}</h3><div class="value">${v}</div></article>`).join("")}
   `;
   const tbody = document.getElementById("overview-backends");

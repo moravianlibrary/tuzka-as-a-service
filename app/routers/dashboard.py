@@ -30,8 +30,9 @@ router = APIRouter(dependencies=[Depends(require_master)])
 )
 async def get_stats(db: AsyncSession = Depends(get_db)):
     """Return aggregate job stats over the **last 24 hours**: total jobs, counts by
-    status (both by submission time), and average done-job duration (by completion
-    time). Requires a master key."""
+    status (by submission time), and two averages for done jobs — OCR running time
+    (finished − started, engine clock) and total time in system (stored − submitted).
+    Requires a master key."""
     cutoff = datetime.utcnow() - timedelta(hours=24)
 
     # Total jobs submitted in the window.
@@ -48,8 +49,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
     jobs_by_status = {row[0]: row[1] for row in by_status_result.all()}
 
-    # Average duration of done jobs that finished in the window.
-    avg_result = await db.execute(
+    # Average OCR running time of done jobs that finished in the window (engine clock).
+    avg_ocr_result = await db.execute(
         select(
             func.avg(func.extract("epoch", Job.finished_at) - func.extract("epoch", Job.started_at))
         ).where(
@@ -59,12 +60,26 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
             Job.finished_at.is_not(None),
         )
     )
-    avg_duration = avg_result.scalar()
+    avg_ocr_running = avg_ocr_result.scalar()
+
+    # Average total time in system of done jobs stored in the window (submitted -> stored).
+    avg_tis_result = await db.execute(
+        select(
+            func.avg(func.extract("epoch", Job.stored_at) - func.extract("epoch", Job.submitted_at))
+        ).where(
+            Job.status == "done",
+            Job.stored_at >= cutoff,
+            Job.stored_at.is_not(None),
+            Job.submitted_at.is_not(None),
+        )
+    )
+    avg_tis = avg_tis_result.scalar()
 
     return DashboardStats(
         total_jobs=total_jobs,
         jobs_by_status=jobs_by_status,
-        avg_duration_seconds=round(avg_duration, 2) if avg_duration else None,
+        avg_ocr_running_seconds=round(avg_ocr_running, 2) if avg_ocr_running else None,
+        avg_time_in_system_seconds=round(avg_tis, 2) if avg_tis else None,
     )
 
 

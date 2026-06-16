@@ -6,7 +6,8 @@ from pydantic import BaseModel
 class DashboardStats(BaseModel):
     total_jobs: int
     jobs_by_status: dict[str, int]
-    avg_duration_seconds: float | None
+    avg_ocr_running_seconds: float | None
+    avg_time_in_system_seconds: float | None
 
 
 class DashboardUser(BaseModel):
