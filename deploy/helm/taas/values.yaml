@@ -174,10 +174,14 @@ ocrEngine:
     hpa:
       targetCPUUtilizationPercentage: 70
       scaleDownStabilizationSeconds: 300
-    keda:                    # only used when mode=keda (requires KEDA installed)
-      redisAddress: ""       # e.g. "<release>-redis:6379"
+    keda:                    # only used when mode=keda (requires the KEDA operator)
+      # Empty => the chart's in-cluster Redis (<release>-redis:<redis.port>). Set this
+      # only to point KEDA at an external Redis.
+      redisAddress: ""
       listName: "ocr-jobs"
-      listLength: "5"
+      listLength: "5"        # ~1 replica per this many queued jobs
+      pollingInterval: 15    # seconds between queue checks
+      cooldownPeriod: 300    # seconds idle before scaling back toward minReplicas
 
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR

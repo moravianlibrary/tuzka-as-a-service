@@ -27,6 +27,10 @@ spec:
     scaleDown:
       stabilizationWindowSeconds: {{ $e.autoscaling.hpa.scaleDownStabilizationSeconds }}
 {{- else if eq $e.autoscaling.mode "keda" }}
+{{- $redisAddr := $e.autoscaling.keda.redisAddress }}
+{{- if not $redisAddr }}
+{{- $redisAddr = printf "%s-redis:%v" (include "taas.fullname" .) .Values.redis.port }}
+{{- end }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -41,10 +45,12 @@ spec:
     name: {{ $name }}
   minReplicaCount: {{ $e.autoscaling.minReplicas }}
   maxReplicaCount: {{ $e.autoscaling.maxReplicas }}
+  pollingInterval: {{ $e.autoscaling.keda.pollingInterval | default 15 }}
+  cooldownPeriod: {{ $e.autoscaling.keda.cooldownPeriod | default 300 }}
   triggers:
     - type: redis
       metadata:
-        address: {{ $e.autoscaling.keda.redisAddress | quote }}
+        address: {{ $redisAddr | quote }}
         listName: {{ $e.autoscaling.keda.listName | quote }}
         listLength: {{ $e.autoscaling.keda.listLength | quote }}
 {{- end }}
