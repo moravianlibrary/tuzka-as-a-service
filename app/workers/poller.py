@@ -182,8 +182,17 @@ async def main() -> None:
                     event_data[url_key] = presigned_url
 
                 done_values = {"status": "done", "stored_at": datetime.utcnow()}
+                # Adopt the engine's own created/started/finished so the lifecycle is
+                # monotonic on a single clock: created_at (when the job reached the
+                # engine) becomes dispatched_at and is always <= started_at, so the
+                # "engine queue" span is the pure in-engine wait and never goes negative.
+                # The submit worker's dispatch-time value was only a provisional so the
+                # reaper could time out a stuck running job before harvest.
+                engine_created = _parse_engine_dt(times.get("created_at"))
                 engine_started = _parse_engine_dt(times.get("started_at"))
                 engine_finished = _parse_engine_dt(times.get("finished_at"))
+                if engine_created is not None:
+                    done_values["dispatched_at"] = engine_created
                 if engine_started is not None:
                     done_values["started_at"] = engine_started
                 done_values["finished_at"] = engine_finished or datetime.utcnow()
