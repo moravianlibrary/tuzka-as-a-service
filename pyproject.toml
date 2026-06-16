@@ -1,6 +1,6 @@
 [project]
 name = "taas"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.13"
 # Base = what the workers need (no web framework). The API/dashboard web stack is
 # the `api` extra, so the worker image stays lean: `pip install .` for workers,
