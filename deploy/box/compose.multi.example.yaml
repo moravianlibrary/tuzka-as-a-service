@@ -1,23 +1,59 @@
-# Example: two engines on one box — one CPU, one GPU — behind a single frpc.
-# Run: docker compose -f compose.multi.example.yaml up -d
-# (Requires nvidia-container-toolkit for the GPU service. Drop the engine-gpu
-# service + its frpc proxy for a CPU-only multi-engine box.)
-services:
-  engine-cpu:
-    image: ${OCR_IMAGE_CPU:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.3.0}
-    restart: unless-stopped
-    environment:
-      TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
-      TUZKAOCR_DEVICE: cpu
-    networks: { default: { aliases: ["engine-cpu"] } }
-    expose: ["8000"]
+# Example: ONE box, HYBRID layout — 1 GPU engine + N one-core CPU engines, all behind
+# a single frpc. Maximizes a GPU box that also has spare CPU cores (e.g. an RTX 5060 Ti
+# + 14-core CPU): the GPU engine does the bulk of the work; otherwise-idle cores each
+# run a 1-core CPU engine for extra throughput.
+#
+#   docker compose -f compose.multi.example.yaml up -d --build
+#
+# Requires nvidia-container-toolkit (for engine-gpu). Each engine is a SEPARATE taas
+# backend — for EACH engine add (a) a [[proxies]] block in frpc.toml (copy
+# frpc.multi.example.toml; unique name + remotePort) and (b) a tunnelOcrEngines entry
+# in the Helm values (unique name + remotePort; give the GPU one a higher max_inflight,
+# ~6-8, and each CPU one ~2).
+#
+# Core budget — pin so engines don't fight each other (14-core example):
+#   cores 0-3  -> engine-gpu's CPU-side pre/post   (cpuset "0-3")
+#   cores 4..  -> one CPU engine each, pinned       (cpuset "4", "5", …)
+#   leave 1 core for the OS + frpc.
+# Tune engine-gpu PAGE_WORKERS (2-6) via the A/B in README; VRAM ~2.3 GB/worker.
 
+# Shared config for the 1-core CPU engines (the k8s CPU-pod recipe).
+x-cpu-engine: &cpu-engine
+  image: ${OCR_IMAGE_CPU:-registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr:1.4.0}
+  restart: unless-stopped
+  environment: &cpu-env
+    TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+    TUZKAOCR_DEVICE: cpu
+    TUZKAOCR_PAGE_WORKERS: "1"
+    TUZKAOCR_OCR_THREADS: "1"
+    TUZKAOCR_LINE_WORKERS: "1"
+    TUZKAOCR_MAX_QUEUE: "2"
+    TUZKAOCR_CPU_MEM_ARENA: "false"
+    OMP_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    NUMEXPR_NUM_THREADS: "1"
+    VECLIB_MAXIMUM_THREADS: "1"
+  expose: ["8000"]
+
+services:
+  # GPU engine — builds the CUDA image locally (no GPU image in the registry yet).
   engine-gpu:
-    image: ${OCR_IMAGE_GPU:-tuzkaocr:gpu}
+    image: ${OCR_IMAGE_GPU:-tuzkaocr:gpu-local}
+    build:
+      context: ${OCR_BUILD_CONTEXT:-./TuzkaOCR}
+      dockerfile: Dockerfile.gpu
     restart: unless-stopped
+    cpuset: "0-3"                  # CPU-side pre/post — kept off the CPU engines' cores
     environment:
       TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
       TUZKAOCR_DEVICE: cuda
+      TUZKAOCR_PAGE_WORKERS: "4"   # exploit VRAM; tune 2-6 (lowest that pins GPU ~100%)
+      TUZKAOCR_OCR_THREADS: "4"    # capped so the GPU engine doesn't starve the CPU engines
+      TUZKAOCR_LINE_WORKERS: "4"
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
     deploy:
       resources:
         reservations:
@@ -26,12 +62,29 @@ services:
     networks: { default: { aliases: ["engine-gpu"] } }
     expose: ["8000"]
 
+  # CPU engines — one core each (cpuset-pinned). Duplicate for more, incrementing the
+  # cpuset core and the alias; add a matching frpc proxy + tunnelOcrEngines entry each.
+  engine-cpu-1:
+    <<: *cpu-engine
+    cpuset: "4"
+    networks: { default: { aliases: ["engine-cpu-1"] } }
+
+  engine-cpu-2:
+    <<: *cpu-engine
+    cpuset: "5"
+    networks: { default: { aliases: ["engine-cpu-2"] } }
+
+  engine-cpu-3:
+    <<: *cpu-engine
+    cpuset: "6"
+    networks: { default: { aliases: ["engine-cpu-3"] } }
+
+  # frpc multiplexes every engine above (one [[proxies]] block per engine).
   frpc:
     image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
     restart: unless-stopped
     volumes:
       - ./frpc.toml:/etc/frp/frpc.toml:ro   # copy frpc.multi.example.toml -> frpc.toml
-    # No env-templating here: the multi-proxy frpc.toml is authored explicitly.
 
 networks:
   default:
