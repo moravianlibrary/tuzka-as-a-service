@@ -11,11 +11,15 @@ from starlette.requests import Request
 from app.config import Settings
 from app.deps import get_settings
 from app.routers import admin, dashboard, jobs, ws
-from app.services import dash_session
+from app.services import dash_session, storage
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings = Settings()
+    app.state.incoming_client = storage.get_incoming_client(settings)
+    app.state.results_client = storage.get_results_client(settings)
+    app.state.results_public_client = storage.get_results_public_client(settings)
     yield
 
 
@@ -67,7 +71,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="taas",
-        version="0.5.1",
+        version="0.5.2",
         lifespan=lifespan,
         description=DESCRIPTION,
         license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},

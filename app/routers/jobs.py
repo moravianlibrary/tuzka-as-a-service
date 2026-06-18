@@ -2,7 +2,7 @@ import os
 import time
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,7 @@ router = APIRouter()
     },
 )
 async def submit_job(
+    request: Request,
     image: UploadFile = File(...),
     uuid: str = Form(...),
     fmt: str = Form("multi"),
@@ -78,7 +79,7 @@ async def submit_job(
         )
 
     # Upload to MinIO incoming
-    incoming_client = storage.get_incoming_client(settings)
+    incoming_client = request.app.state.incoming_client
     object_path = f"{username}/{external_id}{ext}"
     await storage.put_object(
         incoming_client,
@@ -172,6 +173,7 @@ async def get_job_status(
 )
 async def get_job_result(
     job_id: UUID,
+    request: Request,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -197,7 +199,7 @@ async def get_job_result(
     res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
     job_results = res.scalars().all()
 
-    results_client = storage.get_results_public_client(settings)
+    results_client = request.app.state.results_public_client
     entries = []
     from datetime import datetime
 
@@ -239,6 +241,7 @@ async def get_job_result(
 async def download_job_result(
     job_id: UUID,
     fmt: str,
+    request: Request,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -269,7 +272,7 @@ async def download_job_result(
 
     ext_map = {"alto": "xml", "txt": "txt"}
     obj_path = f"{username}/{job.external_id}.{ext_map.get(fmt, fmt)}.zst"
-    results_client = storage.get_results_client(settings)
+    results_client = request.app.state.results_client
     data = await storage.get_object(results_client, settings.minio_results_bucket, obj_path)
     return Response(content=data, media_type="application/octet-stream")
 

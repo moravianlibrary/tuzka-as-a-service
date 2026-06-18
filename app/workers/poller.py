@@ -281,7 +281,7 @@ async def main() -> None:
                     if status == "unreachable":
                         err = f"engine unreachable, exceeded {max_requeues} requeue attempts"
                     else:
-                        err = meta.get("error", "Engine error")
+                        err = times.get("error") or meta.get("error") or "Engine error"
                     failed_jobs.append((job_id, meta, err))
                 elif action == "requeue":
                     requeue_jobs.append((job_id, meta))
