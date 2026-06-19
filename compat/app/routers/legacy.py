@@ -277,6 +277,8 @@ async def download_results(
         raise HTTPException(404, "Job not found")
 
     job_data = resp.json()
+    if job_data["status"] == "failed":
+        raise HTTPException(400, detail="processing failed")
     if job_data["status"] != "done":
         raise HTTPException(400, detail="not processed yet")
 
