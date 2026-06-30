@@ -8,6 +8,9 @@ class BackendCreate(BaseModel):
     label: str | None = None
     api_key: str | None = None
     max_inflight: int = 4
+    priority: int = 0
+    device: str = "cpu"
+    managed: bool = False
 
 
 class BackendUpdate(BaseModel):
@@ -16,6 +19,9 @@ class BackendUpdate(BaseModel):
     api_key: str | None = None
     max_inflight: int | None = None
     enabled: bool | None = None
+    priority: int | None = None
+    device: str | None = None
+    managed: bool | None = None
 
 
 class BackendResponse(BaseModel):
@@ -24,4 +30,7 @@ class BackendResponse(BaseModel):
     label: str | None
     enabled: bool
     max_inflight: int
+    priority: int = 0
+    device: str = "cpu"
+    managed: bool = False
     created_at: datetime

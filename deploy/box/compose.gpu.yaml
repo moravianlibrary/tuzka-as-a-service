@@ -15,3 +15,11 @@ services:
         reservations:
           devices:
             - { driver: nvidia, count: all, capabilities: [gpu] }
+
+  # NVIDIA GPU metrics, scraped by the cluster Prometheus through the frpc tunnel
+  # (see FRP_GPU_EXPORTER_REMOTE_PORT). Only present when this overlay is active.
+  gpu-exporter:
+    image: ${GPU_EXPORTER_IMAGE:-utkuozdemir/nvidia_gpu_exporter:1.2.1}
+    runtime: nvidia
+    restart: unless-stopped
+    expose: ["9835"]

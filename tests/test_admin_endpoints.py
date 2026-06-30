@@ -1,12 +1,12 @@
 """Integration tests for the guarded hard-delete endpoints and the CSV export.
 
-Like test_stats_rollup, these need a throwaway migrated Postgres via
+Like the other DB-backed tests, these need a throwaway migrated Postgres via
 ``TEST_DATABASE_URL`` and skip otherwise.
 """
 
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.routers.admin import delete_backend, delete_user
 from app.routers.dashboard import download_stats_csv
+from app.services.analytics import write_analytics_row
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -35,8 +36,8 @@ async def session():
     async with factory() as s:
         await s.execute(
             text(
-                "TRUNCATE job_results, jobs, job_daily_stats, backends, users "
-                "RESTART IDENTITY CASCADE"
+                "TRUNCATE job_analytics, backend_domains, domains, engine_versions, "
+                "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
             )
         )
         await s.commit()
@@ -107,26 +108,43 @@ async def test_delete_backend_blocked_then_allowed(session):
 
 
 @pytest.mark.asyncio
-async def test_stats_csv_unions_history_and_live(session):
+async def test_stats_csv_aggregates_job_analytics(session):
     year = datetime.utcnow().year
-    # Historical rolled-up row.
-    await session.execute(
-        text(
-            "INSERT INTO job_daily_stats (stat_date, username, engine_version, domain, "
-            "jobs_total, jobs_done, jobs_failed, requeues_total, proc_count) "
-            f"VALUES (DATE '{year}-01-15', 'hist', '1.0.0', 'default', 5, 5, 0, 0, 5)"
-        )
-    )
-    # Live recent job (still in jobs table) in the same year.
+    submitted = datetime(year, 1, 15, 12, 0, 0)
     await _user(session, "alice")
     await _backend(session, 1)
-    await _job_for(session, "alice", 1)
+    # Two done jobs (durations 4s and 6s) + one failed, same user/engine/domain/day.
+    for dur in (4, 6):
+        await write_analytics_row(
+            session,
+            job_id=uuid.uuid4(), external_id=uuid.uuid4(), submitted_at=submitted,
+            username="alice", engine_version="1.0.0", engine_device="gpu", backend_id=1,
+            domain="default", fmt="multi", status="done", file_size_bytes=1000,
+            dispatched_at=submitted, engine_received_at=submitted, started_at=submitted,
+            finished_at=submitted + timedelta(seconds=dur), stored_at=submitted + timedelta(seconds=dur),
+        )
+    await write_analytics_row(
+        session,
+        job_id=uuid.uuid4(), external_id=uuid.uuid4(), submitted_at=submitted,
+        username="alice", engine_version="1.0.0", engine_device="gpu", backend_id=1,
+        domain="default", fmt="multi", status="failed", file_size_bytes=1000,
+        dispatched_at=None, engine_received_at=None, started_at=None, finished_at=None, stored_at=None,
+    )
     await session.commit()
 
     resp = await download_stats_csv(year=year, db=session)
     chunks = [c async for c in resp.body_iterator]
     body = "".join(c if isinstance(c, str) else c.decode() for c in chunks)
 
-    assert "stat_date,username,engine_version,domain" in body
-    assert "hist" in body   # historical rollup row
-    assert "alice" in body  # freshly aggregated live row
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    assert lines[0].startswith("stat_date,username,engine_version,domain")
+    # One aggregated row for (alice, 1.0.0, default) on the day.
+    data = [ln for ln in lines[1:] if "alice" in ln]
+    assert len(data) == 1
+    cols = data[0].split(",")
+    # jobs_total, jobs_done, jobs_failed, proc_count, proc_avg_seconds
+    assert cols[4] == "3"   # jobs_total
+    assert cols[5] == "2"   # jobs_done
+    assert cols[6] == "1"   # jobs_failed
+    assert cols[7] == "2"   # proc_count (only the two done jobs have a duration)
+    assert float(cols[8]) == pytest.approx(5.0)  # proc_avg_seconds = (4+6)/2

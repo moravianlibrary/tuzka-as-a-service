@@ -14,6 +14,8 @@ class User(Base):
     hashed_key: Mapped[str] = mapped_column(nullable=False)
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    priority: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
+    external_url_template: Mapped[str | None] = mapped_column(default=None)
 
     # Rate limit overrides; NULL = inherit the default from the config table
     rate_submit_per_minute: Mapped[int | None] = mapped_column(nullable=True)

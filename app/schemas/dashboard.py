@@ -27,6 +27,13 @@ class DashboardBackend(BaseModel):
     enabled: bool
     max_inflight: int
     inflight_now: int
+    priority: int = 0
+    device: str = "cpu"
+    # True for backends owned by the Helm deploy (upserted on each deploy); shown as a
+    # badge so operators know manual edits are transient.
+    managed: bool = False
     healthy: bool | None = None
+    # Domains this backend currently serves (from GET /api/v1/models on each healthcheck).
+    domains: list[str] = []
     # No referencing jobs -> the backend can be hard-deleted (else only disabled).
     can_delete: bool = True

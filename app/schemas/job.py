@@ -10,6 +10,14 @@ class JobSubmitResponse(BaseModel):
     status: str
 
 
+def render_external_url(template: str | None, external_id) -> str | None:
+    """Resolve a user's ``external_url_template`` for a job by substituting ``{uuid}``
+    with the job's ``external_id``. Returns ``None`` when no template is configured."""
+    if not template or external_id is None:
+        return None
+    return template.replace("{uuid}", str(external_id))
+
+
 class JobStatus(BaseModel):
     job_id: UUID
     external_id: UUID
@@ -20,6 +28,7 @@ class JobStatus(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    external_url: str | None = None
 
 
 class JobResultEntry(BaseModel):

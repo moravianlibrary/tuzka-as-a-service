@@ -34,3 +34,10 @@ clients/java/target/
 .ruff_cache/
 *.log
 test.jpg
+
+# Benchmark run output (generated; large)
+bench/matrix_out/
+bench/matrix_clean_out/
+
+# Claude Code working memory (not project files)
+memory/

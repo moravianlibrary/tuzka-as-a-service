@@ -1,0 +1,23 @@
+# frpc config: two reverse tunnels (GPU + CPU engine) over one control connection.
+# serverAddr/token are rendered by frp from env (see compose.yaml / .env); the proxies
+# are static. Each remotePort MUST match a tunnelBoxes[].engines[].remotePort in
+# deploy/local/values.local.yaml, and localIP is the compose service name of the engine.
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+[[proxies]]
+name = "gpu1"
+type = "tcp"
+localIP = "tuzkaocr-gpu"
+localPort = 8000
+remotePort = 8000        # == tunnelBoxes box1/gpu1 remotePort
+
+[[proxies]]
+name = "cpu1"
+type = "tcp"
+localIP = "tuzkaocr-cpu"
+localPort = 8000
+remotePort = 8001        # == tunnelBoxes box1/cpu1 remotePort

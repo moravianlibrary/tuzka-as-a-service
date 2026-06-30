@@ -49,7 +49,7 @@ async function logout() {
 
 // Tab switching — the active tab is mirrored to ?tab= so a refresh (or a shared
 // link) reopens the same tab.
-const TABS = ["overview", "users", "jobs", "backends", "config"];
+const TABS = ["overview", "users", "jobs", "backends", "analytics", "config"];
 
 function currentTabFromUrl() {
   const t = new URLSearchParams(location.search).get("tab");
@@ -81,6 +81,7 @@ function loadTab(tab) {
   else if (tab === "users") loadUsers();
   else if (tab === "jobs") loadJobs();
   else if (tab === "backends") loadBackends();
+  else if (tab === "analytics") loadAnalytics();
   else if (tab === "config") loadConfig();
 }
 
@@ -119,6 +120,22 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// Only http(s) URLs are safe as a link href — a user's external_url_template is
+// admin-set free text, so reject javascript:/data: etc. (escapeHtml doesn't stop them).
+function isHttpUrl(u) {
+  return typeof u === "string" && /^https?:\/\//i.test(u);
+}
+
+// Render an error response body's `detail` as a readable string. FastAPI 422s return
+// detail as an array of {loc,msg,...}; a plain `${e.detail}` would show "[object Object]".
+function errText(e, fallback = "Request failed") {
+  const d = e && e.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map(x => (x && x.msg) || JSON.stringify(x)).join("; ");
+  if (d) return JSON.stringify(d);
+  return fallback;
+}
+
 // "YYYY-MM-DD" -> "DD.MM."
 function dayLabel(day) {
   return `${day.slice(8, 10)}.${day.slice(5, 7)}.`;
@@ -139,7 +156,8 @@ async function loadOverview() {
   `;
   const tbody = document.getElementById("overview-backends");
   tbody.innerHTML = backends.map(b => `<tr>
-    <td>${b.id}</td><td>${b.url}</td><td>${b.label || "-"}</td>
+    <td>${b.id}</td><td>${escapeHtml(b.url)}</td><td>${escapeHtml(b.label || "-")}${managedBadge(b.managed)}</td>
+    <td>${escapeHtml(b.device)}</td><td>${b.priority}</td>
     <td>${b.inflight_now} / ${b.max_inflight}</td>
     ${healthCell(b.healthy)}
   </tr>`).join("");
@@ -161,7 +179,7 @@ async function loadUsage() {
     .sort((a, b) => b.total - a.total);
   const tbody = document.getElementById("usage-users-table");
   tbody.innerHTML = totalsByUser.length
-    ? totalsByUser.map(r => `<tr><td>${r.usr}</td><td>${r.total}</td></tr>`).join("")
+    ? totalsByUser.map(r => `<tr><td>${escapeHtml(r.usr)}</td><td>${r.total}</td></tr>`).join("")
     : `<tr><td colspan="2" class="muted">No jobs in the last 30 days.</td></tr>`;
 }
 
@@ -347,10 +365,12 @@ async function loadUsers() {
         <td><input type="number" min="0" data-field="${b}" value="${u[b] ?? ""}" placeholder="inherit" style="width:90px"></td></tr>`).join("")}</tbody>
     </table>`;
     return `<tr>
-      <td>${u.username}</td>
+      <td>${escapeHtml(u.username)}</td>
       <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
+      <td><input type="number" value="${u.priority ?? 0}" id="prio-${u.username}" style="width:70px">
+        <button onclick="savePriority('${u.username}')">Save</button></td>
       <td class="actions"><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
       <td class="actions">
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
@@ -360,7 +380,7 @@ async function loadUsers() {
         <button class="btn-delete" onclick="deleteUser('${u.username}')" ${s.total_jobs ? "disabled title='User still has jobs'" : ""}>Delete</button>
       </td>
     </tr>
-    <tr id="limits-${u.username}" style="display:none"><td colspan="8">
+    <tr id="limits-${u.username}" style="display:none"><td colspan="9">
       ${editor}
       <button onclick="saveLimits('${u.username}')">Save limits</button>
       <span class="muted">(empty = inherit default)</span>
@@ -382,10 +402,28 @@ async function saveLimits(username) {
   loadUsers();
 }
 
+async function savePriority(username) {
+  const v = parseInt(document.getElementById(`prio-${username}`).value);
+  if (Number.isNaN(v)) { alert("Priority must be a number"); return; }
+  const resp = await fetch(`/admin/users/${username}`, {
+    method: "PATCH", headers, body: JSON.stringify({ priority: v }),
+  });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    alert(e.detail || "Failed to set priority");
+  }
+  loadUsers();
+}
+
 document.getElementById("add-user-form").addEventListener("submit", async e => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const resp = await fetch("/admin/users", { method: "POST", headers, body: JSON.stringify({ username: fd.get("username") }) });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || "Failed to create user");
+    return;
+  }
   const data = await resp.json();
   if (data.api_key) showKey(`API key for ${fd.get("username")}`, data.api_key);
   e.target.reset();
@@ -427,21 +465,23 @@ function openJobDialog(i) {
   document.getElementById("job-dialog-body").innerHTML = `
     <div class="kv"><span>Job ID</span><code>${j.job_id}</code></div>
     <div class="kv"><span>External ID</span><code>${j.external_id || "—"}</code></div>
-    <div class="kv"><span>User</span>${j.username}</div>
+    ${isHttpUrl(j.external_url) ? `<div class="kv"><span>Catalog</span><a href="${escapeHtml(j.external_url)}" target="_blank" rel="noopener">Open in catalog ↗</a></div>` : (j.external_url ? `<div class="kv"><span>Catalog</span><code>${escapeHtml(j.external_url)}</code></div>` : "")}
+    <div class="kv"><span>User</span>${escapeHtml(j.username)}</div>
     <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
-    <div class="kv"><span>Format</span>${j.fmt}</div>
-    <div class="kv"><span>Domain</span>${j.domain || "—"}</div>
-    <div class="kv"><span>Backend</span>${j.backend || (j.backend_id ? "#" + j.backend_id : "—")}</div>
-    <div class="kv"><span>Engine version</span>${j.engine_version || "—"}</div>
+    <div class="kv"><span>Format</span>${escapeHtml(j.fmt)}</div>
+    <div class="kv"><span>Domain</span>${j.domain ? escapeHtml(j.domain) : "—"}</div>
+    <div class="kv"><span>Backend</span>${j.backend ? escapeHtml(j.backend) : (j.backend_id ? "#" + j.backend_id : "—")}</div>
+    <div class="kv"><span>Engine version</span>${j.engine_version ? escapeHtml(j.engine_version) : "—"}</div>
     <hr>
     <div class="kv"><span>Submitted</span>${fmtDateMs(j.submitted_at)}</div>
     <div class="kv"><span>Dispatched</span>${fmtDateMs(j.dispatched_at)}</div>
+    <div class="kv"><span>Engine received</span>${fmtDateMs(j.engine_received_at)}</div>
     <div class="kv"><span>Started</span>${fmtDateMs(j.started_at)}</div>
     <div class="kv"><span>Finished</span>${fmtDateMs(j.finished_at)}</div>
     <div class="kv"><span>Stored</span>${fmtDateMs(j.stored_at)}</div>
     <hr>
     <div class="kv"><span>Queued (taas)</span>${fmtDuration(j.submitted_at, j.dispatched_at)}</div>
-    <div class="kv"><span>Engine queue</span>${fmtDuration(j.dispatched_at, j.started_at)}</div>
+    <div class="kv"><span>Engine queue</span>${fmtDuration(j.engine_received_at, j.started_at)}</div>
     <div class="kv"><span>OCR running</span>${fmtDuration(j.started_at, j.finished_at)}</div>
     <div class="kv"><span>Harvest (poll+store)</span>${fmtDuration(j.finished_at, j.stored_at)}</div>
     <div class="kv"><span>Time in system</span>${fmtDuration(j.submitted_at, j.stored_at)}</div>
@@ -470,7 +510,7 @@ async function loadJobs() {
   // the table compact. The table shows only submitted time + total time in system.
   tbody.innerHTML = data.jobs.map((j, i) => `<tr class="clickable" onclick="openJobDialog(${i})">
     <td class="jobid">${j.job_id}</td>
-    <td>${j.username}</td><td>${statusBadge(j.status)}</td><td>${j.fmt}</td>
+    <td>${escapeHtml(j.username)}</td><td>${statusBadge(j.status)}</td><td>${escapeHtml(j.fmt)}</td>
     <td>${fmtDate(j.submitted_at)}</td><td>${fmtTimeInSystem(j)}</td>
   </tr>`).join("");
   const pag = document.getElementById("jobs-pagination");
@@ -486,7 +526,9 @@ async function loadBackends() {
   const data = await fetch("/dashboard/backends", { headers }).then(r => r.json());
   const tbody = document.getElementById("backends-table");
   tbody.innerHTML = data.map(b => `<tr>
-    <td>${b.id}</td><td>${b.url}</td><td>${b.label || "-"}</td>
+    <td>${b.id}</td><td>${escapeHtml(b.url)}</td><td>${escapeHtml(b.label || "-")}${managedBadge(b.managed)}</td>
+    <td>${escapeHtml(b.device)}</td><td>${b.priority}</td>
+    <td>${(b.domains && b.domains.length) ? b.domains.map(escapeHtml).join(", ") : "—"}</td>
     <td>${b.enabled}</td>
     <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px">
       <button onclick="saveMaxInflight(${b.id})">Save</button></td>
@@ -524,13 +566,27 @@ function healthCell(healthy) {
   return `<td class="${healthy ? "health-ok" : "health-bad"}">${healthy ? "OK" : "DOWN"}</td>`;
 }
 
+// Badge marking a backend as owned by the Helm deploy (upserted on each deploy);
+// manual edits to these are reverted on the next deploy.
+function managedBadge(managed) {
+  if (!managed) return "";
+  return ` <span title="Registered + updated by the Helm deploy; manual edits are reverted on next deploy"
+    style="background:#2d6cdf;color:#fff;border-radius:3px;padding:1px 5px;font-size:11px;margin-left:6px">deploy</span>`;
+}
+
 document.getElementById("add-backend-form").addEventListener("submit", async e => {
   e.preventDefault();
   const fd = new FormData(e.target);
-  await fetch("/admin/backends", { method: "POST", headers, body: JSON.stringify({
+  const resp = await fetch("/admin/backends", { method: "POST", headers, body: JSON.stringify({
     url: fd.get("url"), label: fd.get("label") || null,
     api_key: fd.get("api_key") || null, max_inflight: parseInt(fd.get("max_inflight")) || 4,
+    priority: parseInt(fd.get("priority")) || 0, device: fd.get("device") || "cpu",
   })});
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || "Failed to create backend");
+    return;
+  }
   e.target.reset();
   loadBackends();
 });
@@ -606,6 +662,91 @@ async function saveConfig() {
   });
   await fetch("/admin/config", { method: "PUT", headers, body: JSON.stringify(values) });
   alert("Saved");
+}
+
+// Analytics
+let anPage = 1;
+
+function clearAnalytics() {
+  document.getElementById("an-from").value = "";
+  document.getElementById("an-to").value = "";
+  document.getElementById("an-gran").value = "day";
+  document.getElementById("an-user").value = "";
+  document.getElementById("an-domain").value = "";
+  document.getElementById("an-engine").value = "";
+  document.getElementById("an-device").value = "";
+  anPage = 1;
+  loadAnalytics();
+}
+
+async function loadAnalytics() {
+  const params = new URLSearchParams({ page: anPage });
+  const from_date = document.getElementById("an-from").value;
+  const to_date   = document.getElementById("an-to").value;
+  const gran      = document.getElementById("an-gran").value;
+  const user      = document.getElementById("an-user").value;
+  const domain    = document.getElementById("an-domain").value;
+  const engine    = document.getElementById("an-engine").value;
+  const device    = document.getElementById("an-device").value;
+  // Default: last 30 days. The <input type="date"> "To" is a date-only value (midnight),
+  // so extend it to end-of-day — otherwise the whole selected final day is excluded.
+  const now = new Date();
+  params.set("from_date", from_date || new Date(now - 30 * 86400000).toISOString());
+  params.set("to_date",   to_date ? to_date + "T23:59:59.999999" : now.toISOString());
+  params.set("granularity", gran);
+  if (user)   params.set("username", user);
+  if (domain) params.set("domain", domain);
+  if (engine) params.set("engine_version", engine);
+  if (device) params.set("engine_device", device);
+
+  const resp = await fetch(`/dashboard/analytics/breakdown?${params}`, { headers });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    document.getElementById("analytics-body").innerHTML =
+      `<tr><td colspan="12" class="muted">${escapeHtml(errText(e, "Query failed"))}</td></tr>`;
+    return;
+  }
+  const data = await resp.json();
+  const tbody = document.getElementById("analytics-body");
+  const fmt = v => (v == null ? "—" : v.toFixed ? v.toFixed(1) : v);
+  tbody.innerHTML = data.rows.length
+    ? data.rows.map(r => `<tr>
+        <td class="mono">${r.time_bucket ? r.time_bucket.slice(0, 16).replace("T", " ") : "—"}</td>
+        <td>${r.username ? escapeHtml(r.username) : "—"}</td>
+        <td>${r.engine_version ? escapeHtml(r.engine_version) : "—"}</td>
+        <td>${r.engine_device ? escapeHtml(r.engine_device) : "—"}</td>
+        <td>${r.domain ? escapeHtml(r.domain) : "—"}</td>
+        <td>${r.jobs_total}</td><td>${r.jobs_done}</td><td>${r.jobs_failed}</td>
+        <td>${fmt(r.proc_avg_s)}</td><td>${fmt(r.proc_p95_s)}</td>
+        <td>${fmt(r.avg_alto_lines)}</td><td>${fmt(r.avg_alto_chars)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="12" class="muted">No data for the selected filters.</td></tr>`;
+
+  const pag = document.getElementById("analytics-pagination");
+  const hasPrev = anPage > 1;
+  const hasNext = data.has_next;
+  pag.innerHTML = (hasPrev ? `<button onclick="anPage=${anPage-1};loadAnalytics()">‹ Prev</button>` : "")
+    + ` Page ${anPage} `
+    + (hasNext ? `<button onclick="anPage=${anPage+1};loadAnalytics()">Next ›</button>` : "");
+}
+
+function downloadAnalyticsCsv() {
+  const params = new URLSearchParams();
+  const from_date = document.getElementById("an-from").value;
+  const to_date   = document.getElementById("an-to").value;
+  const user      = document.getElementById("an-user").value;
+  const domain    = document.getElementById("an-domain").value;
+  const engine    = document.getElementById("an-engine").value;
+  const device    = document.getElementById("an-device").value;
+  const now = new Date();
+  params.set("from_date", from_date || new Date(now - 30 * 86400000).toISOString());
+  // End-of-day so the selected final day is included (see loadAnalytics).
+  params.set("to_date",   to_date ? to_date + "T23:59:59.999999" : now.toISOString());
+  if (user)   params.set("username", user);
+  if (domain) params.set("domain", domain);
+  if (engine) params.set("engine_version", engine);
+  if (device) params.set("engine_device", device);
+  window.location = `/dashboard/analytics/raw.csv?${params}`;
 }
 
 // Initial load — verify the master key first

@@ -1,0 +1,103 @@
+# Helm overrides for a LOCAL end-to-end test on k3d, with a REAL TuzkaOCR engine
+# running on the host (in deploy/local/engine-proxy/) and reached through the
+# in-cluster frps reverse-tunnel proxy.
+#
+#   helm install taas ./deploy/helm/taas -f deploy/local/values.local.yaml
+#
+# All secrets here are throwaway TEST values; they only need to MATCH the box-side
+# .env in deploy/local/engine-proxy/.env (frpToken + ocrEngineApiKey).
+
+image:
+  tag: "latest"
+  # Images are built locally and imported into k3d, so never try to pull them.
+  pullPolicy: IfNotPresent
+
+# Trim requests so the whole stack fits comfortably on a laptop.
+api:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+worker:
+  resources:
+    requests: { cpu: 50m,  memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+workers:
+  submit:  { replicaCount: 1 }
+  poller:  { replicaCount: 1 }
+  cleanup: { replicaCount: 1 }
+
+compat:
+  enabled: true
+  replicaCount: 1
+
+cnpg:
+  instances: 1
+  storage:
+    size: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+minio:
+  region: eu-central-1
+  incoming:
+    storage: { size: 2Gi }
+  results:
+    storage: { size: 2Gi }
+    # Presigned result URLs are SigV4-signed against THIS host. The test client runs
+    # on your host and reaches the results bucket via `kubectl port-forward` on 9100,
+    # so the signature must be computed for localhost:9100 (see README verify step).
+    publicUrl: "http://localhost:9100"
+
+# We run NO in-cluster engine; the real engine lives on the host and is tunneled in.
+ocrEngine:
+  enabled: false
+
+# --- The reverse-tunnel proxy: real engine on the host, transparent in-cluster ---
+tunnel:
+  enabled: true
+  service:
+    type: NodePort
+    # k3d maps host localhost:32700 -> this NodePort (see setup.sh cluster create).
+    nodePort: 32700
+
+tunnelBoxesDefaults:
+  port: 8000
+  # Small caps so prioritization/spill is easy to observe: the high-priority GPU
+  # backend fills (maxInflight) before jobs spill to the CPU backend.
+  maxInflight: 2
+
+# One box with two host engines tunneled in as two backends, to test heterogeneous
+# dispatch + backend prioritization. remotePorts MUST match the frpc proxies in
+# engine-proxy/.
+tunnelBoxes:
+  - name: box1
+    engines:
+      - name: gpu1
+        remotePort: 8000
+        device: gpu
+        priority: 10     # preferred — jobs go here until maxInflight, then spill to cpu1
+      - name: cpu1
+        remotePort: 8001
+        device: cpu
+        priority: 0
+
+# Throwaway test secrets. frpToken + ocrEngineApiKey MUST match engine-proxy/.env.
+secrets:
+  masterKey: "test-master-key"
+  keyEncryptionSecret: "2bn3JCnUdwtXUSesg0YllMR47VWV4R_DcTt9p57Fy1A="
+  postgresPassword: "test-pg-pass"
+  minioIncomingAccessKey: "minioincoming"
+  minioIncomingSecretKey: "test-incoming-secret"
+  minioResultsAccessKey: "minioresults"
+  minioResultsSecretKey: "test-results-secret"
+  ocrEngineApiKey: "test-engine-key"
+  frpToken: "test-frp-token"
+
+# Keep everything ClusterIP; access from the host is via `kubectl port-forward`.
+expose:
+  api:            { kind: none }
+  legacy:         { kind: none }
+  adminDashboard: { kind: none }

@@ -1,0 +1,33 @@
+{{- if and .Values.tunnelBoxes .Values.metrics.serviceMonitor.enabled }}
+{{- /* One ServiceMonitor per box exporter. Requires the Prometheus Operator (the
+       monitoring.coreos.com/v1 ServiceMonitor CRD). Without the Operator, leave
+       metrics.serviceMonitor.enabled=false and scrape the exporter Services with a
+       static scrape_config instead (see helm/taas/README.md). */}}
+{{- include "taas.validateTunnelBoxes" . }}
+{{- $sm := .Values.metrics.serviceMonitor }}
+{{- range $box := .Values.tunnelBoxes }}
+{{- range $x := ($box.exporters | default list) }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "taas.tunnelExporterService" (dict "root" $ "box" $box.name "exporter" $x.name) }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-box-exporter
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: tunnel-box-exporter
+      taas.mzk.cz/box: {{ $box.name }}
+      taas.mzk.cz/exporter: {{ $x.name }}
+  endpoints:
+    - port: metrics
+      interval: {{ $sm.interval }}
+{{- end }}
+{{- end }}
+{{- end }}

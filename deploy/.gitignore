@@ -2,3 +2,6 @@
 *.tgz
 charts/
 rendered/
+
+# Local test user keys (seeded by deploy/local/seed-users.sh)
+local/.users.env

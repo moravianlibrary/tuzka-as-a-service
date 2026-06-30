@@ -1,4 +1,4 @@
-{{- if or .Values.ocrEngine.enabled .Values.tunnelOcrEngines }}
+{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes }}
 {{- $e := .Values.ocrEngine }}
 {{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: batch/v1
@@ -41,22 +41,26 @@ spec:
               {{- range $i := until $max }}
               URL="http://{{ $name }}-{{ $i }}.{{ $name }}:{{ $e.port }}"
               echo "registering ocr-engine-{{ $i }} -> $URL"
-              curl -sf -X POST "$API/admin/backends" \
+              curl -sf -X PUT "$API/admin/backends" \
                 -H "X-Master-Key: $MASTER_KEY" \
                 -H "Content-Type: application/json" \
-                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }}}" \
-                || echo "register ocr-engine-{{ $i }} non-zero (may already exist)"
+                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }},\"managed\":true}" \
+                || echo "upsert ocr-engine-{{ $i }} failed"
               {{- end }}
               {{- end }}
-              {{- range $te := $.Values.tunnelOcrEngines }}
-              {{- $tcfg := mergeOverwrite (deepCopy $.Values.tunnelOcrEnginesDefaults) (deepCopy $te) }}
-              {{- $turl := printf "http://%s-tunnel-engine-%s:%v" (include "taas.fullname" $) $te.name $tcfg.port }}
-              echo "registering tunnel engine {{ $te.name }} -> {{ $turl }}"
-              curl -sf -X POST "$API/admin/backends" \
+              {{- range $box := $.Values.tunnelBoxes }}
+              {{- range $te := ($box.engines | default list) }}
+              {{- $tcfg := mergeOverwrite (deepCopy $.Values.tunnelBoxesDefaults) (deepCopy $te) }}
+              {{- $tname := printf "%s-%s" $box.name $te.name }}
+              {{- $tsvc := include "taas.tunnelEngineService" (dict "root" $ "box" $box.name "engine" $te.name) }}
+              {{- $turl := printf "http://%s:%v" $tsvc $tcfg.port }}
+              echo "registering tunnel engine {{ $tname }} -> {{ $turl }}"
+              curl -sf -X PUT "$API/admin/backends" \
                 -H "X-Master-Key: $MASTER_KEY" \
                 -H "Content-Type: application/json" \
-                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $te.name }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }}}" \
-                || echo "register {{ $te.name }} non-zero (may already exist)"
+                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"priority\":{{ $tcfg.priority }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true}" \
+                || echo "upsert {{ $tname }} failed"
+              {{- end }}
               {{- end }}
               echo "done"
 {{- end }}

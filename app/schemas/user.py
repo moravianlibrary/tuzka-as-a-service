@@ -22,16 +22,19 @@ class UserLimitOverrides(BaseModel):
 
 
 class UserUpdate(UserLimitOverrides):
-    """PATCH body for a user: rate-limit overrides plus optional enable/disable —
-    mirrors how `BackendUpdate` bundles `enabled` with the backend's other fields."""
+    """PATCH body for a user: rate-limit overrides, priority, URL template, enable/disable."""
 
     active: bool | None = None
+    priority: int | None = None
+    external_url_template: str | None = None
 
 
 class UserList(UserLimitOverrides):
     username: str
     active: bool
     created_at: datetime
+    priority: int = 0
+    external_url_template: str | None = None
 
 
 class EffectiveLimits(BaseModel):

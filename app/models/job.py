@@ -23,8 +23,13 @@ class Job(Base):
     backend_id: Mapped[int | None] = mapped_column(ForeignKey("backends.id"), default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     requeues: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
+    file_size_bytes: Mapped[int | None] = mapped_column(default=None)
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    # dispatched_at is on the taas clock (submit worker POST); engine_received_at /
+    # started_at / finished_at are on the engine clock (adopted from GET /status). Keeping
+    # the two queue boundaries separate keeps each derived span on a single clock.
     dispatched_at: Mapped[datetime | None] = mapped_column(default=None)
+    engine_received_at: Mapped[datetime | None] = mapped_column(default=None)
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
     stored_at: Mapped[datetime | None] = mapped_column(default=None)

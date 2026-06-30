@@ -107,12 +107,12 @@ released, and a WS `failed` event emitted. These timeouts and the presigned-URL 
 
 **Job-record retention is hardcoded to 30 days** (`RETENTION_DAYS` in
 `app/workers/cleanup.py`) — it is *not* operator-tunable. On its heavy sweep the
-cleanup worker rolls each whole day that has aged past 30 days into the permanent
-`job_daily_stats` table (per `day × username × engine_version × domain`: counts plus
-the processing-time distribution — avg/stddev/min/max and exact p50/p95/p99) and then
-deletes the raw `jobs`/`job_results` rows. The rollup is one advisory-locked
-transaction with `ON CONFLICT DO NOTHING`, so it is safe to re-run. Aggregated stats
-are kept forever and downloadable as CSV via `GET /dashboard/stats.csv?year=`.
+cleanup worker deletes raw `jobs`/`job_results` rows aged past 30 days. Per-job
+analytics are **not** lost: each finished/failed job is written to the permanent
+`job_analytics` fact table at harvest time (one row per job, kept forever), so the
+dashboard and `GET /dashboard/stats.csv?year=` aggregate from there rather than from a
+nightly rollup. See `app/services/analytics.py` and the
+[analytics design doc](../docs/2026-06-18-job-analytics-design.md).
 
 ## Running
 

@@ -195,8 +195,8 @@ ocrEngine:
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
 #    engine + an `frpc` client that dials this in-cluster `frps` server; frps re-exposes
 #    each engine's port inside the cluster, and taas consumes it as an ordinary
-#    ClusterIP Service (see `tunnelOcrEngines`). No app changes — the remoteness is
-#    transparent. Required when `tunnelOcrEngines` is non-empty. Box-side: deploy/box/.
+#    ClusterIP Service (see `tunnelBoxes`). No app changes — the remoteness is
+#    transparent. Required when `tunnelBoxes` is non-empty. Box-side: deploy/box/.
 tunnel:
   enabled: false
   image:
@@ -216,28 +216,72 @@ tunnel:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 250m, memory: 128Mi }
 
-# -- Defaults applied to every `tunnelOcrEngines` entry (deep-merged).
-tunnelOcrEnginesDefaults:
+# -- Defaults applied to every engine in a `tunnelBoxes[].engines` entry (deep-merged).
+tunnelBoxesDefaults:
   # Logical Service port taas registers + connects to in-cluster. Equals the engine's
   # HTTP port on the box (frpc's localPort). Usually leave at 8000.
   port: 8000
   # taas concurrent dispatch cap for this backend (see ocrEngine.maxInflight).
   maxInflight: 8
+  # Backend dispatch priority — higher backends are preferred until saturated, then
+  # jobs spill to lower ones (submit worker orders by priority desc).
+  priority: 0
+  # Engine hardware class registered for this backend: "cpu" or "gpu".
+  device: cpu
 
-# -- Off-cluster engines reached via the tunnel above. Empty = none. Each item:
-#      name       (required) -> Service named <release>-tunnel-engine-<name>, registered
-#                               as a backend exactly like an in-cluster engine.
-#      remotePort (required) -> the port frps opens on its pod for THIS engine's reverse
-#                               tunnel; the box's frpc must request the same value.
-#                               MUST be unique across all tunnelOcrEngines.
-#    Plus any tunnelOcrEnginesDefaults key to override (port, maxInflight).
+# -- Off-cluster boxes reached via the tunnel above. Empty = none. One box can run N
+#    OCR engines but has at most one cAdvisor + one GPU exporter, so engines and
+#    exporters are grouped per box. Each box item:
+#      name      (required) -> identifies the box; used in Service names and frpc proxy
+#                              names. Must be a DNS-1123 label.
+#      engines   (required) -> list of OCR engines on the box. Each engine:
+#          name       (required) -> Service <release>-tunnel-engine-<box>-<engine>,
+#                                   registered as a backend like an in-cluster engine.
+#          remotePort (required) -> port frps opens for THIS engine's reverse tunnel;
+#                                   the box's frpc must request the same value.
+#          + any tunnelBoxesDefaults key to override (port, maxInflight, priority, device).
+#      exporters (optional)  -> cAdvisor / GPU exporter on the box, proxied through the
+#                              same frpc. Each exporter:
+#          name       (required) -> Service <release>-tunnel-box-<box>-<exporter>
+#                                   (a Prometheus scrape target).
+#          remotePort (required) -> port frps opens for this exporter's tunnel.
+#          port       (required) -> in-cluster Service port (e.g. 8080 cAdvisor, 9835 GPU).
+#    ALL remotePorts (engines + exporters, across ALL boxes) MUST be unique.
 #    Requires `tunnel.enabled: true`.
-tunnelOcrEngines: []
-#   - name: gpu1
-#     remotePort: 8000
-#     maxInflight: 16
-#   - name: gpu2
-#     remotePort: 8001
+tunnelBoxes: []
+#   - name: box1
+#     engines:
+#       - name: gpu0
+#         remotePort: 8000
+#         device: gpu
+#         priority: 10      # preferred over lower-priority backends until saturated
+#       - name: gpu1
+#         remotePort: 8001
+#         device: gpu
+#     exporters:            # one cAdvisor/GPU exporter per box, not per engine
+#       - name: cadvisor
+#         remotePort: 8010  # unique across ALL boxes, engines, and exporters
+#         port: 8080        # Service port in-cluster
+#       - name: gpu-exporter
+#         remotePort: 8011
+#         port: 9835
+#   - name: box2
+#     engines:
+#       - name: cpu0
+#         remotePort: 8100
+#         device: cpu       # priority defaults to 0
+
+# -- Prometheus ServiceMonitor for the per-box exporter Services. Requires the
+#    Prometheus Operator (the ServiceMonitor CRD). When disabled, scrape the exporter
+#    Services with a static scrape_config instead (see helm/taas/README.md).
+metrics:
+  serviceMonitor:
+    enabled: false
+    # Scrape interval for the generated ServiceMonitors.
+    interval: 30s
+    # Extra labels so your Prometheus' serviceMonitorSelector matches these (e.g.
+    # { release: kube-prometheus-stack }).
+    labels: {}
 
 # -- Shared application config (non-secret). See app/config.Settings.
 config:

@@ -1,18 +1,19 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import redis.asyncio as aioredis
 import zstandard
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.job import Job, JobResult
 from app.services import config as config_service
+from app.services.analytics import parse_alto, write_analytics_row
 from app.services.auth import decrypt_backend_key
 from app.services.engine_client import EngineClient
 from app.services.redis_jobs import (
@@ -45,7 +46,7 @@ def _parse_engine_dt(value: str | None) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 
@@ -113,13 +114,15 @@ async def main() -> None:
         fmt = meta.get("fmt", "multi")
         backend_url = meta["backend_url"]
         engine_job_id = meta["engine_job_id"]
+        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
         api_key = None
-        if meta.get("backend_id"):
-            api_key = await get_backend_api_key(int(meta["backend_id"]))
+        if backend_id:
+            api_key = await get_backend_api_key(backend_id)
 
         try:
             results_to_store = []
+            alto_bytes_for_analytics: bytes | None = None
             if fmt == "multi":
                 alto_bytes = await engine_client.get_result(
                     backend_url, api_key, engine_job_id, which="alto"
@@ -131,16 +134,27 @@ async def main() -> None:
                     ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
+                alto_bytes_for_analytics = alto_bytes
             elif fmt == "alto":
                 alto_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
                     ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
                 ]
+                alto_bytes_for_analytics = alto_bytes
             else:
                 txt_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
+
+            # Parse ALTO metrics before any compression
+            alto_lines = alto_blocks = alto_chars = None
+            if alto_bytes_for_analytics:
+                alto_lines, alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
+
+            mean_conf: float | None = None
+            if isinstance(times.get("mean_conf"), (int, float)):
+                mean_conf = float(times["mean_conf"])
 
             event_data: dict = {
                 "status": "done",
@@ -148,6 +162,14 @@ async def main() -> None:
             }
 
             async with session_factory() as db:
+                # Read the raw job to pick up submitted_at, engine_version, device, file_size.
+                job_row = await db.execute(
+                    select(Job, Backend.device)
+                    .outerjoin(Backend, Job.backend_id == Backend.id)
+                    .where(Job.id == job_id)
+                )
+                job_rec, backend_device = job_row.first() or (None, None)
+
                 presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 for result_fmt, obj_path, raw_bytes in results_to_store:
@@ -168,8 +190,6 @@ async def main() -> None:
                         presigned_ttl,
                     )
 
-                    from datetime import timedelta
-
                     jr = JobResult(
                         job_id=job_id,
                         fmt=result_fmt,
@@ -183,23 +203,50 @@ async def main() -> None:
                     event_data[url_key] = presigned_url
 
                 done_values = {"status": "done", "stored_at": datetime.utcnow()}
-                # Adopt the engine's own created/started/finished so the lifecycle is
-                # monotonic on a single clock: created_at (when the job reached the
-                # engine) becomes dispatched_at and is always <= started_at, so the
-                # "engine queue" span is the pure in-engine wait and never goes negative.
-                # The submit worker's dispatch-time value was only a provisional so the
-                # reaper could time out a stuck running job before harvest.
+                # Adopt the engine's own created/started/finished (engine clock) into the
+                # engine-side stamps. We keep the taas-clock dispatched_at as set by the
+                # submit worker (do NOT overwrite it): that preserves a single-clock
+                # taas-queue span (submitted -> dispatched). created_at lands in its own
+                # engine_received_at column so the engine-queue span (engine_received ->
+                # started) is also single-clock and never goes negative on sub-second waits.
                 engine_created = _parse_engine_dt(times.get("created_at"))
                 engine_started = _parse_engine_dt(times.get("started_at"))
                 engine_finished = _parse_engine_dt(times.get("finished_at"))
                 if engine_created is not None:
-                    done_values["dispatched_at"] = engine_created
+                    done_values["engine_received_at"] = engine_created
                 if engine_started is not None:
                     done_values["started_at"] = engine_started
                 done_values["finished_at"] = engine_finished or datetime.utcnow()
                 await db.execute(
                     update(Job).where(Job.id == job_id).values(**done_values)
                 )
+
+                # Write permanent analytics row
+                if job_rec is not None:
+                    await write_analytics_row(
+                        db,
+                        job_id=job_id,
+                        external_id=job_rec.external_id,
+                        submitted_at=job_rec.submitted_at,
+                        username=username,
+                        engine_version=job_rec.engine_version,
+                        engine_device=backend_device or "cpu",
+                        backend_id=backend_id,
+                        domain=job_rec.domain,
+                        fmt=fmt,
+                        status="done",
+                        file_size_bytes=job_rec.file_size_bytes,
+                        dispatched_at=job_rec.dispatched_at,
+                        engine_received_at=done_values.get("engine_received_at"),
+                        started_at=done_values.get("started_at"),
+                        finished_at=done_values["finished_at"],
+                        stored_at=done_values["stored_at"],
+                        alto_lines=alto_lines,
+                        alto_blocks=alto_blocks,
+                        alto_chars=alto_chars,
+                        mean_conf=mean_conf,
+                    )
+
                 await db.commit()
 
             await set_done(r, job_id, state_ttl)
@@ -213,6 +260,7 @@ async def main() -> None:
     async def mark_failed(job_id: str, meta: dict, error: str) -> None:
         username = meta.get("username", "")
         external_id = meta.get("external_id", "")
+        failed_at = datetime.utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
             await set_failed(r, job_id, error, state_ttl)
@@ -222,9 +270,38 @@ async def main() -> None:
                 .values(
                     status="failed",
                     error=error,
-                    finished_at=datetime.utcnow(),
+                    finished_at=failed_at,
                 )
             )
+
+            # Read current job state for analytics
+            job_row = await db.execute(
+                select(Job, Backend.device)
+                .outerjoin(Backend, Job.backend_id == Backend.id)
+                .where(Job.id == job_id)
+            )
+            job_rec, backend_device = job_row.first() or (None, None)
+            if job_rec is not None:
+                await write_analytics_row(
+                    db,
+                    job_id=job_id,
+                    external_id=job_rec.external_id,
+                    submitted_at=job_rec.submitted_at,
+                    username=username,
+                    engine_version=job_rec.engine_version,
+                    engine_device=backend_device or "cpu",
+                    backend_id=job_rec.backend_id,
+                    domain=job_rec.domain,
+                    fmt=job_rec.fmt,
+                    status="failed",
+                    file_size_bytes=job_rec.file_size_bytes,
+                    dispatched_at=job_rec.dispatched_at,
+                    engine_received_at=job_rec.engine_received_at,
+                    started_at=job_rec.started_at,
+                    finished_at=failed_at,
+                    stored_at=None,
+                )
+
             await db.commit()
         await publish_event(
             r,

@@ -101,6 +101,22 @@ class EngineClient:
         resp.raise_for_status()
         return resp.content
 
+    async def get_models(self, url: str, api_key: str | None) -> list[str]:
+        """Return the list of domain names the engine can serve, from GET /api/v1/models.
+
+        Returns an empty list if the endpoint is unreachable or the response is malformed."""
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        try:
+            resp = await self._client.get(f"{url}/api/v1/models", headers=headers, timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+            domains = data.get("selectable_via_domain", [])
+            return [str(d) for d in domains if d]
+        except Exception:
+            return []
+
     async def healthcheck(self, url: str) -> bool:
         try:
             resp = await self._client.get(f"{url}/healthz", timeout=5.0)

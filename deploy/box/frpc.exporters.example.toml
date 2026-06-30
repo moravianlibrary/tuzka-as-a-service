@@ -1,0 +1,49 @@
+# Example: a full per-box frpc.toml that tunnels N OCR engines PLUS the box's two
+# exporters (cAdvisor + NVIDIA GPU exporter) through a single frpc. Copy to frpc.toml,
+# edit names/ports, and mount it instead of the single-engine frpc.toml.
+#
+# A box has at most ONE cAdvisor and ONE GPU exporter regardless of engine count, so
+# there is exactly one exporter block each. Every remotePort (engines + exporters) must
+# be UNIQUE across all boxes and match the box's tunnelBoxes entry in the Helm values:
+#   tunnelBoxes:
+#     - name: box1
+#       engines:
+#         - { name: gpu0, remotePort: 8000 }
+#         - { name: gpu1, remotePort: 8001 }
+#       exporters:
+#         - { name: cadvisor,     remotePort: 8010, port: 8080 }
+#         - { name: gpu-exporter, remotePort: 8011, port: 9835 }
+serverAddr = "10.0.0.10"      # a cluster node IP (tunnel.service.nodePort host)
+serverPort = 32700
+auth.method = "token"
+auth.token = "replaceMe"      # == cluster secrets.frpToken
+
+# --- OCR engines (one block per engine on this box) ---
+[[proxies]]
+name = "box1-gpu0"            # box "box1", engine "gpu0"
+type = "tcp"
+localIP = "tuzkaocr-0"        # compose service/alias of this engine
+localPort = 8000
+remotePort = 8000             # == tunnelBoxes[].engines[gpu0].remotePort
+
+[[proxies]]
+name = "box1-gpu1"
+type = "tcp"
+localIP = "tuzkaocr-1"
+localPort = 8000
+remotePort = 8001
+
+# --- Exporters (at most one cAdvisor + one GPU exporter per box) ---
+[[proxies]]
+name = "box1-cadvisor"
+type = "tcp"
+localIP = "cadvisor"          # the cadvisor compose service
+localPort = 8080
+remotePort = 8010             # == tunnelBoxes[].exporters[cadvisor].remotePort
+
+[[proxies]]
+name = "box1-gpu-exporter"
+type = "tcp"
+localIP = "gpu-exporter"      # the gpu-exporter compose service (compose.gpu.yaml)
+localPort = 9835
+remotePort = 8011             # == tunnelBoxes[].exporters[gpu-exporter].remotePort

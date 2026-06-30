@@ -145,24 +145,37 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `ocrEngine.autoscaling.hpa.*` | 70% / 300s | HPA CPU target + scale-down stabilization window |
 | `ocrEngine.autoscaling.keda.*` | — | KEDA Redis trigger (`redisAddress`, `listName`, `listLength`) when `mode: keda` |
 
-### Off-cluster engines via reverse tunnel (`tunnel.*`, `tunnelOcrEngines`)
+### Off-cluster boxes via reverse tunnel (`tunnel.*`, `tunnelBoxes`)
 
-For a GPU box that can dial out but accepts no inbound, run the engine off-cluster and
-reverse-tunnel it in with FRP. The chart deploys an `frps` server and exposes each tunnel
-engine as a `<release>-tunnel-engine-<name>` Service registered like any backend. Box-side
-setup: [`deploy/box/`](../../box/README.md).
+For a GPU box that can dial out but accepts no inbound, run the engine(s) off-cluster and
+reverse-tunnel them in with FRP. The chart deploys an `frps` server and exposes each tunnel
+engine as a `<release>-tunnel-engine-<box>-<engine>` Service registered like any backend.
+One box can run N engines but has at most one cAdvisor + one GPU exporter, so engines and
+exporters are grouped per box; each exporter becomes a `<release>-tunnel-box-<box>-<exporter>`
+Service (a Prometheus scrape target). Box-side setup: [`deploy/box/`](../../box/README.md).
 
 | Key | Default | Description |
 |---|---|---|
-| `tunnel.enabled` | `false` | Deploy the in-cluster `frps` server. Required when `tunnelOcrEngines` is set |
+| `tunnel.enabled` | `false` | Deploy the in-cluster `frps` server. Required when `tunnelBoxes` is set |
 | `tunnel.image.repository` / `.tag` | `snowdreamtech/frps` / `0.61.1` | frps image |
 | `tunnel.controlPort` | `7000` | frps control (bind) port inside the pod |
 | `tunnel.service.type` | `NodePort` | `NodePort` (bare metal) or `LoadBalancer` (cloud / MetalLB) — the box dials this |
 | `tunnel.service.nodePort` | `32700` | Port the box dials (`<node-ip>:<nodePort>`); ignored for `LoadBalancer` |
-| `tunnelOcrEngines` | `[]` | Off-cluster engines. Each item: `name` + `remotePort` (unique); may override `tunnelOcrEnginesDefaults` |
-| `tunnelOcrEnginesDefaults.port` | `8000` | Logical Service port taas registers (== engine HTTP port on the box) |
-| `tunnelOcrEnginesDefaults.maxInflight` | `8` | Backend concurrency at registration |
+| `tunnelBoxes` | `[]` | Off-cluster boxes. Each: `name`, `engines[]` (`name` + `remotePort`), optional `exporters[]` (`name` + `remotePort` + `port`). All `remotePort`s unique across all boxes |
+| `tunnelBoxesDefaults.{port,maxInflight,priority,device}` | `8000` / `8` / `0` / `cpu` | Per-engine defaults (overridable per engine) |
+| `metrics.serviceMonitor.enabled` | `false` | Emit a Prometheus-Operator `ServiceMonitor` per box exporter (else scrape the exporter Services statically) |
 | `secrets.frpToken` | `replaceMe` | Shared secret authenticating frpc↔frps (== box `FRP_TOKEN`) |
+
+Without the Prometheus Operator, scrape the exporter Services directly:
+
+```yaml
+- job_name: taas-cadvisor
+  static_configs:
+    - targets: ['taas-tunnel-box-box1-cadvisor:8080']
+- job_name: taas-gpu-exporter
+  static_configs:
+    - targets: ['taas-tunnel-box-box1-gpu-exporter:9835']
+```
 
 ### App tunables (`config.*`)
 

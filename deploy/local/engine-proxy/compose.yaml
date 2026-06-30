@@ -1,0 +1,63 @@
+# Two host TuzkaOCR engines (GPU + CPU) + one frpc multiplexing both reverse tunnels.
+#
+# Engine images (tuzkaocr:local-cpu / tuzkaocr:local-gpu) are built from local source via
+# the Makefile (`make local-deploy-build-cpu` / `local-deploy-build-gpu`) — NOT pulled.
+# Lifecycle is driven by the Makefile: `make local-deploy-up` / `local-deploy-down` /
+# `local-deploy-clean`.
+#
+# Neither engine publishes a host port — each is reached ONLY through its tunnel into the
+# k3d cluster. One frpc opens two reverse tunnels (gpu1 -> remotePort 8000, cpu1 ->
+# remotePort 8001) over the single control connection to the host-mapped frps NodePort
+# (host.docker.internal:32700). These remotePorts MUST match tunnelBoxes[].engines in
+# deploy/local/values.local.yaml. Config comes from .env.
+
+x-engine-health: &engine-health
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+  interval: 15s
+  timeout: 10s
+  retries: 5
+  start_period: 90s
+
+services:
+  # GPU engine — registered as the high-priority backend (device=gpu, priority=10).
+  tuzkaocr-gpu:
+    image: tuzkaocr:local-gpu
+    restart: unless-stopped
+    environment:
+      TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+      TUZKAOCR_DEVICE: cuda
+    expose:
+      - "8000"
+    # Real GPU: requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck: *engine-health
+
+  # CPU engine — registered as the low-priority backend (device=cpu, priority=0).
+  tuzkaocr-cpu:
+    image: tuzkaocr:local-cpu
+    restart: unless-stopped
+    environment:
+      TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
+      TUZKAOCR_DEVICE: cpu
+    expose:
+      - "8000"
+    healthcheck: *engine-health
+
+  frpc:
+    image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
+    restart: unless-stopped
+    # Lets frpc reach the host-mapped NodePort via host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRP_SERVER_ADDR: ${FRP_SERVER_ADDR:?set FRP_SERVER_ADDR in .env}
+      FRP_SERVER_PORT: ${FRP_SERVER_PORT:-32700}
+      FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN (== values.local.yaml secrets.frpToken) in .env}

@@ -1,0 +1,61 @@
+{{- if .Values.tunnelBoxes }}
+{{- if not .Values.tunnel.enabled }}
+{{- fail "tunnelBoxes is set but tunnel.enabled is false — enable the frps server (tunnel.enabled: true) so the off-cluster boxes have a tunnel endpoint to dial." }}
+{{- end }}
+{{- include "taas.validateTunnelBoxes" . }}
+{{- range $box := .Values.tunnelBoxes }}
+{{- $bn := $box.name }}
+{{- range $e := ($box.engines | default list) }}
+{{- $cfg := mergeOverwrite (deepCopy $.Values.tunnelBoxesDefaults) (deepCopy $e) }}
+---
+# Off-cluster engine {{ $bn }}/{{ $e.name }}: a plain ClusterIP Service that is only a
+# port-alias to the socket frps opens for this engine's reverse tunnel. The selector
+# targets the frps pod (NOT an engine pod) — frps forwards traffic down the tunnel to
+# frpc on the box, which delivers it to the local TuzkaOCR at remotePort {{ $e.remotePort }}.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "taas.tunnelEngineService" (dict "root" $ "box" $bn "engine" $e.name) }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-engine
+    taas.mzk.cz/box: {{ $bn }}
+    taas.mzk.cz/engine: {{ $e.name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $cfg.port }}
+      targetPort: {{ $e.remotePort }}
+      name: http
+  selector:
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+{{- end }}
+{{- range $x := ($box.exporters | default list) }}
+---
+# Off-cluster exporter {{ $bn }}/{{ $x.name }}: a ClusterIP Service aliasing the frps
+# socket for this box's exporter tunnel (cAdvisor / GPU exporter). It is a Prometheus
+# scrape target; frps forwards to frpc on the box at remotePort {{ $x.remotePort }}.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "taas.tunnelExporterService" (dict "root" $ "box" $bn "exporter" $x.name) }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-box-exporter
+    taas.mzk.cz/box: {{ $bn }}
+    taas.mzk.cz/exporter: {{ $x.name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $x.port }}
+      targetPort: {{ $x.remotePort }}
+      name: metrics
+  selector:
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: tunnel-server
+{{- end }}
+{{- end }}
+{{- end }}

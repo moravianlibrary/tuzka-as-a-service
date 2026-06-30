@@ -51,6 +51,8 @@ async def list_users(db: AsyncSession = Depends(get_db)):
             username=u.username,
             active=u.active,
             created_at=u.created_at,
+            priority=u.priority,
+            external_url_template=u.external_url_template,
             rate_submit_per_minute=u.rate_submit_per_minute,
             burst_submit=u.burst_submit,
             rate_query_per_minute=u.rate_query_per_minute,
@@ -201,7 +203,7 @@ async def update_user_limits(
         raise HTTPException(status_code=404, detail="User not found")
 
     # exclude_unset: only fields present in the request change; an explicit null
-    # clears a rate-limit override back to inherit. `active` toggles enable/disable.
+    # clears a rate-limit override or url template back to inherit.
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(user, field, value)
     await db.commit()
@@ -233,6 +235,20 @@ async def update_user_limits(
 # --- Backends ---
 
 
+def _backend_response(b: Backend) -> BackendResponse:
+    return BackendResponse(
+        id=b.id,
+        url=b.url,
+        label=b.label,
+        enabled=b.enabled,
+        max_inflight=b.max_inflight,
+        priority=b.priority,
+        device=b.device,
+        managed=b.managed,
+        created_at=b.created_at,
+    )
+
+
 @router.get(
     "/backends",
     response_model=list[BackendResponse],
@@ -245,17 +261,7 @@ async def list_backends(db: AsyncSession = Depends(get_db)):
     Requires a valid master key. Stored backend API keys are never returned.
     """
     result = await db.execute(select(Backend).order_by(Backend.id))
-    return [
-        BackendResponse(
-            id=b.id,
-            url=b.url,
-            label=b.label,
-            enabled=b.enabled,
-            max_inflight=b.max_inflight,
-            created_at=b.created_at,
-        )
-        for b in result.scalars().all()
-    ]
+    return [_backend_response(b) for b in result.scalars().all()]
 
 
 @router.post(
@@ -279,23 +285,68 @@ async def create_backend(
     if body.api_key:
         api_key_enc = encrypt_backend_key(body.api_key, settings.key_encryption_secret)
 
+    if body.device not in ("gpu", "cpu"):
+        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
+
     backend = Backend(
         url=body.url,
         label=body.label,
         api_key_enc=api_key_enc,
         max_inflight=body.max_inflight,
+        priority=body.priority,
+        device=body.device,
+        managed=body.managed,
     )
     db.add(backend)
     await db.commit()
     await db.refresh(backend)
-    return BackendResponse(
-        id=backend.id,
-        url=backend.url,
-        label=backend.label,
-        enabled=backend.enabled,
-        max_inflight=backend.max_inflight,
-        created_at=backend.created_at,
-    )
+    return _backend_response(backend)
+
+
+@router.put(
+    "/backends",
+    response_model=BackendResponse,
+    summary="Create or update a backend by URL (idempotent upsert)",
+    responses={401: {"description": "Missing or invalid master key"}},
+)
+async def upsert_backend(
+    body: BackendCreate,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Declaratively register a backend keyed by ``url``: create it if new, otherwise
+    update its label/api_key/max_inflight/priority/device/managed in place.
+
+    Idempotent — the Helm register hook uses this so config changes in values
+    (priority, device, ...) are applied on every deploy. Requires a master key.
+    """
+    if body.device not in ("gpu", "cpu"):
+        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
+
+    api_key_enc = None
+    if body.api_key:
+        api_key_enc = encrypt_backend_key(body.api_key, settings.key_encryption_secret)
+
+    existing = await db.execute(select(Backend).where(Backend.url == body.url))
+    backend = existing.scalar_one_or_none()
+
+    if backend is None:
+        backend = Backend(url=body.url)
+        db.add(backend)
+
+    backend.label = body.label
+    backend.max_inflight = body.max_inflight
+    backend.priority = body.priority
+    backend.device = body.device
+    backend.managed = body.managed
+    # Only overwrite the stored key when a new one is supplied (so re-deploys that omit
+    # it don't wipe it); an explicit empty string clears it.
+    if body.api_key is not None:
+        backend.api_key_enc = api_key_enc
+
+    await db.commit()
+    await db.refresh(backend)
+    return _backend_response(backend)
 
 
 @router.patch(
@@ -326,24 +377,21 @@ async def update_backend(
     update_data = body.model_dump(exclude_unset=True)
     if "api_key" in update_data:
         api_key = update_data.pop("api_key")
-        if api_key:
-            update_data["api_key_enc"] = encrypt_backend_key(
-                api_key, settings.key_encryption_secret
-            )
+        # Present in the body -> apply it: a non-empty value is (re)encrypted, an explicit
+        # empty string (or null) clears the stored key. Same semantics as PUT /backends,
+        # which omitting the field leaves untouched (it isn't in update_data then).
+        update_data["api_key_enc"] = (
+            encrypt_backend_key(api_key, settings.key_encryption_secret) if api_key else None
+        )
+    if "device" in update_data and update_data["device"] not in ("gpu", "cpu"):
+        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
 
     for field, value in update_data.items():
         setattr(backend, field, value)
 
     await db.commit()
     await db.refresh(backend)
-    return BackendResponse(
-        id=backend.id,
-        url=backend.url,
-        label=backend.label,
-        enabled=backend.enabled,
-        max_inflight=backend.max_inflight,
-        created_at=backend.created_at,
-    )
+    return _backend_response(backend)
 
 
 @router.delete(

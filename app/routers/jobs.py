@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -8,14 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
+from app.models.backend import Backend
+from app.models.backend_domain import BackendDomain
 from app.models.db import get_db
+from app.models.domain import Domain
 from app.models.job import Job, JobResult
+from app.models.user import User
 from app.schemas.job import (
     JobListResponse,
     JobResultEntry,
     JobResultResponse,
     JobStatus,
     JobSubmitResponse,
+    render_external_url,
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
@@ -78,6 +84,21 @@ async def submit_job(
             detail=f"File too large. Max: {settings.max_upload_bytes} bytes",
         )
 
+    # Validate domain: if specified, at least one enabled backend must serve it.
+    if domain:
+        serves_domain = await db.scalar(
+            select(func.count())
+            .select_from(Domain)
+            .join(BackendDomain, Domain.id == BackendDomain.domain_id)
+            .join(Backend, BackendDomain.backend_id == Backend.id)
+            .where(Domain.name == domain, Backend.enabled == True)  # noqa: E712
+        )
+        if not serves_domain:
+            raise HTTPException(
+                status_code=422,
+                detail=f"No backend serves domain '{domain}' — check available domains",
+            )
+
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
     object_path = f"{username}/{external_id}{ext}"
@@ -96,13 +117,16 @@ async def submit_job(
         status="queued",
         fmt=fmt,
         domain=domain,
+        file_size_bytes=len(image_bytes),
     )
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    # Enqueue in Redis
+    # Enqueue in Redis — include user priority so the submit worker routes to the right queue
     state_ttl = await config_service.get_state_ttl_seconds(db)
+    user_row = await db.execute(select(User).where(User.username == username))
+    user_priority = (user_row.scalar_one_or_none() or User()).priority or 0
     await redis_jobs.enqueue_job(
         r,
         str(job.id),
@@ -113,6 +137,7 @@ async def submit_job(
             "domain": domain or "",
             "ext": ext,
             "submitted_at": str(time.time()),
+            "priority": str(user_priority),
         },
         state_ttl,
     )
@@ -141,10 +166,15 @@ async def get_job_status(
     authenticated user. The status reflects the asynchronous lifecycle (``queued``,
     ``running``, ``done``, ``failed``); fetch the result endpoint once it is ``done``.
     """
-    result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
-    job = result.scalar_one_or_none()
-    if not job:
+    result = await db.execute(
+        select(Job, User.external_url_template)
+        .outerjoin(User, Job.username == User.username)
+        .where(Job.id == job_id, Job.username == username)
+    )
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Job not found")
+    job, url_template = row
 
     return JobStatus(
         job_id=job.id,
@@ -156,6 +186,7 @@ async def get_job_status(
         started_at=job.started_at,
         finished_at=job.finished_at,
         error=job.error,
+        external_url=render_external_url(url_template, job.external_id),
     )
 
 
@@ -201,8 +232,6 @@ async def get_job_result(
 
     results_client = request.app.state.results_public_client
     entries = []
-    from datetime import datetime
-
     now = datetime.utcnow()
     presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
     for jr in job_results:
@@ -217,8 +246,6 @@ async def get_job_result(
                 obj_path,
                 presigned_ttl,
             )
-            from datetime import timedelta
-
             jr.presigned_until = now + timedelta(minutes=presigned_ttl)
             await db.commit()
 
@@ -314,6 +341,11 @@ async def list_jobs(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
+    # All jobs belong to the authenticated user, so resolve their URL template once.
+    url_template = await db.scalar(
+        select(User.external_url_template).where(User.username == username)
+    )
+
     return JobListResponse(
         jobs=[
             JobStatus(
@@ -326,6 +358,7 @@ async def list_jobs(
                 started_at=j.started_at,
                 finished_at=j.finished_at,
                 error=j.error,
+                external_url=render_external_url(url_template, j.external_id),
             )
             for j in jobs
         ],

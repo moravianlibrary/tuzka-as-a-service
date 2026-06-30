@@ -45,6 +45,20 @@ services:
       default:
         aliases: ["tuzkaocr"]
 
+  # cAdvisor — per-box container metrics, scraped by the cluster Prometheus through the
+  # same frpc tunnel (see FRP_CADVISOR_REMOTE_PORT). Reachable only on the internal
+  # compose network (expose only); the cluster reaches it via the tunnel-box Service.
+  cadvisor:
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.49.1}
+    profiles: ["registry", "build"]
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    expose: ["8080"]
+
   frpc:
     image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
     profiles: ["registry", "build"]
@@ -57,7 +71,13 @@ services:
       FRP_SERVER_ADDR: ${FRP_SERVER_ADDR:?set FRP_SERVER_ADDR (a cluster node IP) in .env}
       FRP_SERVER_PORT: ${FRP_SERVER_PORT:-32700}
       FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN (== cluster secrets.frpToken) in .env}
+      # Box name — used to prefix the exporter proxy names so they stay unique across boxes.
+      BOX_NAME: ${BOX_NAME:-box1}
       FRP_PROXY_NAME: ${ENGINE_NAME:-gpu1}
       # The port TuzkaOCR listens on inside its container (fixed by the image).
       FRP_LOCAL_PORT: "8000"
-      FRP_REMOTE_PORT: ${REMOTE_PORT:?set REMOTE_PORT (== tunnelOcrEngines[].remotePort) in .env}
+      FRP_REMOTE_PORT: ${REMOTE_PORT:?set REMOTE_PORT (== this engine's tunnelBoxes[].engines[].remotePort) in .env}
+      # Optional exporter tunnels. Leave unset on a box without exporters — the matching
+      # frpc.toml blocks are then skipped. Must match the box's tunnelBoxes[].exporters[].remotePort.
+      FRP_CADVISOR_REMOTE_PORT: ${FRP_CADVISOR_REMOTE_PORT:-}
+      FRP_GPU_EXPORTER_REMOTE_PORT: ${FRP_GPU_EXPORTER_REMOTE_PORT:-}

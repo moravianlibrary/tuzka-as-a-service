@@ -1,4 +1,5 @@
 {{- if .Values.tunnel.enabled }}
+{{- include "taas.validateTunnelBoxes" . }}
 {{- $t := .Values.tunnel }}
 {{- $name := printf "%s-frps" (include "taas.fullname" .) }}
 apiVersion: v1
@@ -14,11 +15,16 @@ data:
     auth.method = "token"
     # Rendered by frp at startup from the FRP_TOKEN env var (Go-template config).
     auth.token = "{{`{{ .Envs.FRP_TOKEN }}`}}"
-    # Restrict the reverse-tunnel ports frpc may open to exactly the engines below
-    # (default-deny: an empty list allows nothing).
+    # Restrict the reverse-tunnel ports frpc may open to exactly the engine + exporter
+    # ports declared below (default-deny: an empty list allows nothing).
     allowPorts = [
-    {{- range $e := .Values.tunnelOcrEngines }}
-      { single = {{ required (printf "tunnelOcrEngines entry %q needs a remotePort" $e.name) $e.remotePort }} },
+    {{- range $box := .Values.tunnelBoxes }}
+    {{- range $e := ($box.engines | default list) }}
+      { single = {{ required (printf "engine %q in box %q needs a remotePort" $e.name $box.name) $e.remotePort }} },  # {{ $box.name }}/{{ $e.name }}
+    {{- end }}
+    {{- range $x := ($box.exporters | default list) }}
+      { single = {{ required (printf "exporter %q in box %q needs a remotePort" $x.name $box.name) $x.remotePort }} },  # {{ $box.name }}/{{ $x.name }} exporter
+    {{- end }}
     {{- end }}
     ]
 ---
@@ -44,7 +50,7 @@ spec:
         {{- include "taas.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: tunnel-server
       annotations:
-        checksum/config: {{ printf "%v-%v" $t.controlPort (toYaml .Values.tunnelOcrEngines) | sha256sum }}
+        checksum/config: {{ printf "%v-%v" $t.controlPort (toYaml .Values.tunnelBoxes) | sha256sum }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

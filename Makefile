@@ -16,7 +16,7 @@ GIT_TAG := v$(shell cat VERSION 2>/dev/null)
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: env
 env: ## Create .env and .env.app from templates (generates a Fernet key)
@@ -86,6 +86,64 @@ test-fast: ## E2E against an already-running stack (no build/up)
 .PHONY: test-compat
 test-compat: ## Run the legacy-compat server e2e (stack must be up)
 	IMAGE=$(IMAGE) bash scripts/test-compat.sh
+
+# --- Local k3d deploy: Helm chart in k3d + host TuzkaOCR engine via reverse tunnel ---
+# All targets share the `local-deploy-` prefix. Typical flow:
+#   make local-deploy-build-cpu        # build the engine image once
+#   make local-deploy-up               # cluster + chart + engine
+#   make local-deploy-forward-up       # port-forwards + open UIs (background)
+#   make local-deploy-forward-down / local-deploy-down / local-deploy-clean
+LOCAL_DIR     := deploy/local
+LOCAL_COMPOSE := $(COMPOSE) -f $(LOCAL_DIR)/engine-proxy/compose.yaml
+TUZKAOCR_DIR  := TuzkaOCR
+
+.PHONY: local-deploy-build-cpu
+local-deploy-build-cpu: ## Build the local CPU engine image (tuzkaocr:local-cpu)
+	docker build -t tuzkaocr:local-cpu -f $(TUZKAOCR_DIR)/Dockerfile $(TUZKAOCR_DIR)
+
+.PHONY: local-deploy-build-gpu
+local-deploy-build-gpu: ## Build the local GPU engine image (tuzkaocr:local-gpu)
+	docker build -t tuzkaocr:local-gpu -f $(TUZKAOCR_DIR)/Dockerfile.gpu $(TUZKAOCR_DIR)
+
+.PHONY: local-deploy-build
+local-deploy-build: local-deploy-build-cpu local-deploy-build-gpu ## Build both engine images
+
+.PHONY: local-deploy-up
+local-deploy-up: ## Bring up the k3d stack + both host engines (build the images first)
+	@for img in $$($(LOCAL_COMPOSE) config --images | grep tuzkaocr); do \
+	  docker image inspect "$$img" >/dev/null 2>&1 || \
+	  { echo "engine image $$img not found — run 'make local-deploy-build' first"; exit 1; }; \
+	done
+	bash $(LOCAL_DIR)/setup.sh
+	$(LOCAL_COMPOSE) up -d
+
+.PHONY: local-deploy-down
+local-deploy-down: ## Stop the engine + uninstall the chart, KEEP the k3d cluster
+	bash $(LOCAL_DIR)/teardown.sh
+
+.PHONY: local-deploy-clean
+local-deploy-clean: ## Stop the engine + chart AND delete the k3d cluster (full removal)
+	bash $(LOCAL_DIR)/teardown.sh --cluster
+
+.PHONY: local-deploy-forward-up
+local-deploy-forward-up: ## Start port-forwards (background) + open the UIs
+	bash $(LOCAL_DIR)/forward.sh up
+
+.PHONY: local-deploy-forward-down
+local-deploy-forward-down: ## Stop the background port-forwards
+	bash $(LOCAL_DIR)/forward.sh down
+
+.PHONY: local-deploy-seed
+local-deploy-seed: ## Seed 3 test users (alice/bob/carol) with priorities + keys
+	bash $(LOCAL_DIR)/seed-users.sh
+
+.PHONY: local-deploy-scenarios
+local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + forwards)
+	bash $(LOCAL_DIR)/scenarios.sh
+
+.PHONY: local-deploy-bench-db
+local-deploy-bench-db: ## Seed ~10M synthetic analytics rows + time the dashboard queries (ROWS=, MODE=seed|query|clean)
+	bash $(LOCAL_DIR)/bench-analytics-db.sh
 
 .PHONY: format
 format: ## Format code + auto-fix lint issues (ruff)

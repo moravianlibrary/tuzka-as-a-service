@@ -8,10 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
-from app.models.job_daily_stats import JobDailyStats  # noqa: F401 — registers table
 from app.services.config import get_storage_ttl_minutes
 from app.services.reaper import reap_stale_jobs
-from app.services.stats import STATS_COLUMNS, daily_aggregation_select
 from app.services.storage import (
     delete_objects,
     get_incoming_client,
@@ -22,35 +20,17 @@ from app.services.storage import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cleanup-worker")
 
-# Raw jobs are kept this many days; older days are rolled up into job_daily_stats
-# (kept forever) and then deleted. Hardcoded — not operator-tunable.
+# Raw jobs are deleted after this many days; analytics rows in job_analytics are permanent.
 RETENTION_DAYS = 30
 
-# Fixed key so concurrent cleanup runs can't double-process a day's rollup.
-ROLLUP_ADVISORY_LOCK = 992_005
 
-_ROLLUP_INSERT = (
-    f"INSERT INTO job_daily_stats ({', '.join(STATS_COLUMNS)})\n"
-    f"{daily_aggregation_select('finished_at < :cutoff')}\n"
-    "ON CONFLICT (stat_date, username, engine_version, domain) DO NOTHING"
-)
+async def delete_expired_jobs(db) -> None:
+    """Delete raw job rows (and their results) older than RETENTION_DAYS.
 
-
-async def rollup_and_delete(db) -> None:
-    """Roll whole days that are fully older than ``RETENTION_DAYS`` into
-    ``job_daily_stats``, then delete those raw rows — all in one advisory-locked
-    transaction so a re-run (or a second replica) re-derives identical numbers and
-    the ON CONFLICT makes it a safe no-op.
-
-    The cutoff is the midnight boundary 30 days back, so only days that have aged out
-    *in their entirety* are processed; each such day is therefore complete and gets
-    rolled up exactly once, which is what makes the stored percentiles exact."""
+    job_analytics rows are permanent and are NOT deleted here."""
     cutoff = (datetime.utcnow() - timedelta(days=RETENTION_DAYS)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-
-    await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": ROLLUP_ADVISORY_LOCK})
-    await db.execute(text(_ROLLUP_INSERT), {"cutoff": cutoff})
     await db.execute(
         text(
             "DELETE FROM job_results WHERE job_id IN "
@@ -63,7 +43,7 @@ async def rollup_and_delete(db) -> None:
     )
     await db.commit()
     if result.rowcount:
-        logger.info(f"Rolled up + deleted {result.rowcount} job records older than {cutoff:%Y-%m-%d}")
+        logger.info(f"Deleted {result.rowcount} raw job records older than {cutoff:%Y-%m-%d}")
 
 
 async def main() -> None:
@@ -106,7 +86,7 @@ async def main() -> None:
                                     f"Deleted {len(batch)} expired objects from {bucket}"
                                 )
 
-                    await rollup_and_delete(db)
+                    await delete_expired_jobs(db)
             except Exception as e:
                 logger.error(f"Cleanup worker error: {e}")
 
