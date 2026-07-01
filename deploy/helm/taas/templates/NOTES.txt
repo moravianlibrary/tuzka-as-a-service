@@ -23,9 +23,10 @@ Exposure (expose.<target>.kind = ingress | gateway | none):
   legacy          [{{ .Values.expose.legacy.kind }}]         -> compat  prefix: {{ .Values.expose.legacy.pathPrefix }} (stripped)
 {{- end }}
   admin-dashboard [{{ .Values.expose.adminDashboard.kind }}] -> API   paths: {{ join ", " .Values.expose.adminDashboard.paths }}
+  minio-results   [{{ .Values.expose.minioResults.kind }}] -> minio-results{{ with .Values.expose.minioResults.host }}  host: {{ . }}{{ end }} (presigned result downloads)
 
 {{- $exposed := false }}
-{{- range $name, $cfg := dict "api" .Values.expose.api "legacy" .Values.expose.legacy "adminDashboard" .Values.expose.adminDashboard }}
+{{- range $name, $cfg := dict "api" .Values.expose.api "legacy" .Values.expose.legacy "adminDashboard" .Values.expose.adminDashboard "minioResults" .Values.expose.minioResults }}
 {{- if ne $cfg.kind "none" }}{{ $exposed = true }}{{- end }}
 {{- end }}
 {{- if not $exposed }}

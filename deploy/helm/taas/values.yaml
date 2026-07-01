@@ -110,9 +110,9 @@ minio:
       storageClassName: ""
   results:
     bucket: results
-    # -- Externally-reachable MinIO endpoint used to presign result URLs (clients must reach
-    # it; presigned URLs are SigV4-signed against this host). Empty => use the in-cluster URL,
-    # which only works for clients inside the cluster. Set to your public MinIO endpoint.
+    # -- Override for the host presigned download URLs are signed against. Normally derived
+    # from expose.minioResults; set this only when you route to minio-results outside the
+    # chart (a LoadBalancer IP, an externally-managed DNS name).
     publicUrl: ""
     storage:
       size: 20Gi
@@ -318,9 +318,12 @@ secrets:
 
 # -- Exposure. Each target is exposed via an Ingress, a Gateway API HTTPRoute,
 #    or not at all  (kind: ingress | gateway | none):
-#      api            -> API service     (job API at /api/v1, WebSocket at /ws)
-#      legacy         -> compat service  (path prefix stripped before forwarding)
-#      adminDashboard -> API service     (/admin, /dashboard, /static)
+#      api            -> API service          (job API at /api/v1, WebSocket at /ws)
+#      legacy         -> compat service       (path prefix stripped before forwarding)
+#      adminDashboard -> API service          (/admin, /dashboard, /static)
+#      minioResults   -> minio-results service (so external clients can fetch presigned
+#                        result URLs; use a dedicated host served at root — the bucket is
+#                        in the path, so nothing is stripped)
 #
 #    gateway.* is used when kind=gateway (references an existing Gateway).
 #    For kind=ingress on `legacy`, prefix-strip uses the ingress-nginx
@@ -346,6 +349,16 @@ expose:
     kind: none
     host: ""
     paths: ["/admin", "/dashboard", "/static"]
+    ingressClassName: ""
+    annotations: {}
+    tls: []
+    gateway: { name: "", namespace: "", sectionName: "" }
+  # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
+  # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
+  minioResults:
+    kind: none
+    host: ""
+    paths: ["/"]
     ingressClassName: ""
     annotations: {}
     tls: []

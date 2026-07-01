@@ -35,8 +35,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Build the list of exposure targets (api, admin-dashboard, and legacy when compat
-is enabled). Each entry: name, cfg, service, port, strip.
+Build the list of exposure targets (api, admin-dashboard, minio-results, and legacy
+when compat is enabled). Each entry: name, cfg, service, port, strip.
+minio-results is exposed so external download clients can reach presigned result URLs
+(served at root — S3 path-style puts the bucket in the path, so it must NOT be stripped).
 Usage: {{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
 */}}
 {{- define "taas.exposeTargets" -}}
@@ -44,11 +46,29 @@ Usage: {{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
 {{- $targets := list
   (dict "name" "api" "cfg" .Values.expose.api "service" (printf "%s-api" $full) "port" (.Values.api.port | int) "strip" false)
   (dict "name" "admin-dashboard" "cfg" .Values.expose.adminDashboard "service" (printf "%s-api" $full) "port" (.Values.api.port | int) "strip" false)
+  (dict "name" "minio-results" "cfg" .Values.expose.minioResults "service" (printf "%s-minio-results" $full) "port" (.Values.minio.port | int) "strip" false)
 -}}
 {{- if .Values.compat.enabled -}}
 {{- $targets = append $targets (dict "name" "legacy" "cfg" .Values.expose.legacy "service" (printf "%s-compat" $full) "port" (.Values.compat.port | int) "strip" true) -}}
 {{- end -}}
 {{- toYaml $targets -}}
+{{- end }}
+
+{{/*
+Resolve the externally-reachable results-MinIO URL used to presign download links.
+Precedence: an explicit minio.results.publicUrl wins; otherwise, if minio-results is
+exposed via ingress/gateway with a host, derive it from that host (https when tls is
+configured, else http). Empty result => the app falls back to the in-cluster URL
+(reachable only from inside the cluster). No trailing slash.
+Usage: {{ include "taas.resultsPublicUrl" . }}
+*/}}
+{{- define "taas.resultsPublicUrl" -}}
+{{- if .Values.minio.results.publicUrl -}}
+{{- .Values.minio.results.publicUrl | trimSuffix "/" -}}
+{{- else if and (ne .Values.expose.minioResults.kind "none") .Values.expose.minioResults.host -}}
+{{- $scheme := ternary "https" "http" (gt (len .Values.expose.minioResults.tls) 0) -}}
+{{- printf "%s://%s" $scheme .Values.expose.minioResults.host -}}
+{{- end -}}
 {{- end }}
 
 {{/*
