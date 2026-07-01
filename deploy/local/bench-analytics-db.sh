@@ -18,7 +18,11 @@ set -euo pipefail
 
 DB_POD="${DB_POD:-taas-db-1}"
 ROWS="${ROWS:-10000000}"        # total synthetic rows to seed
-BATCH="${BATCH:-1000000}"       # rows per INSERT (keeps WAL/memory bounded, shows progress)
+# Rows per INSERT. Each batch is one statement whose generate_series + index/WAL burst
+# must fit the DB pod's modest limits (cnpg default: 1Gi mem). 1M-row batches can OOM or,
+# on a near-full node, spill enough temp/WAL to trip disk-pressure and get the pod evicted
+# (exit 137). 100k keeps each burst small and commits progress incrementally.
+BATCH="${BATCH:-100000}"
 DAYS="${DAYS:-365}"             # spread submitted_at over the last N days
 WINDOW_DAYS="${WINDOW_DAYS:-30}" # query window the timed queries scan (recent N days)
 MODE="${MODE:-seed}"            # seed | query | clean

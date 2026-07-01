@@ -18,6 +18,18 @@ mapfile -t IMAGES < <(ls "$HERE"/../../test-data/*_image.jpeg 2>/dev/null)
 source "$HERE/.users.env" 2>/dev/null || { echo "run 'make local-deploy-seed' first" >&2; exit 1; }
 [ "${#IMAGES[@]}" -gt 0 ] || { echo "no test images in test-data/" >&2; exit 1; }
 
+# Preflight: confirm the seeded key still matches a live user. A DB wipe or redeploy
+# re-registers backends (Helm hook) but does NOT reseed users, so .users.env goes stale
+# and every submit 401s — which otherwise surfaces only as a silent "(0 rows)" later.
+# GET a bogus job id: 401 => bad/absent key, 404 => key is valid (auth runs before lookup).
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/api/v1/jobs/00000000-0000-0000-0000-000000000000" \
+  -H "X-API-Key: $alice_KEY")
+if [ "$code" = "401" ]; then
+  echo "alice's API key is invalid (401) — users aren't seeded, or .users.env is stale." >&2
+  echo "Run 'make local-deploy-seed' to (re)create users, then retry." >&2
+  exit 1
+fi
+
 psql() { kubectl exec "$DB_POD" -c postgres -- psql -U postgres -d taas -P pager=off -c "$1"; }
 
 submit() {  # submit <api-key> <count>  — fire jobs concurrently
