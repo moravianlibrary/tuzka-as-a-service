@@ -223,11 +223,11 @@ tunnelBoxesDefaults:
   port: 8000
   # taas concurrent dispatch cap for this backend (see ocrEngine.maxInflight).
   maxInflight: 8
-  # Backend dispatch priority — higher backends are preferred until saturated, then
-  # jobs spill to lower ones (submit worker orders by priority desc).
-  priority: 0
   # Engine hardware class registered for this backend: "cpu" or "gpu".
   device: cpu
+  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only (set it in
+  # the dashboard Backends tab / PATCH /admin/backends); the deploy never writes it, so an
+  # admin-set priority survives redeploys. Newly registered backends start at priority 0.
 
 # -- Off-cluster boxes reached via the tunnel above. Empty = none. One box can run N
 #    OCR engines but has at most one cAdvisor + one GPU exporter, so engines and
@@ -239,7 +239,8 @@ tunnelBoxesDefaults:
 #                                   registered as a backend like an in-cluster engine.
 #          remotePort (required) -> port frps opens for THIS engine's reverse tunnel;
 #                                   the box's frpc must request the same value.
-#          + any tunnelBoxesDefaults key to override (port, maxInflight, priority, device).
+#          + any tunnelBoxesDefaults key to override (port, maxInflight, device).
+#            (priority is admin-managed, not set from here — see tunnelBoxesDefaults.)
 #      exporters (optional)  -> cAdvisor / GPU exporter on the box, proxied through the
 #                              same frpc. Each exporter:
 #          name       (required) -> Service <release>-tunnel-box-<box>-<exporter>
@@ -253,8 +254,7 @@ tunnelBoxes: []
 #     engines:
 #       - name: gpu0
 #         remotePort: 8000
-#         device: gpu
-#         priority: 10      # preferred over lower-priority backends until saturated
+#         device: gpu       # set priority afterwards in the dashboard Backends tab
 #       - name: gpu1
 #         remotePort: 8001
 #         device: gpu
@@ -269,7 +269,7 @@ tunnelBoxes: []
 #     engines:
 #       - name: cpu0
 #         remotePort: 8100
-#         device: cpu       # priority defaults to 0
+#         device: cpu
 
 # -- Prometheus ServiceMonitor for the per-box exporter Services. Requires the
 #    Prometheus Operator (the ServiceMonitor CRD). When disabled, scrape the exporter

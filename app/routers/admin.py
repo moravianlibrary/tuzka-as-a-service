@@ -315,10 +315,13 @@ async def upsert_backend(
     settings: Settings = Depends(get_settings),
 ):
     """Declaratively register a backend keyed by ``url``: create it if new, otherwise
-    update its label/api_key/max_inflight/priority/device/managed in place.
+    update its label/api_key/max_inflight/device/managed in place.
 
     Idempotent — the Helm register hook uses this so config changes in values
-    (priority, device, ...) are applied on every deploy. Requires a master key.
+    (device, max_inflight, ...) are applied on every deploy. ``priority`` is
+    **admin-managed only**: this endpoint never writes it, so a value set in the
+    dashboard/PATCH survives redeploys. New backends start at the default (0).
+    Requires a master key.
     """
     if body.device not in ("gpu", "cpu"):
         raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
@@ -336,7 +339,7 @@ async def upsert_backend(
 
     backend.label = body.label
     backend.max_inflight = body.max_inflight
-    backend.priority = body.priority
+    # priority intentionally not set here — it is admin-managed (see docstring).
     backend.device = body.device
     backend.managed = body.managed
     # Only overwrite the stored key when a new one is supplied (so re-deploys that omit

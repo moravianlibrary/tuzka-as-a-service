@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Prioritization test scenarios against the local two-engine stack (gpu1 priority 10,
-# cpu1 priority 0) and the seeded users (alice=10, bob=5, carol=0).
+# Prioritization test scenarios against the local two-engine stack (gpu preferred over
+# cpu) and the seeded users (alice=10, bob=5, carol=0).
+#
+# Backend priority is admin-managed (the Helm deploy no longer sets it), so this script
+# establishes Scenario A's premise itself: it PATCHes gpu backends to priority 10 and cpu
+# to 0 via the admin API before running.
 #
 # Requires: stack up (make local-deploy-up), forwards (make local-deploy-forward-up),
 # users seeded (make local-deploy-seed). Observations are read from the DB via kubectl.
@@ -9,6 +13,7 @@
 set -euo pipefail
 
 API="${TAAS_URL:-http://localhost:8080}"
+MASTER="${MASTER_KEY:-test-master-key}"
 DB_POD="${DB_POD:-taas-db-1}"
 N="${N:-6}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,8 +60,29 @@ wait_idle() {  # wait until no queued/running jobs (or timeout)
 
 reset_jobs() { kubectl exec "$DB_POD" -c postgres -- psql -U postgres -d taas -tAc "DELETE FROM jobs" >/dev/null 2>&1 || true; }
 
+# Backend priority is admin-managed (the deploy no longer sets it), so set it here to
+# establish Scenario A's premise: gpu backends preferred (10), cpu spillover (0). Idempotent.
+set_backend_priorities() {
+  local id device prio
+  while IFS='|' read -r id device; do
+    [ -z "$id" ] && continue
+    prio=0; [ "$device" = "gpu" ] && prio=10
+    curl -sf -X PATCH "$API/admin/backends/$id" \
+      -H "X-Master-Key: $MASTER" -H "Content-Type: application/json" \
+      -d "{\"priority\":$prio}" >/dev/null
+    printf '  backend #%s (%s) -> priority %s\n' "$id" "$device" "$prio"
+  done < <(kubectl exec "$DB_POD" -c postgres -- psql -U postgres -d taas -tAc \
+    "SELECT id, device FROM backends WHERE enabled ORDER BY id")
+}
+
 echo "============================================================"
-echo "Scenario A — BACKEND prioritization (gpu1=10 preferred, spill to cpu1=0)"
+echo "Setting backend priorities via admin API (gpu=10, cpu=0)"
+echo "============================================================"
+set_backend_priorities
+
+echo
+echo "============================================================"
+echo "Scenario A — BACKEND prioritization (gpu preferred=10, spill to cpu=0)"
 echo "  Submitting $N jobs as alice; expect gpu1 to take jobs until max_inflight,"
 echo "  then spill to cpu1."
 echo "============================================================"

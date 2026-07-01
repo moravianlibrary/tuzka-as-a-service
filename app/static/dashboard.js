@@ -527,7 +527,10 @@ async function loadBackends() {
   const tbody = document.getElementById("backends-table");
   tbody.innerHTML = data.map(b => `<tr>
     <td>${b.id}</td><td>${escapeHtml(b.url)}</td><td>${escapeHtml(b.label || "-")}${managedBadge(b.managed)}</td>
-    <td>${escapeHtml(b.device)}</td><td>${b.priority}</td>
+    <td>${escapeHtml(b.device)}</td>
+    <td><input type="number" value="${b.priority}" id="prio-${b.id}" style="width:64px"
+      title="Higher = preferred until saturated. Admin-managed; preserved across deploys.">
+      <button onclick="savePriority(${b.id})">Save</button></td>
     <td>${(b.domains && b.domains.length) ? b.domains.map(escapeHtml).join(", ") : "—"}</td>
     <td>${b.enabled}</td>
     <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px">
@@ -550,6 +553,17 @@ async function saveMaxInflight(id) {
   loadBackends();
 }
 
+// Priority is admin-managed (the deploy never writes it), so edits here persist across
+// redeploys. Higher priority backends are preferred by the submit worker until saturated.
+async function savePriority(id) {
+  const v = parseInt(document.getElementById(`prio-${id}`).value);
+  if (!Number.isInteger(v)) { alert("Priority must be an integer"); return; }
+  await fetch(`/admin/backends/${id}`, {
+    method: "PATCH", headers, body: JSON.stringify({ priority: v }),
+  });
+  loadBackends();
+}
+
 async function deleteBackend(id) {
   if (!confirm(`Permanently delete backend ${id}? This cannot be undone.`)) return;
   const resp = await fetch(`/admin/backends/${id}`, { method: "DELETE", headers });
@@ -567,10 +581,11 @@ function healthCell(healthy) {
 }
 
 // Badge marking a backend as owned by the Helm deploy (upserted on each deploy);
-// manual edits to these are reverted on the next deploy.
+// manual edits to label/device/max-inflight are reverted on the next deploy. Priority is
+// the exception — it is admin-managed and preserved across deploys.
 function managedBadge(managed) {
   if (!managed) return "";
-  return ` <span title="Registered + updated by the Helm deploy; manual edits are reverted on next deploy"
+  return ` <span title="Registered + updated by the Helm deploy; manual edits are reverted on next deploy (except priority, which is admin-managed and preserved)"
     style="background:#2d6cdf;color:#fff;border-radius:3px;padding:1px 5px;font-size:11px;margin-left:6px">deploy</span>`;
 }
 

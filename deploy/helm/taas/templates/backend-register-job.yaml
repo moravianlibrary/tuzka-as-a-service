@@ -58,7 +58,7 @@ spec:
               curl -sf -X PUT "$API/admin/backends" \
                 -H "X-Master-Key: $MASTER_KEY" \
                 -H "Content-Type: application/json" \
-                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"priority\":{{ $tcfg.priority }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true}" \
+                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true}" \
                 || echo "upsert {{ $tname }} failed"
               {{- end }}
               {{- end }}
