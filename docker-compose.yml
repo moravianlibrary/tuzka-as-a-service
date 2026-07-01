@@ -87,6 +87,20 @@ services:
     networks:
       - backend
 
+  migrate:
+    build:
+      context: .
+      dockerfile: api.Containerfile
+    command: alembic upgrade head
+    env_file:
+      - .env.app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - backend
+
   api:
     build:
       context: .
@@ -101,6 +115,8 @@ services:
       redis:
         condition: service_healthy
       minio-init:
+        condition: service_completed_successfully
+      migrate:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]

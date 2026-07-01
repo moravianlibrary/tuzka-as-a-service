@@ -3,8 +3,10 @@
 #
 # Brings up the full stack (unless NO_UP=1), registers the TuzkaOCR backend,
 # creates a fresh user, submits an image, polls to completion, then fetches and
-# decompresses the result. Result URLs are presigned with the in-cluster MinIO
-# hostname, so they are validated from inside the network via `compose exec`.
+# decompresses the result. Result URLs are presigned with the *public* MinIO
+# endpoint (MINIO_RESULTS_PUBLIC_URL, e.g. localhost:9010), so — like a real
+# download client — we fetch them from the host and decompress the bytes inside
+# the api container (which bundles zstandard).
 #
 # Env overrides:
 #   IMAGE                path to test image      (default: test-data/test.jpg)
@@ -118,7 +120,7 @@ echo "$RESULT_JSON" | "$PY" -m json.tool
 n="$(echo "$RESULT_JSON" | jget '["results"].__len__()')"
 [ "$n" -ge 1 ] || die "no result entries returned"
 
-say "Fetching + saving results (decompress zstd inside the network)"
+say "Fetching + saving results (download from host, decompress in container)"
 mkdir -p "$RESULTS_DIR"
 base="$(basename "$IMAGE")"; base="${base%.*}"
 echo "$RESULT_JSON" | "$PY" -c 'import sys,json
@@ -126,12 +128,17 @@ for r in json.load(sys.stdin)["results"]:
     print(r["fmt"], r["url"])' | while read -r fmt url; do
   ext="xml"; [ "$fmt" = txt ] && ext="txt"
   out="$RESULTS_DIR/${base}.${fmt}.${ext}"
-  docker compose exec -T api python -c '
-import sys,urllib.request,zstandard
-raw=urllib.request.urlopen(sys.argv[1],timeout=60).read()
-data=zstandard.ZstdDecompressor().decompress(raw) if raw[:4]==b"\x28\xb5\x2f\xfd" else raw
-sys.stdout.buffer.write(data)
-' "$url" > "$out" < /dev/null
+  # The presigned URL targets the public endpoint (localhost:9010), reachable from
+  # the host but not from inside the container network, so download here with curl;
+  # pipe the raw bytes into the api container to decompress (it bundles zstandard).
+  curl -sf "$url" | docker compose exec -T api python -c '
+import sys
+raw=sys.stdin.buffer.read()
+if raw[:4]==b"\x28\xb5\x2f\xfd":
+    import zstandard
+    raw=zstandard.ZstdDecompressor().decompress(raw)
+sys.stdout.buffer.write(raw)
+' > "$out"
   size="$(wc -c < "$out")"
   [ "$size" -gt 0 ] || die "result '$fmt' empty or unreachable"
   ok "result fmt=$fmt -> ${size} bytes -> $out"
