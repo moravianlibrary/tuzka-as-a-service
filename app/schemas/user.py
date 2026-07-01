@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class UserCreate(BaseModel):
@@ -25,7 +25,7 @@ class UserUpdate(UserLimitOverrides):
     """PATCH body for a user: rate-limit overrides, priority, URL template, enable/disable."""
 
     active: bool | None = None
-    priority: int | None = None
+    priority: int | None = Field(default=None, ge=0)
     external_url_template: str | None = None
 
 

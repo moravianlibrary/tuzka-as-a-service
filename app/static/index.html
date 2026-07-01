@@ -69,8 +69,8 @@
         <input name="url" placeholder="URL" required>
         <input name="label" placeholder="Label">
         <input name="api_key" placeholder="API Key">
-        <input name="max_inflight" type="number" value="4" title="Max in-flight" style="width:80px">
-        <input name="priority" type="number" value="0" title="Priority (higher = preferred)" style="width:80px">
+        <input name="max_inflight" type="number" min="1" value="4" title="Max in-flight (≥ 1)" style="width:80px">
+        <input name="priority" type="number" min="0" value="0" title="Priority (higher = preferred, ≥ 0)" style="width:80px">
         <select name="device" title="Device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select>
         <button type="submit">Add Backend</button>
       </form>

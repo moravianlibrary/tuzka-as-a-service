@@ -369,7 +369,7 @@ async function loadUsers() {
       <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
-      <td><input type="number" value="${u.priority ?? 0}" id="prio-${u.username}" style="width:70px">
+      <td><input type="number" min="0" value="${u.priority ?? 0}" id="prio-${u.username}" style="width:70px">
         <button onclick="savePriority('${u.username}')">Save</button></td>
       <td class="actions"><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
       <td class="actions">
@@ -404,7 +404,7 @@ async function saveLimits(username) {
 
 async function savePriority(username) {
   const v = parseInt(document.getElementById(`prio-${username}`).value);
-  if (Number.isNaN(v)) { alert("Priority must be a number"); return; }
+  if (!Number.isInteger(v) || v < 0) { alert("Priority must be an integer ≥ 0"); return; }
   const resp = await fetch(`/admin/users/${username}`, {
     method: "PATCH", headers, body: JSON.stringify({ priority: v }),
   });
@@ -528,9 +528,9 @@ async function loadBackends() {
   tbody.innerHTML = data.map(b => `<tr>
     <td>${b.id}</td><td>${escapeHtml(b.url)}</td><td>${escapeHtml(b.label || "-")}${managedBadge(b.managed)}</td>
     <td>${escapeHtml(b.device)}</td>
-    <td><input type="number" value="${b.priority}" id="prio-${b.id}" style="width:64px"
-      title="Higher = preferred until saturated. Admin-managed; preserved across deploys.">
-      <button onclick="savePriority(${b.id})">Save</button></td>
+    <td><input type="number" min="0" value="${b.priority}" id="prio-${b.id}" style="width:64px"
+      title="Higher = preferred until saturated (≥ 0). Admin-managed; preserved across deploys.">
+      <button onclick="saveBackendPriority(${b.id})">Save</button></td>
     <td>${(b.domains && b.domains.length) ? b.domains.map(escapeHtml).join(", ") : "—"}</td>
     <td>${b.enabled}</td>
     <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px">
@@ -555,9 +555,9 @@ async function saveMaxInflight(id) {
 
 // Priority is admin-managed (the deploy never writes it), so edits here persist across
 // redeploys. Higher priority backends are preferred by the submit worker until saturated.
-async function savePriority(id) {
+async function saveBackendPriority(id) {
   const v = parseInt(document.getElementById(`prio-${id}`).value);
-  if (!Number.isInteger(v)) { alert("Priority must be an integer"); return; }
+  if (!Number.isInteger(v) || v < 0) { alert("Priority must be an integer ≥ 0"); return; }
   await fetch(`/admin/backends/${id}`, {
     method: "PATCH", headers, body: JSON.stringify({ priority: v }),
   });
