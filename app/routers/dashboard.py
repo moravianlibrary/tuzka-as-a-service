@@ -1,7 +1,7 @@
 import asyncio
 import csv
 import io
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -402,7 +402,9 @@ async def analytics_breakdown(
             " LEFT JOIN domains d ON d.id = ja.domain_id"
             " WHERE ja.submitted_at BETWEEN :from_date AND :to_date"
             "  AND (CAST(:username AS text) IS NULL OR u.username = :username)"
-            "  AND (CAST(:domain AS text) IS NULL OR d.name = :domain)"
+            # "default" = the engine's base model, stored as NULL domain_id, so match those too.
+            "  AND (CAST(:domain AS text) IS NULL OR d.name = :domain"
+            "       OR (:domain = 'default' AND ja.domain_id IS NULL))"
             "  AND (CAST(:engine_device AS text) IS NULL OR ja.engine_device::text = :engine_device)"
             "  AND (CAST(:engine_version AS text) IS NULL OR ev.name = :engine_version)"
             " GROUP BY time_bucket, u.username, ev.name, ja.engine_device, d.name"
@@ -512,7 +514,8 @@ def _analytics_filters(
         where += " AND u.username = :username"
         params["username"] = username
     if domain:
-        where += " AND d.name = :domain"
+        # "default" = the engine's base model, stored as NULL domain_id, so match those too.
+        where += " AND (d.name = :domain OR (:domain = 'default' AND ja.domain_id IS NULL))"
         params["domain"] = domain
     if engine_device:
         where += " AND ja.engine_device::text = :engine_device"
@@ -672,89 +675,21 @@ async def analytics_raw_csv(
 
 
 @router.get(
-    "/stats/years",
-    summary="Years that have analytics data",
+    "/facets",
+    summary="Distinct filter values (usernames, domains, engine versions) for the dropdowns",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def stats_years(db: AsyncSession = Depends(get_db)):
-    """Return the calendar years that have data in job_analytics, newest first.
+async def get_facets(db: AsyncSession = Depends(get_db)):
+    """Return the value sets that populate the jobs/analytics filter dropdowns — all
+    usernames, all known domains, and all known engine versions, each sorted. These are
+    small lookup/user tables, so this is a cheap query. Requires a master key."""
+    usernames = (await db.execute(text("SELECT username FROM users ORDER BY username"))).all()
+    domains = (await db.execute(text("SELECT name FROM domains ORDER BY name"))).all()
+    engines = (await db.execute(text("SELECT name FROM engine_versions ORDER BY name"))).all()
+    return {
+        "usernames": [r[0] for r in usernames],
+        "domains": [r[0] for r in domains],
+        "engine_versions": [r[0] for r in engines],
+    }
 
-    Falls back to the current year when there is no data yet. Requires a master key."""
-    result = await db.execute(
-        text(
-            "SELECT DISTINCT EXTRACT(YEAR FROM stat_date)::int AS yr"
-            " FROM job_analytics"
-            " ORDER BY yr DESC"
-        )
-    )
-    years = [row[0] for row in result.all()]
-    return {"years": years or [datetime.utcnow().year]}
 
-
-@router.get(
-    "/stats.csv",
-    summary="Download aggregated usage stats as CSV",
-    responses={401: {"description": "Missing or invalid master key"}},
-)
-async def download_stats_csv(
-    year: int | None = Query(None, description="Calendar year; defaults to current year"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Stream a CSV of daily usage stats for ``year`` (default: current year).
-
-    Aggregates job_analytics fact rows into daily summaries grouped by
-    username × engine_version × domain. Requires a master key."""
-    year = year or datetime.utcnow().year
-    start = date(year, 1, 1)
-    end = date(year + 1, 1, 1)
-
-    STATS_COLUMNS = (
-        "stat_date", "username", "engine_version", "domain",
-        "jobs_total", "jobs_done", "jobs_failed",
-        "proc_count", "proc_avg_seconds", "proc_stddev_seconds",
-        "proc_min_seconds", "proc_max_seconds",
-        "proc_p50_seconds", "proc_p95_seconds", "proc_p99_seconds",
-    )
-
-    result = await db.execute(
-        text(
-            "SELECT"
-            "  ja.stat_date,"
-            "  COALESCE(u.username, 'unknown') AS username,"
-            "  COALESCE(ev.name, 'unknown') AS engine_version,"
-            "  COALESCE(d.name, 'default') AS domain,"
-            "  COUNT(*) AS jobs_total,"
-            "  COUNT(*) FILTER (WHERE ja.status = 'done') AS jobs_done,"
-            "  COUNT(*) FILTER (WHERE ja.status = 'failed') AS jobs_failed,"
-            "  COUNT(ja.ocr_running_s) AS proc_count,"
-            "  AVG(ja.ocr_running_s) AS proc_avg_seconds,"
-            "  STDDEV_POP(ja.ocr_running_s) AS proc_stddev_seconds,"
-            "  MIN(ja.ocr_running_s) AS proc_min_seconds,"
-            "  MAX(ja.ocr_running_s) AS proc_max_seconds,"
-            "  PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY ja.ocr_running_s) AS proc_p50_seconds,"
-            "  PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ja.ocr_running_s) AS proc_p95_seconds,"
-            "  PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY ja.ocr_running_s) AS proc_p99_seconds"
-            " FROM job_analytics ja"
-            " LEFT JOIN users u ON u.id = ja.user_id"
-            " LEFT JOIN engine_versions ev ON ev.id = ja.engine_version_id"
-            " LEFT JOIN domains d ON d.id = ja.domain_id"
-            " WHERE ja.stat_date >= :start AND ja.stat_date < :end"
-            " GROUP BY ja.stat_date, u.username, ev.name, d.name"
-            " ORDER BY ja.stat_date"
-        ),
-        {"start": start, "end": end},
-    )
-    rows = result.all()
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(STATS_COLUMNS)
-    for row in rows:
-        writer.writerow([_csv_cell(v) for v in row])
-    buf.seek(0)
-
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="taas-stats-{year}.csv"'},
-    )

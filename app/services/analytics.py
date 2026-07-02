@@ -11,28 +11,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 
-def parse_alto(alto_bytes: bytes) -> tuple[int, int, int]:
-    """Return (lines, blocks, chars) for an ALTO XML document.
+def parse_alto(alto_bytes: bytes) -> tuple[int, int]:
+    """Return (blocks, chars) for an ALTO XML document.
 
-    Lines = TextLine count, blocks = TextBlock count, chars = sum of String CONTENT lengths.
-    Returns (0, 0, 0) on any parse failure."""
+    Blocks = TextBlock count, chars = sum of String CONTENT lengths. The line count is
+    taken from the engine's ``n_lines`` (not parsed here). Returns (0, 0) on parse failure."""
     try:
         root = ElementTree.fromstring(alto_bytes)
         tag = root.tag
         if "}" in tag:
             ns_uri = tag.split("}")[0].lstrip("{")
             ns = {"a": ns_uri}
-            lines = len(root.findall(".//a:TextLine", ns))
             blocks = len(root.findall(".//a:TextBlock", ns))
             chars = sum(len(e.get("CONTENT", "")) for e in root.findall(".//a:String", ns))
         else:
-            lines = len(root.findall(".//TextLine"))
             blocks = len(root.findall(".//TextBlock"))
             chars = sum(len(e.get("CONTENT", "")) for e in root.findall(".//String"))
-        return lines, blocks, chars
+        return blocks, chars
     except Exception as exc:
         logger.warning("ALTO parse failed: %s", exc)
-        return 0, 0, 0
+        return 0, 0
 
 
 def _dur_s(a: datetime | None, b: datetime | None) -> float | None:

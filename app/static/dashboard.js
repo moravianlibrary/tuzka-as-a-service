@@ -89,6 +89,34 @@ function statusBadge(s) {
   return `<span class="status status-${s}">${s}</span>`;
 }
 
+// A boolean shown as a coloured pill (green/red) instead of raw "true"/"false".
+function boolBadge(v, yes = "yes", no = "no") {
+  return `<span class="status ${v ? "status-done" : "status-failed"}">${v ? yes : no}</span>`;
+}
+
+// Populate the filter dropdowns (usernames / domains / engine versions) from the server.
+// Memoized — fetched once, then reused; pass force=true to refresh (e.g. after adding a
+// user). Preserves each select's current value so switching tabs doesn't drop a filter.
+let facetsLoaded = false;
+async function populateFacets(force = false) {
+  if (facetsLoaded && !force) return;
+  const f = await fetch("/dashboard/facets", { headers }).then(r => (r.ok ? r.json() : null));
+  if (!f) return;
+  facetsLoaded = true;
+  const fill = (id, values, allLabel) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">${allLabel}</option>`
+      + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    sel.value = cur;  // restore selection if it still exists
+  };
+  fill("jobs-filter-user", f.usernames, "All users");
+  fill("an-user", f.usernames, "All users");
+  fill("an-domain", f.domains, "All domains");
+  fill("an-engine", f.engine_versions, "All engines");
+}
+
 // Date-time formatting: cs-CZ date + zero-padded HH:MM:SS time, rendered monospace
 // so values line up. fmtDateMs adds .mmm for the job detail modal's sub-second phases.
 function fmtDateTime(d, withMs = false) {
@@ -168,7 +196,6 @@ async function loadOverview() {
 
 // Usage (last 30 days, per user)
 async function loadUsage() {
-  populateStatsYearPicker();
   const u = await fetch("/dashboard/usage?days=30", { headers }).then(r => r.json());
   renderStatusChart(u, "status-chart");
   renderUsage(u, "usage-chart");
@@ -181,25 +208,6 @@ async function loadUsage() {
   tbody.innerHTML = totalsByUser.length
     ? totalsByUser.map(r => `<tr><td>${escapeHtml(r.usr)}</td><td>${r.total}</td></tr>`).join("")
     : `<tr><td colspan="2" class="muted">No jobs in the last 30 days.</td></tr>`;
-}
-
-// Fill the export year picker from the years that actually have data, once.
-// Defaults to the current year when present, otherwise the newest available.
-async function populateStatsYearPicker() {
-  const sel = document.getElementById("stats-year");
-  if (!sel || sel.options.length) return;
-  const { years } = await fetch("/dashboard/stats/years", { headers }).then(r => r.json());
-  const cur = new Date().getFullYear();
-  sel.innerHTML = years
-    .map(y => `<option value="${y}"${y === cur ? " selected" : ""}>${y}</option>`)
-    .join("");
-}
-
-// CSV download — the session cookie is sent automatically, so a plain navigation
-// works (no need to attach the auth header).
-function downloadStatsCsv() {
-  const year = document.getElementById("stats-year").value || new Date().getFullYear();
-  window.location = `/dashboard/stats.csv?year=${year}`;
 }
 
 // Stacked-area usage: the top-N users each get their own band (coloured along a
@@ -428,6 +436,7 @@ document.getElementById("add-user-form").addEventListener("submit", async e => {
   if (data.api_key) showKey(`API key for ${fd.get("username")}`, data.api_key);
   e.target.reset();
   loadUsers();
+  populateFacets(true);  // new user should appear in the filter dropdowns
 });
 
 async function rotateKey(username) {
@@ -469,7 +478,7 @@ function openJobDialog(i) {
     <div class="kv"><span>User</span>${escapeHtml(j.username)}</div>
     <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
     <div class="kv"><span>Format</span>${escapeHtml(j.fmt)}</div>
-    <div class="kv"><span>Domain</span>${j.domain ? escapeHtml(j.domain) : "—"}</div>
+    <div class="kv"><span>Domain</span>${escapeHtml(j.domain || "default")}</div>
     <div class="kv"><span>Backend</span>${j.backend ? escapeHtml(j.backend) : (j.backend_id ? "#" + j.backend_id : "—")}</div>
     <div class="kv"><span>Engine version</span>${j.engine_version ? escapeHtml(j.engine_version) : "—"}</div>
     <hr>
@@ -498,6 +507,7 @@ function clearJobsFilters() {
   loadJobs();
 }
 async function loadJobs() {
+  populateFacets();
   const user = document.getElementById("jobs-filter-user").value;
   const status = document.getElementById("jobs-filter-status").value;
   const params = new URLSearchParams({ limit: 50, offset: jobsOffset });
@@ -529,37 +539,31 @@ async function loadBackends() {
     <td>${b.id}</td><td>${escapeHtml(b.url)}</td><td>${escapeHtml(b.label || "-")}${managedBadge(b.managed)}</td>
     <td>${escapeHtml(b.device)}</td>
     <td><input type="number" min="0" value="${b.priority}" id="prio-${b.id}" style="width:64px"
-      title="Higher = preferred until saturated (≥ 0). Admin-managed; preserved across deploys.">
-      <button onclick="saveBackendPriority(${b.id})">Save</button></td>
+      title="Higher = preferred until saturated (≥ 0). Admin-managed; preserved across deploys."></td>
     <td>${(b.domains && b.domains.length) ? b.domains.map(escapeHtml).join(", ") : "—"}</td>
-    <td>${b.enabled}</td>
-    <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px">
-      <button onclick="saveMaxInflight(${b.id})">Save</button></td>
+    <td>${boolBadge(b.enabled, "enabled", "disabled")}</td>
+    <td><input type="number" min="1" value="${b.max_inflight}" id="mi-${b.id}" style="width:70px"></td>
     <td>${b.inflight_now}</td>
     ${healthCell(b.healthy)}
-    <td class="actions">${b.enabled
-      ? `<button class="btn-disable" onclick="disableBackend(${b.id})">Disable</button>`
-      : `<button class="btn-enable" onclick="enableBackend(${b.id})">Enable</button>`}
+    <td class="actions">
+      <button onclick="saveBackendRow(${b.id})">Save</button>
+      ${b.enabled
+        ? `<button class="btn-disable" onclick="disableBackend(${b.id})">Disable</button>`
+        : `<button class="btn-enable" onclick="enableBackend(${b.id})">Enable</button>`}
       <button class="btn-delete" onclick="deleteBackend(${b.id})" ${b.can_delete ? "" : "disabled title='Backend still has jobs'"}>Delete</button></td>
   </tr>`).join("");
 }
 
-async function saveMaxInflight(id) {
-  const v = parseInt(document.getElementById(`mi-${id}`).value);
-  if (!v || v < 1) { alert("Max in-flight must be ≥ 1"); return; }
+// One Save per row persists both editable fields. Priority is admin-managed (the deploy
+// never writes it), so edits here survive redeploys; higher priority backends are preferred
+// by the submit worker until saturated. Bounds mirror the API (priority ≥ 0, in-flight ≥ 1).
+async function saveBackendRow(id) {
+  const prio = parseInt(document.getElementById(`prio-${id}`).value);
+  const mi = parseInt(document.getElementById(`mi-${id}`).value);
+  if (!Number.isInteger(prio) || prio < 0) { alert("Priority must be an integer ≥ 0"); return; }
+  if (!Number.isInteger(mi) || mi < 1) { alert("Max in-flight must be an integer ≥ 1"); return; }
   await fetch(`/admin/backends/${id}`, {
-    method: "PATCH", headers, body: JSON.stringify({ max_inflight: v }),
-  });
-  loadBackends();
-}
-
-// Priority is admin-managed (the deploy never writes it), so edits here persist across
-// redeploys. Higher priority backends are preferred by the submit worker until saturated.
-async function saveBackendPriority(id) {
-  const v = parseInt(document.getElementById(`prio-${id}`).value);
-  if (!Number.isInteger(v) || v < 0) { alert("Priority must be an integer ≥ 0"); return; }
-  await fetch(`/admin/backends/${id}`, {
-    method: "PATCH", headers, body: JSON.stringify({ priority: v }),
+    method: "PATCH", headers, body: JSON.stringify({ priority: prio, max_inflight: mi }),
   });
   loadBackends();
 }
@@ -695,6 +699,7 @@ function clearAnalytics() {
 }
 
 async function loadAnalytics() {
+  populateFacets();
   const params = new URLSearchParams({ page: anPage });
   const from_date = document.getElementById("an-from").value;
   const to_date   = document.getElementById("an-to").value;
@@ -730,7 +735,7 @@ async function loadAnalytics() {
         <td>${r.username ? escapeHtml(r.username) : "—"}</td>
         <td>${r.engine_version ? escapeHtml(r.engine_version) : "—"}</td>
         <td>${r.engine_device ? escapeHtml(r.engine_device) : "—"}</td>
-        <td>${r.domain ? escapeHtml(r.domain) : "—"}</td>
+        <td>${escapeHtml(r.domain || "default")}</td>
         <td>${r.jobs_total}</td><td>${r.jobs_done}</td><td>${r.jobs_failed}</td>
         <td>${fmt(r.proc_avg_s)}</td><td>${fmt(r.proc_p95_s)}</td>
         <td>${fmt(r.avg_alto_lines)}</td><td>${fmt(r.avg_alto_chars)}</td>

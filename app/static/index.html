@@ -27,22 +27,16 @@
     </nav>
 
     <div id="overview" class="tab-content active">
-      <h2 style="margin-bottom:12px">Last 24 hours</h2>
+      <h2>Last 24 hours</h2>
       <div class="cards" id="stat-cards"></div>
-      <h2 style="margin:20px 0 12px">Backends</h2>
+      <h2>Backends</h2>
       <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Device</th><th>Prio</th><th>Inflight</th><th>Health</th></tr></thead><tbody id="overview-backends"></tbody></table>
-      <h2 style="margin:20px 0 12px">Jobs by status &mdash; last 30 days</h2>
+      <h2>Jobs by status &mdash; last 30 days</h2>
       <div id="status-chart" class="usage-chart"></div>
-      <h2 style="margin:20px 0 12px">Usage per user &mdash; last 30 days</h2>
+      <h2>Usage per user &mdash; last 30 days</h2>
       <div id="usage-chart" class="usage-chart"></div>
-      <h2 style="margin:20px 0 12px">Totals &mdash; last 30 days</h2>
+      <h2>Totals &mdash; last 30 days</h2>
       <table><thead><tr><th>User</th><th>Jobs</th></tr></thead><tbody id="usage-users-table"></tbody></table>
-      <h2 style="margin:20px 0 12px">Export stats</h2>
-      <div class="export-row">
-        <label for="stats-year" class="muted">Export year</label>
-        <select id="stats-year"></select>
-        <button onclick="downloadStatsCsv()">Export CSV</button>
-      </div>
     </div>
 
     <div id="users" class="tab-content">
@@ -55,7 +49,7 @@
 
     <div id="jobs" class="tab-content">
       <div class="filters">
-        <input id="jobs-filter-user" placeholder="Username">
+        <select id="jobs-filter-user"><option value="">All users</option></select>
         <select id="jobs-filter-status"><option value="">All</option><option>queued</option><option>running</option><option>done</option><option>failed</option></select>
         <button onclick="jobsOffset=0;loadJobs()">Filter</button>
         <button class="secondary" onclick="clearJobsFilters()">Clear</button>
@@ -66,19 +60,18 @@
 
     <div id="backends" class="tab-content">
       <form class="inline" id="add-backend-form" style="margin-bottom:16px">
-        <input name="url" placeholder="URL" required>
-        <input name="label" placeholder="Label">
-        <input name="api_key" placeholder="API Key">
-        <input name="max_inflight" type="number" min="1" value="4" title="Max in-flight (≥ 1)" style="width:80px">
-        <input name="priority" type="number" min="0" value="0" title="Priority (higher = preferred, ≥ 0)" style="width:80px">
-        <select name="device" title="Device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select>
-        <button type="submit">Add Backend</button>
+        <label>URL <input name="url" placeholder="http://engine:8000" required></label>
+        <label>Label <input name="label" placeholder="optional"></label>
+        <label>API Key <input name="api_key" placeholder="optional"></label>
+        <label>Max in-flight <input name="max_inflight" type="number" min="1" value="4" style="width:80px"></label>
+        <label>Priority <input name="priority" type="number" min="0" value="0" style="width:80px"></label>
+        <label>Device <select name="device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+        <span class="filter-actions"><button type="submit">Add Backend</button></span>
       </form>
-      <table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Device</th><th>Prio</th><th>Domains</th><th>Enabled</th><th>Max Inflight</th><th>Inflight</th><th>Health</th><th>Actions</th></tr></thead><tbody id="backends-table"></tbody></table>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>URL</th><th>Label</th><th>Device</th><th>Prio</th><th>Domains</th><th>Enabled</th><th>Max Inflight</th><th>Inflight</th><th>Health</th><th>Actions</th></tr></thead><tbody id="backends-table"></tbody></table></div>
     </div>
 
     <div id="analytics" class="tab-content">
-      <h2 style="margin-bottom:12px">Breakdown</h2>
       <div class="filters">
         <label>From <input type="date" id="an-from"></label>
         <label>To <input type="date" id="an-to"></label>
@@ -91,15 +84,17 @@
             <option value="year">Year</option>
           </select>
         </label>
-        <input id="an-user" placeholder="Username">
-        <input id="an-domain" placeholder="Domain">
-        <input id="an-engine" placeholder="Engine version">
-        <select id="an-device"><option value="">Any device</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select>
-        <button onclick="anPage=1;loadAnalytics()">Query</button>
-        <button class="secondary" onclick="clearAnalytics()">Clear</button>
-        <button onclick="downloadAnalyticsCsv()">Export CSV</button>
+        <label>User <select id="an-user"><option value="">All users</option></select></label>
+        <label>Domain <select id="an-domain"><option value="">All domains</option></select></label>
+        <label>Engine <select id="an-engine"><option value="">All engines</option></select></label>
+        <label>Device <select id="an-device"><option value="">Any device</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+        <span class="filter-actions">
+          <button onclick="anPage=1;loadAnalytics()">Query</button>
+          <button class="secondary" onclick="clearAnalytics()">Clear</button>
+          <button onclick="downloadAnalyticsCsv()">Export CSV</button>
+        </span>
       </div>
-      <table id="analytics-table">
+      <div class="table-wrap"><table id="analytics-table">
         <thead><tr>
           <th>Time bucket</th><th>User</th><th>Engine</th><th>Device</th><th>Domain</th>
           <th>Total</th><th>Done</th><th>Failed</th>
@@ -107,19 +102,19 @@
           <th>Avg lines</th><th>Avg chars</th>
         </tr></thead>
         <tbody id="analytics-body"></tbody>
-      </table>
+      </table></div>
       <div class="pagination" id="analytics-pagination"></div>
     </div>
 
     <div id="config" class="tab-content">
-      <h2 style="margin-bottom:12px">Rate limit defaults</h2>
+      <h2>Rate limit defaults</h2>
       <table>
         <thead><tr><th>Class</th><th>Per minute</th><th>Burst</th></tr></thead>
         <tbody id="config-limits"></tbody>
       </table>
-      <h2 style="margin:20px 0 12px">Storage TTLs</h2>
+      <h2>Storage TTLs</h2>
       <div id="config-storage"></div>
-      <h2 style="margin:20px 0 12px">Job &amp; download policy</h2>
+      <h2>Job &amp; download policy</h2>
       <div id="config-policy"></div>
       <button onclick="saveConfig()" style="margin-top:12px">Save</button>
     </div>

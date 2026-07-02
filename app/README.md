@@ -110,7 +110,7 @@ released, and a WS `failed` event emitted. These timeouts and the presigned-URL 
 cleanup worker deletes raw `jobs`/`job_results` rows aged past 30 days. Per-job
 analytics are **not** lost: each finished/failed job is written to the permanent
 `job_analytics` fact table at harvest time (one row per job, kept forever), so the
-dashboard and `GET /dashboard/stats.csv?year=` aggregate from there rather than from a
+dashboard analytics (breakdown + raw/CSV export) query from there rather than from a
 nightly rollup. See `app/services/analytics.py` and the
 [analytics design doc](../docs/2026-06-18-job-analytics-design.md).
 

@@ -34,10 +34,39 @@ header h1 { font-size: 1.4rem; margin: 0; color: #fff; }
 .status-running { background: #fff3cd; color: #856404; } .status-queued { background: #d1ecf1; color: #0c5460; }
 .health-ok { color: #28a745; } .health-bad { color: #dc3545; } .health-na { color: #868e96; }
 
+/* Section headings — spacing lived inline on every <h2>; centralize it here. */
+.tab-content h2 { margin: 20px 0 12px; }
+.tab-content h2:first-child { margin-top: 0; }
+
+/* Wide tables (backends, analytics) scroll instead of overflowing the container. */
+.table-wrap { overflow-x: auto; }
+
 /* Keep horizontal toolbars and in-row buttons sized to content */
 form.inline, .filters, .pagination, .usage-chart .uslots { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 form.inline :where(input, select, button), .filters :where(input, select, button), .actions button, .pagination button, .uslot select { width: auto; margin: 0; }
 .actions button, .pagination button { padding: 4px 10px; font-size: 0.8rem; }
+/* Row action buttons: margins give horizontal + vertical spacing, including when they
+   wrap. (Don't use display:flex on the <td> — it drops table-cell layout and misaligns
+   the column, stacking Limits/Actions together.) */
+.actions button { width: auto; margin: 0 6px 4px 0; }
+/* Bottom-align so captioned fields, plain inputs and buttons all sit on one line
+   (captions float above); centering would drop the captioned controls lower. */
+.filters, form.inline { align-items: flex-end; }
+/* Group action buttons to the right of a toolbar, separated from the filter fields. */
+.filter-actions { display: flex; gap: 10px; align-items: flex-end; margin-left: auto; }
+/* Labelled controls: caption above the control, so a toolbar/form reads as a form. */
+.filters label, form.inline label { display: inline-flex; flex-direction: column; gap: 2px; margin: 0; font-size: 0.8rem; color: #666; }
+/* Align the toolbar controls. Pico gives form controls both an explicit height and a
+   margin-bottom via `input:not(...)`-style selectors (specificity 0,1,1) — the height
+   matches across types, but the margin-bottom lands on <input> (incl. date) and not our
+   <select>, leaving From/To 16px low. Match that specificity here (explicit selectors,
+   not :where) to zero the margin and pin the height, so every control lines up. */
+.filters input, .filters select, .filters button,
+form.inline input, form.inline select, form.inline button {
+  height: calc(1rem * var(--pico-line-height) + var(--pico-form-element-spacing-vertical) * 2 + var(--pico-border-width) * 2);
+  box-sizing: border-box;
+  margin: 0;
+}
 
 .usage-chart svg { width: 100%; height: auto; display: block; }
 .uslot { display: inline-flex; align-items: center; gap: 6px; }
@@ -50,12 +79,6 @@ form.inline :where(input, select, button), .filters :where(input, select, button
 .storage-row input { width: 90px; margin: 0; }
 .muted { color: #888; }
 td.jobid { font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: nowrap; }
-
-/* CSV export controls at the bottom of the usage tab */
-.export-row { display: flex; align-items: center; gap: 8px; margin-bottom: 32px; }
-.export-row label, .export-row button { white-space: nowrap; }
-.export-row button { width: auto; margin: 0; }
-.export-row select { width: 120px; margin: 0; }
 
 /* Clickable job rows open the detail dialog */
 tr.clickable { cursor: pointer; }

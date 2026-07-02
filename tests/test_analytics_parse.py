@@ -26,24 +26,23 @@ ALTO_NO_NS = (
 )
 
 
-def test_parse_alto_namespaced_counts_lines_blocks_chars():
-    lines, blocks, chars = parse_alto(ALTO_NS)
-    assert lines == 3  # three TextLine elements
-    assert blocks == 2  # two TextBlock elements
+def test_parse_alto_namespaced_counts_blocks_chars():
+    blocks, chars = parse_alto(ALTO_NS)
+    assert blocks == 2  # two TextBlock elements (lines come from the engine, not parsed)
     assert chars == len("hello") + len("world") + len("foo") + len("bar")  # 16
 
 
 def test_parse_alto_without_namespace():
-    assert parse_alto(ALTO_NO_NS) == (1, 1, 4)
+    assert parse_alto(ALTO_NO_NS) == (1, 4)
 
 
 def test_parse_alto_empty_document():
-    assert parse_alto(b"<alto></alto>") == (0, 0, 0)
+    assert parse_alto(b"<alto></alto>") == (0, 0)
 
 
 def test_parse_alto_malformed_returns_zeros():
-    assert parse_alto(b"not xml at all <<<") == (0, 0, 0)
-    assert parse_alto(b"") == (0, 0, 0)
+    assert parse_alto(b"not xml at all <<<") == (0, 0)
+    assert parse_alto(b"") == (0, 0)
 
 
 def test_dur_s_normal_delta():

@@ -123,6 +123,7 @@ async def main() -> None:
         try:
             results_to_store = []
             alto_bytes_for_analytics: bytes | None = None
+            txt_bytes_for_analytics: bytes | None = None
             if fmt == "multi":
                 alto_bytes = await engine_client.get_result(
                     backend_url, api_key, engine_job_id, which="alto"
@@ -135,6 +136,7 @@ async def main() -> None:
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
                 alto_bytes_for_analytics = alto_bytes
+                txt_bytes_for_analytics = txt_bytes
             elif fmt == "alto":
                 alto_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
@@ -146,11 +148,21 @@ async def main() -> None:
                 results_to_store = [
                     ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
                 ]
+                txt_bytes_for_analytics = txt_bytes
 
-            # Parse ALTO metrics before any compression
-            alto_lines = alto_blocks = alto_chars = None
+            # Line count comes straight from the engine's status — it reports n_lines for
+            # every job (computed during OCR), so lines are populated regardless of fmt.
+            alto_lines = times["n_lines"] if isinstance(times.get("n_lines"), int) else None
+            # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
+            alto_blocks = alto_chars = None
             if alto_bytes_for_analytics:
-                alto_lines, alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
+                alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
+            # Prefer counting characters from the txt output (present for txt/multi jobs) so
+            # the metric is populated regardless of fmt; count non-whitespace to match ALTO's
+            # char semantics (sum of String CONTENT). ALTO's count stays for alto-only jobs.
+            if txt_bytes_for_analytics is not None:
+                text = txt_bytes_for_analytics.decode("utf-8", "replace")
+                alto_chars = sum(1 for c in text if not c.isspace())
 
             mean_conf: float | None = None
             if isinstance(times.get("mean_conf"), (int, float)):
