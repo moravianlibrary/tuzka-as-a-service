@@ -44,7 +44,7 @@
         <input name="username" placeholder="Username" required>
         <button type="submit">Add User</button>
       </form>
-      <table><thead><tr><th id="th-username" onclick="setUsersSort('username')" style="cursor:pointer">Username</th><th>Active</th><th id="th-created" onclick="setUsersSort('created')" style="cursor:pointer">Created</th><th>Jobs</th><th>Done</th><th>Failed</th><th>Priority</th><th>Limits</th><th>Actions</th></tr></thead><tbody id="users-table"></tbody></table>
+      <div class="table-wrap"><table><thead><tr><th id="th-username" onclick="setUsersSort('username')" style="cursor:pointer">Username</th><th>Active</th><th id="th-created" onclick="setUsersSort('created')" style="cursor:pointer">Created</th><th>Jobs</th><th>Done</th><th>Failed</th><th>Priority</th><th title="URL template with a {UUID} placeholder; makes each job's External ID a link">Catalog URL</th><th>Limits</th><th>Actions</th></tr></thead><tbody id="users-table"></tbody></table></div>
     </div>
 
     <div id="jobs" class="tab-content">

@@ -154,6 +154,17 @@ function isHttpUrl(u) {
   return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
+// The job's external ID for the detail dialog. When the user has a catalog URL
+// template configured, the server resolves it into external_url and we make the ID
+// itself a link to it; otherwise it's plain monospace text.
+function externalIdCell(j) {
+  if (!j.external_id) return "—";
+  const id = `<code>${escapeHtml(String(j.external_id))}</code>`;
+  return isHttpUrl(j.external_url)
+    ? `<a href="${escapeHtml(j.external_url)}" target="_blank" rel="noopener" title="Open in catalog ↗">${id}</a>`
+    : id;
+}
+
 // Render an error response body's `detail` as a readable string. FastAPI 422s return
 // detail as an array of {loc,msg,...}; a plain `${e.detail}` would show "[object Object]".
 function errText(e, fallback = "Request failed") {
@@ -377,10 +388,12 @@ async function loadUsers() {
       <td>${u.active ? `<span class="status status-done">active</span>` : `<span class="status status-failed">disabled</span>`}</td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${s.total_jobs}</td><td>${s.done}</td><td>${s.failed}</td>
-      <td><input type="number" min="0" value="${u.priority ?? 0}" id="prio-${u.username}" style="width:70px">
-        <button onclick="savePriority('${u.username}')">Save</button></td>
+      <td><input type="number" min="0" value="${u.priority ?? 0}" id="prio-${u.username}" style="width:70px"></td>
+      <td><input type="text" value="${escapeHtml(u.external_url_template || "")}" id="url-${u.username}"
+        placeholder="https://…/{UUID}" title="Use {UUID} where the External ID goes; empty = no link" style="width:220px"></td>
       <td class="actions"><button onclick="toggleLimits('${u.username}')">${hasOverrides ? "custom" : "default"}</button></td>
       <td class="actions">
+        <button onclick="saveUserRow('${u.username}')">Save</button>
         <button onclick="rotateKey('${u.username}')">Rotate Key</button>
         ${u.active
           ? `<button class="btn-disable" onclick="setUserActive('${u.username}', false)">Disable</button>`
@@ -388,7 +401,7 @@ async function loadUsers() {
         <button class="btn-delete" onclick="deleteUser('${u.username}')" ${s.total_jobs ? "disabled title='User still has jobs'" : ""}>Delete</button>
       </td>
     </tr>
-    <tr id="limits-${u.username}" style="display:none"><td colspan="9">
+    <tr id="limits-${u.username}" style="display:none"><td colspan="10">
       ${editor}
       <button onclick="saveLimits('${u.username}')">Save limits</button>
       <span class="muted">(empty = inherit default)</span>
@@ -410,15 +423,21 @@ async function saveLimits(username) {
   loadUsers();
 }
 
-async function savePriority(username) {
-  const v = parseInt(document.getElementById(`prio-${username}`).value);
-  if (!Number.isInteger(v) || v < 0) { alert("Priority must be an integer ≥ 0"); return; }
+// One Save per row persists the inline fields: priority (submit-queue preference,
+// higher = preferred, ≥ 0) and the catalog URL template. The template uses a {UUID}
+// placeholder where the job's external id goes, turning each job's External ID into a
+// link; empty clears it (no link). Rate limits have their own Save in the expandable panel.
+async function saveUserRow(username) {
+  const prio = parseInt(document.getElementById(`prio-${username}`).value);
+  if (!Number.isInteger(prio) || prio < 0) { alert("Priority must be an integer ≥ 0"); return; }
+  const url = document.getElementById(`url-${username}`).value.trim();
   const resp = await fetch(`/admin/users/${username}`, {
-    method: "PATCH", headers, body: JSON.stringify({ priority: v }),
+    method: "PATCH", headers,
+    body: JSON.stringify({ priority: prio, external_url_template: url || null }),
   });
   if (!resp.ok) {
     const e = await resp.json().catch(() => ({}));
-    alert(e.detail || "Failed to set priority");
+    alert(errText(e, "Failed to save user"));
   }
   loadUsers();
 }
@@ -473,8 +492,7 @@ function openJobDialog(i) {
   if (!j) return;
   document.getElementById("job-dialog-body").innerHTML = `
     <div class="kv"><span>Job ID</span><code>${j.job_id}</code></div>
-    <div class="kv"><span>External ID</span><code>${j.external_id || "—"}</code></div>
-    ${isHttpUrl(j.external_url) ? `<div class="kv"><span>Catalog</span><a href="${escapeHtml(j.external_url)}" target="_blank" rel="noopener">Open in catalog ↗</a></div>` : (j.external_url ? `<div class="kv"><span>Catalog</span><code>${escapeHtml(j.external_url)}</code></div>` : "")}
+    <div class="kv"><span>External ID</span>${externalIdCell(j)}</div>
     <div class="kv"><span>User</span>${escapeHtml(j.username)}</div>
     <div class="kv"><span>Status</span>${statusBadge(j.status)}</div>
     <div class="kv"><span>Format</span>${escapeHtml(j.fmt)}</div>

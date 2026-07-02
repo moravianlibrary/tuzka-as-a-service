@@ -245,9 +245,11 @@ During each healthcheck tick, taas makes **two calls** per backend:
 
 `external_url_template` (nullable Text) on `users`.
 
-Example: `https://www.digitalniknihovna.cz/mzk/uuid/{uuid}`
+Example: `https://www.digitalniknihovna.cz/mzk/uuid/{UUID}`
 
-`{uuid}` replaced client-side by dashboard JS using `job.external_id`.
+`{UUID}` (case-insensitive) replaced server-side (`render_external_url`) using
+`job.external_id`; the dashboard turns each job's External ID into a link to it.
+Set per user via the **Catalog URL** field in the dashboard's Users tab.
 
 Included in `GET /api/v1/jobs/{id}` response (`JobStatus` schema).
 

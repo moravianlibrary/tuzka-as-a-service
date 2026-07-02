@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from uuid import UUID
 
@@ -10,12 +11,18 @@ class JobSubmitResponse(BaseModel):
     status: str
 
 
+# The placeholder in a user's external_url_template that gets the job's external_id.
+# Case-insensitive so both {UUID} (documented) and {uuid} work.
+_UUID_PLACEHOLDER = re.compile(r"\{uuid\}", re.IGNORECASE)
+
+
 def render_external_url(template: str | None, external_id) -> str | None:
-    """Resolve a user's ``external_url_template`` for a job by substituting ``{uuid}``
-    with the job's ``external_id``. Returns ``None`` when no template is configured."""
+    """Resolve a user's ``external_url_template`` for a job by substituting the
+    ``{UUID}`` placeholder with the job's ``external_id`` (case-insensitive, so
+    ``{uuid}`` also works). Returns ``None`` when no template is configured."""
     if not template or external_id is None:
         return None
-    return template.replace("{uuid}", str(external_id))
+    return _UUID_PLACEHOLDER.sub(lambda _: str(external_id), template)
 
 
 class JobStatus(BaseModel):
