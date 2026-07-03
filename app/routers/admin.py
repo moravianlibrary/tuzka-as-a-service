@@ -2,12 +2,13 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.deps import get_settings, require_master
+from app.exceptions import BadRequest, Conflict, NotFound
 from app.models.backend import Backend
 from app.models.db import get_db
 from app.models.job import Job
@@ -84,7 +85,7 @@ async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)) -> U
     """
     existing = await db.execute(select(User).where(User.username == body.username))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already exists")
+        raise Conflict("Username already exists")
 
     raw_key, hashed = generate_key()
     user = User(username=body.username, hashed_key=hashed)
@@ -113,14 +114,12 @@ async def delete_user(username: str, db: AsyncSession = Depends(get_db)) -> dict
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFound("User not found")
     job_count = await db.scalar(
         select(func.count()).select_from(Job).where(Job.username == username)
     )
     if job_count:
-        raise HTTPException(
-            status_code=409, detail=f"User still has {job_count} job(s); cannot delete"
-        )
+        raise Conflict(f"User still has {job_count} job(s); cannot delete")
     await db.delete(user)
     await db.commit()
     return {"status": "deleted"}
@@ -144,7 +143,7 @@ async def rotate_key(username: str, db: AsyncSession = Depends(get_db)) -> UserR
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFound("User not found")
 
     raw_key, hashed = generate_key()
     await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
@@ -171,7 +170,7 @@ async def set_key(
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFound("User not found")
 
     hashed = hash_key(body.key)
     await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
@@ -204,7 +203,7 @@ async def update_user_limits(
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFound("User not found")
 
     # exclude_unset: only fields present in the request change; an explicit null
     # clears a rate-limit override or url template back to inherit.
@@ -373,7 +372,7 @@ async def update_backend(
     result = await db.execute(select(Backend).where(Backend.id == backend_id))
     backend = result.scalar_one_or_none()
     if not backend:
-        raise HTTPException(status_code=404, detail="Backend not found")
+        raise NotFound("Backend not found")
 
     update_data = body.model_dump(exclude_unset=True)
     if "api_key" in update_data:
@@ -413,14 +412,12 @@ async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)) ->
     result = await db.execute(select(Backend).where(Backend.id == backend_id))
     backend = result.scalar_one_or_none()
     if not backend:
-        raise HTTPException(status_code=404, detail="Backend not found")
+        raise NotFound("Backend not found")
     job_count = await db.scalar(
         select(func.count()).select_from(Job).where(Job.backend_id == backend_id)
     )
     if job_count:
-        raise HTTPException(
-            status_code=409, detail=f"Backend still has {job_count} job(s); cannot delete"
-        )
+        raise Conflict(f"Backend still has {job_count} job(s); cannot delete")
     await db.delete(backend)
     await db.commit()
     return {"status": "deleted"}
@@ -458,6 +455,6 @@ async def update_config(
     Requires a valid master key. An empty payload is rejected.
     """
     if not values:
-        raise HTTPException(status_code=400, detail="Empty config payload")
+        raise BadRequest("Empty config payload")
     await config_service.set_values(db, values)
     return {"status": "updated"}

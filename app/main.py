@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -13,6 +13,7 @@ from starlette.requests import Request
 
 from app.config import Settings
 from app.deps import get_settings
+from app.exceptions import Unauthorized
 from app.routers import admin, dashboard, jobs, ws
 from app.services import dash_session, storage
 
@@ -136,7 +137,7 @@ def create_app() -> FastAPI:
         httponly session cookie used by the dashboard."""
         key = request.headers.get("X-Master-Key", "")
         if not key or not hmac.compare_digest(key, settings.master_key):
-            raise HTTPException(status_code=401, detail="Invalid master key")
+            raise Unauthorized("Invalid master key")
         # Behind a TLS-terminating ingress the app sees http, so trust the
         # forwarded proto to decide whether to mark the cookie Secure.
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)

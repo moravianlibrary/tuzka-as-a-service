@@ -12,7 +12,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    HTTPException,
     Query,
     Request,
     Response,
@@ -24,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
+from app.exceptions import BadRequest, Conflict, NotFound, NotReady, Unprocessable
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.db import get_db
@@ -81,18 +81,12 @@ async def submit_job(
     filename = image.filename or "image"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in settings.allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Extension {ext} not allowed. Allowed: {settings.allowed_extensions}",
-        )
+        raise BadRequest(f"Extension {ext} not allowed. Allowed: {settings.allowed_extensions}")
 
     # Validate file size
     image_bytes = await image.read()
     if len(image_bytes) > settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Max: {settings.max_upload_bytes} bytes",
-        )
+        raise BadRequest(f"File too large. Max: {settings.max_upload_bytes} bytes")
 
     # Validate domain: if specified, at least one enabled backend must serve it.
     if domain:
@@ -104,10 +98,7 @@ async def submit_job(
             .where(Domain.name == domain, Backend.enabled.is_(True))
         )
         if not serves_domain:
-            raise HTTPException(
-                status_code=422,
-                detail=f"No backend serves domain '{domain}' — check available domains",
-            )
+            raise Unprocessable(f"No backend serves domain '{domain}' — check available domains")
 
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
@@ -183,7 +174,7 @@ async def get_job_status(
     )
     row = result.first()
     if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise NotFound("Job not found")
     job, url_template = row
 
     return JobStatus(
@@ -229,12 +220,12 @@ async def get_job_result(
     result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise NotFound("Job not found")
 
     if job.status == "failed":
         return JobResultResponse(status="failed", error=job.error or "Job failed")
     if job.status != "done":
-        raise HTTPException(status_code=202, detail="Job not completed yet")
+        raise NotReady("Job not completed yet")
 
     # Get results
     res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
@@ -294,18 +285,18 @@ async def download_job_result(
     result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise NotFound("Job not found")
 
     if job.status == "failed":
-        raise HTTPException(status_code=409, detail=job.error or "Job failed")
+        raise Conflict(job.error or "Job failed")
     if job.status != "done":
-        raise HTTPException(status_code=202, detail="Job not completed yet")
+        raise NotReady("Job not completed yet")
 
     res = await db.execute(
         select(JobResult).where(JobResult.job_id == job_id, JobResult.fmt == fmt)
     )
     if not res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=f"No {fmt} result available")
+        raise NotFound(f"No {fmt} result available")
 
     ext_map = {"alto": "xml", "txt": "txt"}
     obj_path = f"{username}/{job.external_id}.{ext_map.get(fmt, fmt)}.zst"

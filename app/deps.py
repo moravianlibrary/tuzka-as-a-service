@@ -5,12 +5,13 @@ from collections.abc import Awaitable, Callable
 from functools import lru_cache
 
 import redis.asyncio as aioredis
-from fastapi import Depends, HTTPException, Request, Security
+from fastapi import Depends, Request, Security
 from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.exceptions import RateLimited, Unauthorized
 from app.models.db import get_db
 from app.models.user import User
 from app.services import config as config_service
@@ -44,7 +45,7 @@ async def require_user(
     db: AsyncSession = Depends(get_db),
 ) -> str:
     if not api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+        raise Unauthorized("Missing X-API-Key header")
 
     from app.services.auth import hash_key
 
@@ -60,7 +61,7 @@ async def require_user(
     result = await db.execute(select(User).where(User.hashed_key == hashed, User.active.is_(True)))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+        raise Unauthorized("Invalid API key")
 
     if len(_user_cache) >= _USER_CACHE_MAX:
         _user_cache.pop(next(iter(_user_cache)))  # evict oldest (insertion order)
@@ -80,7 +81,7 @@ async def require_master(
     cookie = request.cookies.get(dash_session.COOKIE_NAME)
     if cookie and dash_session.verify(settings.master_key, cookie):
         return
-    raise HTTPException(status_code=401, detail="Invalid master key")
+    raise Unauthorized("Invalid master key")
 
 
 def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:
@@ -93,11 +94,7 @@ def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:
         limits = await config_service.effective_limits(db, username, limit_class)
         result = await rate_limit.check(r, limit_class, username, limits.per_minute, limits.burst)
         if not result.allowed:
-            raise HTTPException(
-                status_code=429,
-                detail="Rate limit exceeded",
-                headers={"Retry-After": str(math.ceil(result.retry_after))},
-            )
+            raise RateLimited(retry_after=math.ceil(result.retry_after))
         return username
 
     return _check

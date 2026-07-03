@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, require_master
+from app.exceptions import BadRequest
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.db import get_db
@@ -395,15 +396,12 @@ async def analytics_breakdown(
 
     Returns up to 500 rows (50 per page, max 10 pages). Requires a master key."""
     if granularity not in _GRANULARITY_TRUNC:
-        raise HTTPException(
-            status_code=400, detail=f"granularity must be one of {list(_GRANULARITY_TRUNC)}"
-        )
+        raise BadRequest(f"granularity must be one of {list(_GRANULARITY_TRUNC)}")
     from_naive = cast(datetime, _naive_utc(from_date))
     to_naive = cast(datetime, _naive_utc(to_date))
     if _bucket_count(from_naive, to_naive, granularity) > _MAX_BUCKETS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Too many {granularity} buckets in the requested range — narrow the window or use a coarser granularity",
+        raise BadRequest(
+            f"Too many {granularity} buckets in the requested range — narrow the window or use a coarser granularity"
         )
 
     offset = (page - 1) * 50
