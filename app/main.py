@@ -1,4 +1,6 @@
+import hmac
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from app.services import dash_session, storage
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     app.state.incoming_client = storage.get_incoming_client(settings)
     app.state.results_client = storage.get_results_client(settings)
@@ -71,7 +73,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="taas",
-        version="0.6.0",
+        version="0.7.0",
         lifespan=lifespan,
         description=DESCRIPTION,
         license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
@@ -89,12 +91,12 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(static_dir))
 
     @app.get("/", include_in_schema=False)
-    async def root():
+    async def root() -> RedirectResponse:
         """Redirect the bare root to the dashboard."""
         return RedirectResponse(url="/dashboard")
 
     @app.get("/dashboard", tags=["Dashboard"], summary="Dashboard UI", response_class=HTMLResponse)
-    async def dashboard_page(request: Request):
+    async def dashboard_page(request: Request) -> HTMLResponse:
         """Serve the single-page dashboard UI (HTML)."""
         return templates.TemplateResponse(request, "index.html")
 
@@ -102,18 +104,18 @@ def create_app() -> FastAPI:
         "/dashboard/login",
         tags=["Dashboard"],
         summary="Dashboard login",
-        responses={403: {"description": "Invalid master key"}},
+        responses={401: {"description": "Invalid master key"}},
     )
     async def dashboard_login(
         request: Request,
         response: Response,
         settings: Settings = Depends(get_settings),
-    ):
+    ) -> dict[str, str]:
         """Exchange the master key (``X-Master-Key`` header) for a short-lived,
         httponly session cookie used by the dashboard."""
         key = request.headers.get("X-Master-Key", "")
-        if not key or key != settings.master_key:
-            raise HTTPException(status_code=403, detail="Invalid master key")
+        if not key or not hmac.compare_digest(key, settings.master_key):
+            raise HTTPException(status_code=401, detail="Invalid master key")
         # Behind a TLS-terminating ingress the app sees http, so trust the
         # forwarded proto to decide whether to mark the cookie Secure.
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
@@ -129,13 +131,13 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/dashboard/logout", tags=["Dashboard"], summary="Dashboard logout")
-    async def dashboard_logout(response: Response):
+    async def dashboard_logout(response: Response) -> dict[str, str]:
         """Clear the dashboard session cookie."""
         response.delete_cookie(dash_session.COOKIE_NAME, path="/")
         return {"status": "ok"}
 
     @app.get("/healthz", tags=["Health"], summary="Liveness probe")
-    async def healthz():
+    async def healthz() -> dict[str, str]:
         """Liveness probe — returns ``{"status": "ok"}`` when the app is up."""
         return {"status": "ok"}
 

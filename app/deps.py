@@ -1,5 +1,7 @@
+import hmac
 import math
 import time
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 
 import redis.asyncio as aioredis
@@ -70,15 +72,15 @@ async def require_master(
 ) -> None:
     from app.services import dash_session
 
-    if key and key == settings.master_key:
+    if key and hmac.compare_digest(key, settings.master_key):
         return
     cookie = request.cookies.get(dash_session.COOKIE_NAME)
     if cookie and dash_session.verify(settings.master_key, cookie):
         return
-    raise HTTPException(status_code=403, detail="Invalid master key")
+    raise HTTPException(status_code=401, detail="Invalid master key")
 
 
-def _rate_limit_dep(limit_class: str):
+def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:
     async def _check(
         request: Request,
         username: str = Depends(require_user),
@@ -98,9 +100,9 @@ def _rate_limit_dep(limit_class: str):
     return _check
 
 
-def rate_limit_submit():
+def rate_limit_submit() -> Callable[..., Awaitable[str]]:
     return _rate_limit_dep("submit")
 
 
-def rate_limit_query():
+def rate_limit_query() -> Callable[..., Awaitable[str]]:
     return _rate_limit_dep("query")
