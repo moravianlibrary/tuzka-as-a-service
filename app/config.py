@@ -1,3 +1,5 @@
+"""Typed application settings loaded from the environment."""
+
 from pydantic_settings import BaseSettings
 
 

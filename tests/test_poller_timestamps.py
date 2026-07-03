@@ -1,3 +1,5 @@
+"""Pins engine-timestamp parsing: offsets normalize to naive UTC; missing/invalid inputs are tolerated."""
+
 from datetime import datetime
 
 from app.workers.poller import _parse_engine_dt

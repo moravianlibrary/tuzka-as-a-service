@@ -1,9 +1,12 @@
 """Async HTTP client for dispatching jobs to OCR engines, with cached version lookups."""
 
+import logging
 import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # How long a fetched engine version is trusted before re-querying the engine.
 _VERSION_CACHE_TTL_SECONDS = 300.0
@@ -36,7 +39,8 @@ class EngineClient:
             resp = await self._client.get(f"{url}/openapi.json", timeout=5.0)
             resp.raise_for_status()
             version = resp.json().get("info", {}).get("version")
-        except Exception:
+        except Exception as exc:
+            logger.warning("version lookup failed for %s: %s", url, exc)
             version = None
 
         self._version_cache[url] = (version, time.time())
@@ -121,12 +125,14 @@ class EngineClient:
             data = resp.json()
             domains = data.get("selectable_via_domain", [])
             return [str(d) for d in domains if d]
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_models failed for %s: %s", url, exc)
             return []
 
     async def healthcheck(self, url: str) -> bool:
         try:
             resp = await self._client.get(f"{url}/healthz", timeout=5.0)
             return resp.status_code == 200
-        except Exception:
+        except Exception as exc:
+            logger.warning("healthcheck failed for %s: %s", url, exc)
             return False

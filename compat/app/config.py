@@ -24,4 +24,5 @@ class Settings(BaseSettings):
         ),
     }
 
-    model_config = SettingsConfigDict(env_file=".env.compat")
+    # extra=ignore: stale env entries must not crash startup
+    model_config = SettingsConfigDict(env_file=".env.compat", extra="ignore")

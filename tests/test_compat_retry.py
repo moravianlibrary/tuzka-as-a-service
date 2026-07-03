@@ -1,3 +1,5 @@
+"""Pins the compat shim's 429 retry: pass-through, retry-until-success, budget exhaustion -> 503, non-429 not retried."""
+
 import httpx
 import pytest
 from fastapi import HTTPException

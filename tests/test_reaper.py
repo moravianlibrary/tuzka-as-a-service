@@ -1,3 +1,5 @@
+"""Pins the reaper's stale-job selection: queued/running jobs past their deadline get flagged."""
+
 from datetime import datetime, timedelta
 
 from app.services.reaper import select_stale_jobs

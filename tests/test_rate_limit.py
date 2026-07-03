@@ -1,3 +1,5 @@
+"""Pins the token-bucket rate limiter: burst/deny, Retry-After accuracy, per-user/class isolation, key expiry."""
+
 import asyncio
 import math
 

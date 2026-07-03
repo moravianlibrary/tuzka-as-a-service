@@ -1,3 +1,5 @@
+"""Pins engine version lookup: reads info.version from OpenAPI and returns None on error (best-effort)."""
+
 import httpx
 import pytest
 

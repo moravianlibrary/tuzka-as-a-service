@@ -1,3 +1,5 @@
+"""Pins runtime config resolution: defaults, partial/full overrides, and TTL/timeout/requeue derivations."""
+
 import pytest
 
 from app.services import config as cfg

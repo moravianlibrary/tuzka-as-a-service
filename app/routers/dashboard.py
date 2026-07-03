@@ -60,9 +60,9 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
 
 
 def _csv_cell(value: Any) -> Any:
-    """Defuse CSV formula injection: a cell whose text starts with = + - @ is
+    """Defuse CSV formula injection: a cell whose text starts with = + - @ tab CR is
     prefixed with a single quote so spreadsheet apps don't execute it as a formula."""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + value
     return value
 

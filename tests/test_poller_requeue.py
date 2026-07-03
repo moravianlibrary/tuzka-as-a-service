@@ -1,3 +1,5 @@
+"""Pins the poller's poll-result classification: harvest, fail-fast, requeue within budget, keep polling."""
+
 from app.workers.poller import classify_poll_result
 
 

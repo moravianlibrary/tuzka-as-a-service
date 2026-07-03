@@ -1,8 +1,8 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
-import os
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
@@ -79,7 +79,7 @@ async def submit_job(
 
     # Validate extension
     filename = image.filename or "image"
-    ext = os.path.splitext(filename)[1].lower()
+    ext = Path(filename).suffix.lower()
     if ext not in settings.allowed_extensions:
         raise BadRequest(f"Extension {ext} not allowed. Allowed: {settings.allowed_extensions}")
 
