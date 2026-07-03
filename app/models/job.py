@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, UniqueConstraint, func, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -36,12 +36,19 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
     stored_at: Mapped[datetime | None] = mapped_column(default=None)
 
-    results: Mapped[list["JobResult"]] = relationship(back_populates="job")
+    # lazy="raise": every access must be an explicit load (selectinload / a join) — an
+    # accidental lazy load is a loud error, not a silent N+1 (and would fail anyway on
+    # the async session outside a greenlet context).
+    results: Mapped[list["JobResult"]] = relationship(back_populates="job", lazy="raise")
 
     __table_args__ = (
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
         Index("ix_jobs_status", "status"),
+        Index("ix_jobs_backend_id", "backend_id"),
         UniqueConstraint("username", "external_id", name="uq_jobs_username_external"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"
+        ),
     )
 
 
@@ -53,4 +60,4 @@ class JobResult(Base):
     presigned_url: Mapped[str | None] = mapped_column(default=None)
     presigned_until: Mapped[datetime | None] = mapped_column(default=None)
 
-    job: Mapped["Job"] = relationship(back_populates="results")
+    job: Mapped["Job"] = relationship(back_populates="results", lazy="raise")

@@ -29,6 +29,9 @@ All notable changes to this project are documented here. The format is based on
   `Literal`), so an invalid value returns `422` instead of `400`. List endpoints cap
   `limit` at 200 (`limit`/`offset` are range-validated). Backend `device` is validated
   as `cpu`/`gpu` at the schema boundary.
+- Index `jobs.backend_id` and add a `ck_jobs_status` CHECK constraint pinning
+  `jobs.status` to the four lifecycle values (migration 010). ORM relationships now
+  use `lazy="raise"`, so related rows must be loaded explicitly (no accidental N+1).
 - The whole codebase now passes `mypy --strict` and an expanded Ruff rule set
   (`B` bugbear, `SIM` simplify); all `app/` and `compat/` code is fully type-annotated.
 - `alembic/env.py` imports every model via the `app.models` package so
