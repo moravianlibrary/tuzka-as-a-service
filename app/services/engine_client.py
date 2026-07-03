@@ -1,3 +1,5 @@
+"""Async HTTP client for dispatching jobs to OCR engines, with cached version lookups."""
+
 import time
 from typing import Any
 

@@ -1,3 +1,5 @@
+"""Pydantic request/response schemas for the backend admin endpoints."""
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field

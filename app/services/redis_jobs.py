@@ -1,3 +1,5 @@
+"""Redis state machine for jobs: priority queues, in-flight tracking, and pub/sub events."""
+
 import contextlib
 import json
 import time

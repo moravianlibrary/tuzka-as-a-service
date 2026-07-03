@@ -1,3 +1,5 @@
+"""ORM model for the key/value config table backing runtime-tunable settings."""
+
 from datetime import datetime
 from typing import Any
 

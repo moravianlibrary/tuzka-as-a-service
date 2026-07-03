@@ -1,3 +1,5 @@
+"""Cleanup worker: reaps stale jobs and purges expired storage objects and old job rows."""
+
 import asyncio
 import logging
 from datetime import timedelta

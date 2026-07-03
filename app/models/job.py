@@ -1,3 +1,5 @@
+"""ORM models for OCR jobs and their per-format results, tracking the full lifecycle."""
+
 import uuid
 from datetime import datetime
 

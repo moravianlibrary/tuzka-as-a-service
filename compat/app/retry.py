@@ -1,3 +1,5 @@
+"""Retry helper that absorbs taas 429s for synchronous legacy PERO clients."""
+
 import asyncio
 import random
 from typing import Any

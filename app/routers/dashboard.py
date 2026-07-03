@@ -1,3 +1,5 @@
+"""Master-key dashboard API: aggregate stats, per-user/backend views, and analytics."""
+
 import asyncio
 import csv
 import io
@@ -463,8 +465,8 @@ async def analytics_breakdown(
     }
 
 
-def _alto_range(category: str | None, column: str) -> str:
-    """Return a SQL BETWEEN clause for an ALTO line/block/char category filter."""
+def _alto_range(category: str | None, column: str) -> tuple[str, dict[str, int]]:
+    """Return a SQL clause + bind params for an ALTO line/block/char category filter."""
     ranges: dict[str, dict[str, tuple[int, int | None]]] = {
         "alto_lines": {
             "empty": (0, 0),
@@ -488,11 +490,17 @@ def _alto_range(category: str | None, column: str) -> str:
         },
     }
     if category is None or column not in ranges or category not in ranges[column]:
-        return ""
+        return "", {}
     lo, hi = ranges[column][category]
+    # `column` is a fixed allow-listed identifier (a key of `ranges`, never user input);
+    # the numeric bounds are bound as parameters. Names are column-scoped so the three
+    # calls in one query don't collide.
     if hi is None:
-        return f" AND {column} >= {lo}"
-    return f" AND {column} BETWEEN {lo} AND {hi}"
+        return f" AND {column} >= :{column}_lo", {f"{column}_lo": lo}
+    return (
+        f" AND {column} BETWEEN :{column}_lo AND :{column}_hi",
+        {f"{column}_lo": lo, f"{column}_hi": hi},
+    )
 
 
 # Shared FROM/JOIN for the raw analytics queries (per-job rows + display names).
@@ -545,9 +553,14 @@ def _analytics_filters(
     if status:
         where += " AND ja.status::text = :status"
         params["status"] = status
-    where += _alto_range(line_category, "alto_lines")
-    where += _alto_range(block_category, "alto_blocks")
-    where += _alto_range(char_category, "alto_chars")
+    for category, column in (
+        (line_category, "alto_lines"),
+        (block_category, "alto_blocks"),
+        (char_category, "alto_chars"),
+    ):
+        clause, range_params = _alto_range(category, column)
+        where += clause
+        params.update(range_params)
     return where, params
 
 

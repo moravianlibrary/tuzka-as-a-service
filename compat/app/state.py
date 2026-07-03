@@ -1,3 +1,5 @@
+"""Redis-backed store mapping legacy request IDs to engine and filename metadata."""
+
 import json
 from typing import Any, cast
 

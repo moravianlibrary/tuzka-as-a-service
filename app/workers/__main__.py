@@ -1,3 +1,5 @@
+"""Guard entry point: workers run as submit/poller/cleanup submodules, not this package."""
+
 import sys
 
 if __name__ == "__main__":

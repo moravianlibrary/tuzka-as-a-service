@@ -1,3 +1,5 @@
+"""Legacy PERO API routes that translate requests to and from the taas backend."""
+
 import asyncio
 import hashlib
 import time

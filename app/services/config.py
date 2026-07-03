@@ -1,3 +1,5 @@
+"""Cached accessors for runtime config (TTLs, timeouts, rate limits) from Postgres."""
+
 import time
 from dataclasses import dataclass
 from typing import Any

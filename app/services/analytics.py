@@ -40,12 +40,19 @@ def _dur_s(a: datetime | None, b: datetime | None) -> float | None:
     return delta if delta >= 0 else None
 
 
+# Lookup tables _get_or_create_id may target. SQL can't bind an identifier, so the
+# table name is interpolated — this allow-list keeps that provably safe.
+_LOOKUP_TABLES = frozenset({"engine_versions", "domains"})
+
+
 async def _get_or_create_id(db: AsyncSession, table: str, name: str) -> int | None:
     """Upsert a name into a lookup table and return its id.
 
     Does not catch DB errors: it runs inside the SAVEPOINT opened by
     ``write_analytics_row``, so a failure here cleanly rolls that savepoint back
     without poisoning the caller's transaction."""
+    if table not in _LOOKUP_TABLES:
+        raise ValueError(f"unknown lookup table: {table!r}")
     if not name:
         return None
     await db.execute(

@@ -1,3 +1,5 @@
+"""FastAPI app for the legacy PERO-compatibility shim over the taas backend."""
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 

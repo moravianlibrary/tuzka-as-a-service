@@ -1,3 +1,5 @@
+"""Submit worker: dequeues pending jobs and dispatches them to backend engines."""
+
 import asyncio
 import logging
 import time
@@ -53,7 +55,7 @@ async def main() -> None:
             return
         async with session_factory() as db:
             result = await db.execute(
-                select(Backend).where(Backend.enabled == True).order_by(Backend.priority.desc())  # noqa: E712
+                select(Backend).where(Backend.enabled.is_(True)).order_by(Backend.priority.desc())
             )
             backends = list(result.scalars().all())
             for b in backends:

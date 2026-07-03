@@ -54,9 +54,7 @@ async def require_user(
         if now - cached_at < _USER_CACHE_TTL:
             return username
 
-    result = await db.execute(
-        select(User).where(User.hashed_key == hashed, User.active == True)  # noqa: E712
-    )
+    result = await db.execute(select(User).where(User.hashed_key == hashed, User.active.is_(True)))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API key")

@@ -1,3 +1,5 @@
+"""MinIO/S3 clients and helpers for incoming uploads and OCR result objects."""
+
 from datetime import datetime, timedelta
 from io import BytesIO
 

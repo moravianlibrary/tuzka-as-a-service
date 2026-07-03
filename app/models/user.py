@@ -1,3 +1,5 @@
+"""ORM model for API users: their hashed key, priority, and per-user rate-limit overrides."""
+
 from datetime import datetime
 
 from sqlalchemy import func

@@ -82,24 +82,38 @@ def test_bucket_count_negative_span_clamped():
 
 
 def test_alto_range_bounded_category():
-    assert _alto_range("normal", "alto_lines") == " AND alto_lines BETWEEN 16 AND 60"
-    assert _alto_range("simple", "alto_blocks") == " AND alto_blocks BETWEEN 1 AND 2"
-    assert _alto_range("normal", "alto_chars") == " AND alto_chars BETWEEN 500 AND 3000"
+    # Bounds are bound as params, not interpolated; the column name stays inline.
+    assert _alto_range("normal", "alto_lines") == (
+        " AND alto_lines BETWEEN :alto_lines_lo AND :alto_lines_hi",
+        {"alto_lines_lo": 16, "alto_lines_hi": 60},
+    )
+    assert _alto_range("simple", "alto_blocks") == (
+        " AND alto_blocks BETWEEN :alto_blocks_lo AND :alto_blocks_hi",
+        {"alto_blocks_lo": 1, "alto_blocks_hi": 2},
+    )
 
 
 def test_alto_range_open_ended_category():
-    # Categories with no upper bound become a >= clause.
-    assert _alto_range("very_dense", "alto_lines") == " AND alto_lines >= 301"
-    assert _alto_range("fragmented", "alto_blocks") == " AND alto_blocks >= 31"
-    assert _alto_range("rich", "alto_chars") == " AND alto_chars >= 3001"
+    # Categories with no upper bound become a >= clause with a single bound param.
+    assert _alto_range("very_dense", "alto_lines") == (
+        " AND alto_lines >= :alto_lines_lo",
+        {"alto_lines_lo": 301},
+    )
+    assert _alto_range("rich", "alto_chars") == (
+        " AND alto_chars >= :alto_chars_lo",
+        {"alto_chars_lo": 3001},
+    )
 
 
 def test_alto_range_empty_category_is_exact_zero():
-    assert _alto_range("empty", "alto_lines") == " AND alto_lines BETWEEN 0 AND 0"
+    assert _alto_range("empty", "alto_lines") == (
+        " AND alto_lines BETWEEN :alto_lines_lo AND :alto_lines_hi",
+        {"alto_lines_lo": 0, "alto_lines_hi": 0},
+    )
 
 
-def test_alto_range_unknown_or_none_returns_empty_string():
-    assert _alto_range(None, "alto_lines") == ""
-    assert _alto_range("nonsense", "alto_lines") == ""
+def test_alto_range_unknown_or_none_returns_empty():
+    assert _alto_range(None, "alto_lines") == ("", {})
+    assert _alto_range("nonsense", "alto_lines") == ("", {})
     # A valid category but wrong column also yields nothing.
-    assert _alto_range("simple", "alto_lines") == ""
+    assert _alto_range("simple", "alto_lines") == ("", {})

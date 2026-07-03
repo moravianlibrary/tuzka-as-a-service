@@ -1,3 +1,5 @@
+"""Pydantic schemas for user admin endpoints: creation, keys, and rate-limit overrides."""
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field

@@ -1,3 +1,5 @@
+"""Pydantic response schemas for the dashboard stats, user, and backend views."""
+
 from datetime import datetime
 
 from pydantic import BaseModel

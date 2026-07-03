@@ -1,3 +1,5 @@
+"""API-key generation/hashing and Fernet encryption of backend engine keys."""
+
 import hashlib
 import secrets
 

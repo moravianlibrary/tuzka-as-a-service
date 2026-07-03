@@ -1,3 +1,5 @@
+"""Poller worker: polls engines for in-flight job results, stores output, and finalizes jobs."""
+
 import asyncio
 import logging
 import time

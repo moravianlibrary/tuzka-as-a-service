@@ -1,3 +1,5 @@
+"""Pydantic schemas for job submit/status/result responses, plus external-URL rendering."""
+
 import re
 from datetime import datetime
 from uuid import UUID

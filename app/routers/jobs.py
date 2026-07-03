@@ -1,3 +1,5 @@
+"""Public API-key job endpoints: submit an OCR job and poll its status and results."""
+
 import os
 import time
 from datetime import timedelta
@@ -93,7 +95,7 @@ async def submit_job(
             .select_from(Domain)
             .join(BackendDomain, Domain.id == BackendDomain.domain_id)
             .join(Backend, BackendDomain.backend_id == Backend.id)
-            .where(Domain.name == domain, Backend.enabled == True)  # noqa: E712
+            .where(Domain.name == domain, Backend.enabled.is_(True))
         )
         if not serves_domain:
             raise HTTPException(

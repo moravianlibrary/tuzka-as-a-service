@@ -1,3 +1,5 @@
+"""Settings for the compat shim: taas backend URL, Redis, and legacy engine mappings."""
+
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

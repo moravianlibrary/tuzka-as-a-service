@@ -1,3 +1,5 @@
+"""WebSocket endpoint: authenticates the client and streams live job status events."""
+
 from datetime import timedelta
 from typing import Any
 
@@ -91,7 +93,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     hashed = hash_key(api_key)
     async with async_session() as db:
         result: Any = await db.execute(
-            select(User).where(User.hashed_key == hashed, User.active == True)  # noqa: E712
+            select(User).where(User.hashed_key == hashed, User.active.is_(True))
         )
         user = result.scalar_one_or_none()
         if not user:

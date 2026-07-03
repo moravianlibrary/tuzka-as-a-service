@@ -1,3 +1,5 @@
+"""Master-key admin API for managing users, backends, and runtime config."""
+
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException

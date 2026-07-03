@@ -1,3 +1,5 @@
+"""ORM model for OCR backends: their URL, encrypted key, device, and dispatch limits."""
+
 from datetime import datetime
 
 from sqlalchemy import func

@@ -1,3 +1,5 @@
+"""Redis-backed GCRA rate limiter shared across API replicas via a Lua script."""
+
 from dataclasses import dataclass
 
 import redis.asyncio as aioredis
