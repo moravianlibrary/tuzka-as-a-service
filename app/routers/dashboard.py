@@ -21,7 +21,19 @@ from app.models.db import get_db
 from app.models.domain import Domain
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.dashboard import DashboardBackend, DashboardStats, DashboardUser
+from app.schemas.dashboard import (
+    AnalyticsBreakdownPage,
+    AnalyticsBreakdownRow,
+    AnalyticsRawPage,
+    AnalyticsRawRow,
+    DashboardBackend,
+    DashboardJobRow,
+    DashboardJobsPage,
+    DashboardStats,
+    DashboardUser,
+    FacetsResponse,
+    UsageResponse,
+)
 from app.schemas.job import render_external_url
 from app.services.engine_client import EngineClient
 from app.services.redis_jobs import get_backend_inflight
@@ -140,6 +152,7 @@ async def get_dashboard_users(db: AsyncSession = Depends(get_db)) -> list[Dashbo
 
 @router.get(
     "/jobs",
+    response_model=DashboardJobsPage,
     summary="List jobs (admin)",
     responses={401: {"description": "Missing or invalid master key"}},
 )
@@ -151,7 +164,7 @@ async def get_dashboard_jobs(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> DashboardJobsPage:
     """List jobs newest-first with optional username/status/from/to date filters and
     limit/offset pagination, returning the matching jobs plus the total filtered count.
     Requires a master key."""
@@ -186,44 +199,45 @@ async def get_dashboard_jobs(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    return {
-        "jobs": [
-            {
-                "job_id": str(j.id),
-                "username": j.username,
-                "external_id": str(j.external_id),
-                "status": j.status,
-                "fmt": j.fmt,
-                "domain": j.domain,
-                "submitted_at": j.submitted_at.isoformat() if j.submitted_at else None,
-                "dispatched_at": j.dispatched_at.isoformat() if j.dispatched_at else None,
-                "engine_received_at": j.engine_received_at.isoformat()
+    return DashboardJobsPage(
+        jobs=[
+            DashboardJobRow(
+                job_id=str(j.id),
+                username=j.username,
+                external_id=str(j.external_id),
+                status=j.status,
+                fmt=j.fmt,
+                domain=j.domain,
+                submitted_at=j.submitted_at.isoformat() if j.submitted_at else None,
+                dispatched_at=j.dispatched_at.isoformat() if j.dispatched_at else None,
+                engine_received_at=j.engine_received_at.isoformat()
                 if j.engine_received_at
                 else None,
-                "started_at": j.started_at.isoformat() if j.started_at else None,
-                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-                "stored_at": j.stored_at.isoformat() if j.stored_at else None,
-                "backend_id": j.backend_id,
-                "backend": backend_label or backend_url,
-                "engine_version": j.engine_version,
-                "error": j.error,
-                "external_url": render_external_url(url_template, j.external_id),
-            }
+                started_at=j.started_at.isoformat() if j.started_at else None,
+                finished_at=j.finished_at.isoformat() if j.finished_at else None,
+                stored_at=j.stored_at.isoformat() if j.stored_at else None,
+                backend_id=j.backend_id,
+                backend=backend_label or backend_url,
+                engine_version=j.engine_version,
+                error=j.error,
+                external_url=render_external_url(url_template, j.external_id),
+            )
             for j, backend_label, backend_url, url_template in rows
         ],
-        "total": total,
-    }
+        total=total,
+    )
 
 
 @router.get(
     "/usage",
+    response_model=UsageResponse,
     summary="Daily usage by user and status",
     responses={401: {"description": "Missing or invalid master key"}},
 )
 async def get_usage(
     days: int = Query(30, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> UsageResponse:
     """Return daily job counts over the trailing ``days`` window (1-90). Provides both a
     per-user ``series`` and a per-status ``status_series`` (done/failed/queued/running)
     aligned to the same ``days`` axis. Requires a master key."""
@@ -261,13 +275,13 @@ async def get_usage(
         if row.status in status_series and (i := day_index.get(day_of(row))) is not None:
             status_series[row.status][i] = row.c
 
-    return {
-        "days": day_list,
-        "users": users,
-        "series": series,
-        "statuses": statuses,
-        "status_series": status_series,
-    }
+    return UsageResponse(
+        days=day_list,
+        users=users,
+        series=series,
+        statuses=statuses,
+        status_series=status_series,
+    )
 
 
 @router.get(
@@ -357,6 +371,7 @@ def _bucket_count(from_dt: datetime, to_dt: datetime, granularity: str) -> int:
 
 @router.get(
     "/analytics/breakdown",
+    response_model=AnalyticsBreakdownPage,
     summary="Analytics breakdown by time, engine, user, domain",
     responses={
         400: {
@@ -375,7 +390,7 @@ async def analytics_breakdown(
     username: str | None = Query(None),
     page: int = Query(1, ge=1, le=10),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> AnalyticsBreakdownPage:
     """Group job_analytics by time bucket × engine × device × user × domain.
 
     Returns up to 500 rows (50 per page, max 10 pages). Requires a master key."""
@@ -441,28 +456,28 @@ async def analytics_breakdown(
     def _round(v: float | None) -> float | None:
         return round(v, 3) if v is not None else None
 
-    return {
-        "page": page,
-        "has_next": has_next,
-        "rows": [
-            {
-                "time_bucket": r["time_bucket"].isoformat() if r["time_bucket"] else None,
-                "username": r["username"],
-                "engine_version": r["engine_version"],
-                "engine_device": r["engine_device"],
-                "domain": r["domain"],
-                "jobs_total": r["jobs_total"],
-                "jobs_done": r["jobs_done"],
-                "jobs_failed": r["jobs_failed"],
-                "proc_avg_s": _round(r["proc_avg_s"]),
-                "proc_p95_s": _round(r["proc_p95_s"]),
-                "avg_alto_lines": _round(r["avg_alto_lines"]),
-                "avg_alto_chars": _round(r["avg_alto_chars"]),
-                "avg_mean_conf": _round(r["avg_mean_conf"]),
-            }
+    return AnalyticsBreakdownPage(
+        page=page,
+        has_next=has_next,
+        rows=[
+            AnalyticsBreakdownRow(
+                time_bucket=r["time_bucket"].isoformat() if r["time_bucket"] else None,
+                username=r["username"],
+                engine_version=r["engine_version"],
+                engine_device=r["engine_device"],
+                domain=r["domain"],
+                jobs_total=r["jobs_total"],
+                jobs_done=r["jobs_done"],
+                jobs_failed=r["jobs_failed"],
+                proc_avg_s=_round(r["proc_avg_s"]),
+                proc_p95_s=_round(r["proc_p95_s"]),
+                avg_alto_lines=_round(r["avg_alto_lines"]),
+                avg_alto_chars=_round(r["avg_alto_chars"]),
+                avg_mean_conf=_round(r["avg_mean_conf"]),
+            )
             for r in rows
         ],
-    }
+    )
 
 
 def _alto_range(category: str | None, column: str) -> tuple[str, dict[str, int]]:
@@ -566,6 +581,7 @@ def _analytics_filters(
 
 @router.get(
     "/analytics/raw",
+    response_model=AnalyticsRawPage,
     summary="Raw per-job analytics with filters",
     responses={
         400: {"description": "page > 10"},
@@ -585,7 +601,7 @@ async def analytics_raw(
     char_category: str | None = Query(None),
     page: int = Query(1, ge=1, le=10),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> AnalyticsRawPage:
     """Return up to 50 raw job_analytics rows per page (max 10 pages / 500 rows total).
 
     Category filters map line/block/char counts to named buckets defined in the design doc.
@@ -623,29 +639,29 @@ async def analytics_raw(
     has_next = len(rows) > 50
     rows = rows[:50]
 
-    def _fmt_row(r: Any) -> dict[str, Any]:
-        return {
-            "job_id": str(r["job_id"]),
-            "external_id": str(r["external_id"]) if r["external_id"] else None,
-            "submitted_at": r["submitted_at"].isoformat() if r["submitted_at"] else None,
-            "username": r["username"],
-            "engine_version": r["engine_version"],
-            "engine_device": r["engine_device"],
-            "domain": r["domain"],
-            "fmt": r["fmt"],
-            "status": r["status"],
-            "file_size_bytes": r["file_size_bytes"],
-            "system_queue_s": r["system_queue_s"],
-            "engine_queue_s": r["engine_queue_s"],
-            "ocr_running_s": r["ocr_running_s"],
-            "time_in_system_s": r["time_in_system_s"],
-            "alto_lines": r["alto_lines"],
-            "alto_blocks": r["alto_blocks"],
-            "alto_chars": r["alto_chars"],
-            "mean_conf": r["mean_conf"],
-        }
+    def _fmt_row(r: Any) -> AnalyticsRawRow:
+        return AnalyticsRawRow(
+            job_id=str(r["job_id"]),
+            external_id=str(r["external_id"]) if r["external_id"] else None,
+            submitted_at=r["submitted_at"].isoformat() if r["submitted_at"] else None,
+            username=r["username"],
+            engine_version=r["engine_version"],
+            engine_device=r["engine_device"],
+            domain=r["domain"],
+            fmt=r["fmt"],
+            status=r["status"],
+            file_size_bytes=r["file_size_bytes"],
+            system_queue_s=r["system_queue_s"],
+            engine_queue_s=r["engine_queue_s"],
+            ocr_running_s=r["ocr_running_s"],
+            time_in_system_s=r["time_in_system_s"],
+            alto_lines=r["alto_lines"],
+            alto_blocks=r["alto_blocks"],
+            alto_chars=r["alto_chars"],
+            mean_conf=r["mean_conf"],
+        )
 
-    return {"page": page, "has_next": has_next, "rows": [_fmt_row(r) for r in rows]}
+    return AnalyticsRawPage(page=page, has_next=has_next, rows=[_fmt_row(r) for r in rows])
 
 
 @router.get(
@@ -734,18 +750,19 @@ async def analytics_raw_csv(
 
 @router.get(
     "/facets",
+    response_model=FacetsResponse,
     summary="Distinct filter values (usernames, domains, engine versions) for the dropdowns",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def get_facets(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_facets(db: AsyncSession = Depends(get_db)) -> FacetsResponse:
     """Return the value sets that populate the jobs/analytics filter dropdowns — all
     usernames, all known domains, and all known engine versions, each sorted. These are
     small lookup/user tables, so this is a cheap query. Requires a master key."""
     usernames = (await db.execute(text("SELECT username FROM users ORDER BY username"))).all()
     domains = (await db.execute(text("SELECT name FROM domains ORDER BY name"))).all()
     engines = (await db.execute(text("SELECT name FROM engine_versions ORDER BY name"))).all()
-    return {
-        "usernames": [r[0] for r in usernames],
-        "domains": [r[0] for r in domains],
-        "engine_versions": [r[0] for r in engines],
-    }
+    return FacetsResponse(
+        usernames=[r[0] for r in usernames],
+        domains=[r[0] for r in domains],
+        engine_versions=[r[0] for r in engines],
+    )

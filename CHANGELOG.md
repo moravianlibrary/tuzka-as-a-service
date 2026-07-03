@@ -33,6 +33,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- The dashboard collection endpoints (`/jobs`, `/usage`, `/analytics/breakdown`,
+  `/analytics/raw`, `/facets`) now declare typed Pydantic `response_model`s instead of
+  returning hand-assembled dicts, so the payloads are validated and documented in the
+  OpenAPI schema.
 - **API:** a failed job's result is no longer a `5xx`. `GET /jobs/{job_id}/result` now
   returns `200` with `{"status": "failed", "error": ..., "results": []}` (an engine-side
   failure is not a fault of this API), and the streaming `GET /jobs/{job_id}/result/{fmt}/download`
