@@ -33,6 +33,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **API:** a failed job's result is no longer a `5xx`. `GET /jobs/{job_id}/result` now
+  returns `200` with `{"status": "failed", "error": ..., "results": []}` (an engine-side
+  failure is not a fault of this API), and the streaming `GET /jobs/{job_id}/result/{fmt}/download`
+  returns `409` instead of `500`. Clients that polled `/result` for HTTP `500` to detect
+  failure must now read the `status` field / handle `409`.
 - Job submit now validates `uuid` and `fmt` at the boundary (parsed as `UUID` /
   `Literal`), so an invalid value returns `422` instead of `400`. List endpoints cap
   `limit` at 200 (`limit`/`offset` are range-validated). Backend `device` is validated

@@ -46,7 +46,12 @@ class JobResultEntry(BaseModel):
 
 
 class JobResultResponse(BaseModel):
-    results: list[JobResultEntry]
+    # A failed job returns 200 with status="failed" + error and no results, rather than a
+    # 5xx (an engine-side failure is not a fault of this API). The status endpoint already
+    # exposes `error`, so this surfaces nothing new.
+    status: str = "done"
+    error: str | None = None
+    results: list[JobResultEntry] = []
 
 
 class JobListResponse(BaseModel):

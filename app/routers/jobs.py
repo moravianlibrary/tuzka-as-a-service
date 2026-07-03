@@ -209,7 +209,6 @@ async def get_job_status(
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found for the authenticated user"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
-        500: {"description": "Job processing failed"},
     },
 )
 async def get_job_result(
@@ -223,8 +222,9 @@ async def get_job_result(
 
     Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
     authenticated user. Because processing is asynchronous, the result may still be pending:
-    a job that is not yet ``done`` responds with ``202``, while a failed job responds ``500``.
-    Presigned URLs are refreshed automatically when expired.
+    a job that is not yet ``done`` responds with ``202``, while a failed job responds ``200``
+    with ``status="failed"`` and the error (no results). Presigned URLs are refreshed
+    automatically when expired.
     """
     result = await db.execute(select(Job).where(Job.id == job_id, Job.username == username))
     job = result.scalar_one_or_none()
@@ -232,7 +232,7 @@ async def get_job_result(
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job.status == "failed":
-        raise HTTPException(status_code=500, detail=job.error or "Job failed")
+        return JobResultResponse(status="failed", error=job.error or "Job failed")
     if job.status != "done":
         raise HTTPException(status_code=202, detail="Job not completed yet")
 
@@ -261,7 +261,7 @@ async def get_job_result(
 
         entries.append(JobResultEntry(fmt=jr.fmt, url=jr.presigned_url))
 
-    return JobResultResponse(results=entries)
+    return JobResultResponse(status="done", results=entries)
 
 
 @router.get(
@@ -271,8 +271,8 @@ async def get_job_result(
         202: {"description": "Job accepted but not finished yet; retry later"},
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found, or no result in the requested format"},
+        409: {"description": "Job processing failed (no artifact to download)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
-        500: {"description": "Job processing failed"},
     },
 )
 async def download_job_result(
@@ -297,7 +297,7 @@ async def download_job_result(
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job.status == "failed":
-        raise HTTPException(status_code=500, detail=job.error or "Job failed")
+        raise HTTPException(status_code=409, detail=job.error or "Job failed")
     if job.status != "done":
         raise HTTPException(status_code=202, detail="Job not completed yet")
 
