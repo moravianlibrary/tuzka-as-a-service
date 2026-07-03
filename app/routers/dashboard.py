@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, require_master
 from app.models.backend import Backend
@@ -56,7 +57,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> DashboardStats:
     status (by submission time), and two averages for done jobs — OCR running time
     (finished − started, engine clock) and total time in system (stored − submitted).
     Requires a master key."""
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    cutoff = utcnow() - timedelta(hours=24)
 
     # Total jobs submitted in the window.
     total = await db.execute(
@@ -224,9 +225,7 @@ async def get_usage(
     """Return daily job counts over the trailing ``days`` window (1-90). Provides both a
     per-user ``series`` and a per-status ``status_series`` (done/failed/queued/running)
     aligned to the same ``days`` axis. Requires a master key."""
-    start = (datetime.utcnow() - timedelta(days=days - 1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    start = (utcnow() - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     day_col = func.date(Job.submitted_at)
     result = await db.execute(
         select(day_col.label("day"), Job.username, func.count().label("c"))

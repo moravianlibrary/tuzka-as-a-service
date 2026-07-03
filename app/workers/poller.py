@@ -10,6 +10,7 @@ import zstandard
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.job import Job, JobResult
@@ -209,14 +210,14 @@ async def main() -> None:
                         job_id=job_id,
                         fmt=result_fmt,
                         presigned_url=presigned_url,
-                        presigned_until=datetime.utcnow() + timedelta(minutes=presigned_ttl),
+                        presigned_until=utcnow() + timedelta(minutes=presigned_ttl),
                     )
                     db.add(jr)
 
                     url_key = "alto_url" if result_fmt == "alto" else "txt_url"
                     event_data[url_key] = presigned_url
 
-                stored_at = datetime.utcnow()
+                stored_at = utcnow()
                 done_values: dict[str, str | datetime] = {
                     "status": "done",
                     "stored_at": stored_at,
@@ -234,7 +235,7 @@ async def main() -> None:
                     done_values["engine_received_at"] = engine_created
                 if engine_started is not None:
                     done_values["started_at"] = engine_started
-                finished_at: datetime = engine_finished or datetime.utcnow()
+                finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
                 await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
 
@@ -277,7 +278,7 @@ async def main() -> None:
     async def mark_failed(job_id: str, meta: dict[str, str], error: str) -> None:
         username = meta.get("username", "")
         external_id = meta.get("external_id", "")
-        failed_at = datetime.utcnow()
+        failed_at = utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
             await set_failed(r, job_id, error, state_ttl)

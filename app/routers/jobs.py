@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import redis.asyncio as aioredis
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
 from app.models.backend import Backend
@@ -233,7 +234,7 @@ async def get_job_result(
 
     results_client = request.app.state.results_public_client
     entries = []
-    now = datetime.utcnow()
+    now = utcnow()
     presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
     for jr in job_results:
         # Refresh presigned URL if expired (stored as naive UTC)

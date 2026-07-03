@@ -1,12 +1,12 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
@@ -195,7 +195,7 @@ async def main() -> None:
                     .where(Job.id == job_id)
                     .values(
                         status="running",
-                        dispatched_at=datetime.utcnow(),
+                        dispatched_at=utcnow(),
                         engine_job_id=engine_job_id,
                         engine_version=engine_version,
                         backend_id=backend.id,
@@ -218,7 +218,7 @@ async def main() -> None:
                     .values(
                         status="failed",
                         error=str(e),
-                        finished_at=datetime.utcnow(),
+                        finished_at=utcnow(),
                     )
                 )
                 await db.commit()

@@ -15,6 +15,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clock import utcnow
 from app.models.job import Job
 from app.services import config as config_service
 from app.services.redis_jobs import publish_event, set_failed
@@ -58,7 +59,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     queued_timeout = await config_service.get_job_queued_timeout_seconds(db)
     running_timeout = await config_service.get_job_running_timeout_seconds(db)
     state_ttl = await config_service.get_state_ttl_seconds(db)
-    now = datetime.utcnow()
+    now = utcnow()
 
     result = await db.execute(select(Job).where(Job.status.in_(("queued", "running"))))
     candidates = result.scalars().all()

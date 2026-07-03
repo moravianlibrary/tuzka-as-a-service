@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
+from app.clock import utcnow
 from app.deps import get_settings
 from app.models.db import async_session
 from app.models.job import Job
@@ -112,7 +113,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
         # Catch-up: send recent done/failed events
         async with async_session() as db:
-            cutoff = datetime.utcnow() - timedelta(seconds=settings.ws_catch_up_seconds)
+            cutoff = utcnow() - timedelta(seconds=settings.ws_catch_up_seconds)
             result = await db.execute(
                 select(Job).where(
                     Job.username == username,

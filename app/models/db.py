@@ -1,3 +1,5 @@
+# Timestamp columns are naive UTC by convention (TIMESTAMP WITHOUT TIME ZONE); see
+# app.clock for the rationale, and use app.clock.utcnow() for taas-clock stamps.
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
