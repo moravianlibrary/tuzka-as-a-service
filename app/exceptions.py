@@ -35,9 +35,7 @@ class Unprocessable(HTTPException):
 
 class RateLimited(HTTPException):
     def __init__(self, retry_after: int, detail: str = "Rate limit exceeded") -> None:
-        super().__init__(
-            status_code=429, detail=detail, headers={"Retry-After": str(retry_after)}
-        )
+        super().__init__(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
 
 class NotReady(HTTPException):
