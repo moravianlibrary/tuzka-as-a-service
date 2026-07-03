@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,10 +20,30 @@ from app.services import dash_session, storage
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
+
+    # Fail fast: the API cannot function without these secrets, so refuse to start
+    # rather than boot a half-configured, insecure surface.
+    missing = [
+        name
+        for name, value in (
+            ("MASTER_KEY", settings.master_key),
+            ("KEY_ENCRYPTION_SECRET", settings.key_encryption_secret),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(f"required config missing: {', '.join(missing)}")
+
+    # One pooled redis client for the app's lifetime (get_redis hands out this shared
+    # client), rather than a new pool per request.
+    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=False)
     app.state.incoming_client = storage.get_incoming_client(settings)
     app.state.results_client = storage.get_results_client(settings)
     app.state.results_public_client = storage.get_results_public_client(settings)
-    yield
+    try:
+        yield
+    finally:
+        await app.state.redis.aclose()
 
 
 DESCRIPTION = """\

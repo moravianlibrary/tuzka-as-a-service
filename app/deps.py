@@ -32,10 +32,10 @@ def get_settings() -> Settings:
     return Settings()
 
 
-async def get_redis(
-    settings: Settings = Depends(get_settings),
-) -> aioredis.Redis:
-    return aioredis.from_url(settings.redis_url, decode_responses=False)
+async def get_redis(request: Request) -> aioredis.Redis:
+    # The pooled client is created once in the app lifespan; hand out that shared
+    # instance rather than opening a new connection pool per request.
+    return request.app.state.redis  # type: ignore[no-any-return]
 
 
 async def require_user(

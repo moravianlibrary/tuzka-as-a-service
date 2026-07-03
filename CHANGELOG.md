@@ -57,6 +57,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The API now fails fast at startup if `MASTER_KEY` or `KEY_ENCRYPTION_SECRET` is unset,
+  instead of booting a half-configured, insecure surface.
+- `get_redis` hands out a single pooled Redis client created in the app lifespan, rather
+  than opening (and leaking) a new connection pool on every request.
 - Worker robustness: loop errors now log full tracebacks (`logger.exception`); a failed
   domain sync retries next tick instead of being locked out; `storage.delete_objects`
   iterates delete errors correctly (was an unreachable `async for`) and logs them
