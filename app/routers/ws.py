@@ -1,20 +1,17 @@
 """WebSocket endpoint: authenticates the client and streams live job status events."""
 
 from datetime import timedelta
-from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from app.clock import utcnow
-from app.deps import get_settings
+from app.deps import authenticate_api_key, get_settings
 from app.models.db import async_session
 from app.models.job import Job
-from app.models.user import User
 from app.services import config as config_service
 from app.services import rate_limit
-from app.services.auth import hash_key
 
 router = APIRouter()
 
@@ -89,25 +86,22 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         await ws.close(code=1008, reason="Missing api_key")
         return
 
-    # Authenticate
-    hashed = hash_key(api_key)
+    # Authenticate via the shared API-key path (same as the HTTP dependency).
     async with async_session() as db:
-        result: Any = await db.execute(
-            select(User).where(User.hashed_key == hashed, User.active.is_(True))
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            await ws.close(code=1008, reason="Invalid API key")
-            return
-        username = user.username
+        username = await authenticate_api_key(db, api_key)
+    if username is None:
+        await ws.close(code=1008, reason="Invalid API key")
+        return
 
     # Rate limit check
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     try:
         async with async_session() as db:
             limits = await config_service.effective_limits(db, username, "ws_connect")
-        result = await rate_limit.check(r, "ws_connect", username, limits.per_minute, limits.burst)
-        if not result.allowed:
+        allowance = await rate_limit.check(
+            r, "ws_connect", username, limits.per_minute, limits.burst
+        )
+        if not allowance.allowed:
             await ws.close(code=1008, reason="Rate limit exceeded")
             return
 
@@ -116,14 +110,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         # Catch-up: send recent done/failed events
         async with async_session() as db:
             cutoff = utcnow() - timedelta(seconds=settings.ws_catch_up_seconds)
-            result = await db.execute(
+            catchup = await db.execute(
                 select(Job).where(
                     Job.username == username,
                     Job.finished_at >= cutoff,
                     Job.status.in_(["done", "failed"]),
                 )
             )
-            for job in result.scalars().all():
+            for job in catchup.scalars().all():
                 event = {
                     "uuid": str(job.external_id),
                     "status": job.status,

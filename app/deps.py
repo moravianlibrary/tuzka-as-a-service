@@ -16,6 +16,7 @@ from app.models.db import get_db
 from app.models.user import User
 from app.services import config as config_service
 from app.services import rate_limit
+from app.services.auth import hash_key
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
@@ -39,6 +40,37 @@ async def get_redis(request: Request) -> aioredis.Redis:
     return request.app.state.redis  # type: ignore[no-any-return]
 
 
+async def authenticate_api_key(db: AsyncSession, api_key: str) -> str | None:
+    """Return the username for a valid, active API key, or None (no raise).
+
+    The single authn path shared by the HTTP dependency and the WebSocket handler.
+    Cached with a short TTL; ``invalidate_auth_cache`` drops it when a user's key or
+    active state changes so a revoked key stops working at once.
+    """
+    hashed = hash_key(api_key)
+
+    now = time.time()
+    entry = _user_cache.get(hashed)
+    if entry is not None and now - entry[1] < _USER_CACHE_TTL:
+        return entry[0]
+
+    user = await db.scalar(select(User).where(User.hashed_key == hashed, User.active.is_(True)))
+    if user is None:
+        return None
+
+    if len(_user_cache) >= _USER_CACHE_MAX:
+        _user_cache.pop(next(iter(_user_cache)))  # evict oldest (insertion order)
+    _user_cache[hashed] = (user.username, now)
+    return user.username
+
+
+def invalidate_auth_cache() -> None:
+    """Drop all cached API-key lookups. Call after any change to a user's key or active
+    state (create/delete/rotate/disable) so a revoked or rotated key can't keep
+    authenticating for the cache TTL."""
+    _user_cache.clear()
+
+
 async def require_user(
     request: Request,
     api_key: str | None = Security(_api_key_header),
@@ -47,26 +79,11 @@ async def require_user(
     if not api_key:
         raise Unauthorized("Missing X-API-Key header")
 
-    from app.services.auth import hash_key
-
-    hashed = hash_key(api_key)
-
-    # Check cache
-    now = time.time()
-    if hashed in _user_cache:
-        username, cached_at = _user_cache[hashed]
-        if now - cached_at < _USER_CACHE_TTL:
-            return username
-
-    result = await db.execute(select(User).where(User.hashed_key == hashed, User.active.is_(True)))
-    user = result.scalar_one_or_none()
-    if not user:
+    username = await authenticate_api_key(db, api_key)
+    if username is None:
         raise Unauthorized("Invalid API key")
 
-    if len(_user_cache) >= _USER_CACHE_MAX:
-        _user_cache.pop(next(iter(_user_cache)))  # evict oldest (insertion order)
-    _user_cache[hashed] = (user.username, now)
-    return user.username
+    return username
 
 
 async def require_master(

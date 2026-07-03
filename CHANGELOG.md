@@ -62,6 +62,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A deleted/disabled user or a rotated key now stops authenticating immediately — admin
+  key/active changes clear the API-key lookup cache, instead of a revoked key working for
+  up to the cache TTL. HTTP and WebSocket auth now share one `authenticate_api_key` path.
 - The API now fails fast at startup if `MASTER_KEY` or `KEY_ENCRYPTION_SECRET` is unset,
   instead of booting a half-configured, insecure surface.
 - `get_redis` hands out a single pooled Redis client created in the app lifespan, rather

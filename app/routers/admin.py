@@ -7,7 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.deps import get_settings, require_master
+from app.deps import get_settings, invalidate_auth_cache, require_master
 from app.exceptions import BadRequest, Conflict, NotFound
 from app.models.backend import Backend
 from app.models.db import get_db
@@ -122,6 +122,7 @@ async def delete_user(username: str, db: AsyncSession = Depends(get_db)) -> dict
         raise Conflict(f"User still has {job_count} job(s); cannot delete")
     await db.delete(user)
     await db.commit()
+    invalidate_auth_cache()  # the deleted user's key must stop authenticating at once
     return {"status": "deleted"}
 
 
@@ -148,6 +149,7 @@ async def rotate_key(username: str, db: AsyncSession = Depends(get_db)) -> UserR
     raw_key, hashed = generate_key()
     await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
     await db.commit()
+    invalidate_auth_cache()  # the previous key must stop authenticating at once
     return UserResponse(username=username, api_key=raw_key)
 
 
@@ -175,6 +177,7 @@ async def set_key(
     hashed = hash_key(body.key)
     await db.execute(update(User).where(User.username == username).values(hashed_key=hashed))
     await db.commit()
+    invalidate_auth_cache()  # the previous key must stop authenticating at once
     return {"status": "key updated"}
 
 
@@ -212,6 +215,7 @@ async def update_user_limits(
     await db.commit()
     await db.refresh(user)
     config_service.invalidate_user(username)
+    invalidate_auth_cache()  # an enable/disable flip must take effect at once
 
     # Resolve each class and flatten back into the override column names so the
     # effective view mirrors the overrides shape (every field non-null).
