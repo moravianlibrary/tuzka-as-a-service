@@ -75,14 +75,26 @@ seed: ## Register the OCR backend + create a test user
 	TAAS_URL=$${TAAS_URL:-http://localhost:8080} bash scripts/seed-backend.sh
 
 .PHONY: test
-test: env ## Run the end-to-end smoke test (IMAGE=... to override)
+test: ## Run the unit/component tests (pytest; DB/redis tests skip if absent)
+	$(UV) pytest
+
+.PHONY: coverage-report
+coverage-report: ## Unit tests with a coverage summary
+	$(UV) pytest --cov=app --cov=compat --cov-report=term-missing
+
+.PHONY: test-contract
+test-contract: ## Schemathesis contract/property tests vs a running instance (TAAS_URL, MASTER_KEY)
+	@url=$${TAAS_URL:-http://localhost:8080}; \
+	args="run $$url/openapi.json -c all"; \
+	[ -n "$$MASTER_KEY" ] && args="$$args -H X-Master-Key:$$MASTER_KEY"; \
+	$(UV) schemathesis $$args
+
+.PHONY: test-integration
+test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
 
-.PHONY: e2e
-e2e: test ## Alias for `make test`
-
-.PHONY: test-fast
-test-fast: ## E2E against an already-running stack (no build/up)
+.PHONY: test-integration-fast
+test-integration-fast: ## E2E against an already-running stack (no build/up)
 	NO_UP=1 IMAGE=$(IMAGE) bash scripts/test.sh
 
 .PHONY: test-compat
@@ -148,7 +160,7 @@ local-deploy-bench-db: ## Seed ~10M synthetic analytics rows + time the dashboar
 	bash $(LOCAL_DIR)/bench-analytics-db.sh
 
 .PHONY: check
-check: lint typecheck version-check test-unit ## Run the full quality gate (lint + types + version + unit tests)
+check: lint typecheck version-check test ## Run the full quality gate (lint + types + version + unit tests)
 
 .PHONY: format
 format: ## Format code + auto-fix lint issues (ruff)
@@ -163,10 +175,6 @@ lint: ## Check formatting + lint without changes (ruff)
 .PHONY: typecheck
 typecheck: ## Type-check with mypy --strict
 	$(UV) mypy
-
-.PHONY: test-unit
-test-unit: ## Run the Python unit tests (pytest; DB/redis tests skip if absent)
-	$(UV) pytest
 
 .PHONY: version-check
 version-check: ## Fail if version literals have drifted from ./VERSION

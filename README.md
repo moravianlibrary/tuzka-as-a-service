@@ -60,9 +60,9 @@ The Python package / CLI is named `taas`.
 ## Quickstart
 
 ```bash
-make env        # create .env + .env.app from templates (generates a Fernet key)
-make up         # build + start the whole stack (first run is slow: TuzkaOCR model load)
-make test       # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
+make env             # create .env + .env.app from templates (generates a Fernet key)
+make up              # build + start the whole stack (first run is slow: TuzkaOCR model load)
+make test-integration  # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
 ```
 
 Dashboard: <http://localhost:8080/dashboard> (master key from `.env.app`).
@@ -95,9 +95,12 @@ Live env files are git-ignored; only the `*.example` templates are tracked.
 ## Testing
 
 ```bash
-make test                       # full stack, default fmt=multi
-FMT=alto make test              # single-format run (works today)
-make test-fast                  # against an already-running stack (no rebuild)
+make test                       # unit/component tests (pytest)
+make coverage-report            # unit tests + coverage summary
+make test-contract              # Schemathesis contract tests vs a running instance (needs the stack)
+make test-integration           # full-stack end-to-end, default fmt=multi
+FMT=alto make test-integration  # single-format run
+make test-integration-fast      # against an already-running stack (no rebuild)
 make test-compat                # legacy-compat server end-to-end
 ```
 

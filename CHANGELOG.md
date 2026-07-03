@@ -15,6 +15,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Testing infrastructure: Schemathesis contract/property tests (`make test-contract`,
+  run against a live instance from the OpenAPI schema) and `make coverage-report`
+  (pytest-cov). The Makefile Tests group now follows the house taxonomy — `make test`
+  is the unit suite (was the e2e smoke), the full-stack smoke is `make test-integration`
+  (fast variant `test-integration-fast`), and `test-compat` is unchanged.
 - Even dispatch within a priority tier: the submit worker now deals jobs round-robin
   across the healthy backends of a priority tier (highest tier first), respecting each
   backend's free capacity and served domains, instead of filling one backend to
