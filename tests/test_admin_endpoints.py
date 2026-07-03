@@ -84,9 +84,7 @@ async def test_delete_user_succeeds_without_jobs(session):
     await _user(session, "carol")
     res = await delete_user("carol", session)
     assert res["status"] == "deleted"
-    left = await session.execute(
-        text("SELECT count(*) FROM users WHERE username='carol'")
-    )
+    left = await session.execute(text("SELECT count(*) FROM users WHERE username='carol'"))
     assert left.scalar() == 0
 
 

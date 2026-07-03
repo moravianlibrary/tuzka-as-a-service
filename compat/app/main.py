@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
@@ -14,7 +15,7 @@ settings = Settings()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http = httpx.AsyncClient(base_url=settings.taas_base_url)
     app.state.redis = aioredis.from_url(settings.redis_url)
     app.state.compat_state = CompatState(app.state.redis, settings.compat_ttl_seconds)
@@ -36,13 +37,13 @@ TAGS_METADATA = [
     {
         "name": "Legacy (PERO compat)",
         "description": "Legacy PERO-compatible endpoints. Each maps onto the modern taas "
-        "API; errors use the `{\"message\": ...}` envelope PERO clients expect.",
+        'API; errors use the `{"message": ...}` envelope PERO clients expect.',
     },
 ]
 
 app = FastAPI(
     title="taas-compat",
-    version="0.5.2",
+    version="0.7.0",
     lifespan=lifespan,
     description=DESCRIPTION,
     license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
@@ -51,7 +52,7 @@ app = FastAPI(
 
 
 @app.exception_handler(StarletteHTTPException)
-async def message_envelope(request: Request, exc: StarletteHTTPException):
+async def message_envelope(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     # The legacy PERO API (and its clients) expect errors as {"message": ...},
     # not FastAPI's default {"detail": ...}. The client's polling loop reads
     # response.json()["message"] to detect "not processed yet", so this

@@ -1,10 +1,11 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Any, cast
 
 import redis.asyncio as aioredis
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import CursorResult, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
@@ -24,7 +25,7 @@ logger = logging.getLogger("cleanup-worker")
 RETENTION_DAYS = 30
 
 
-async def delete_expired_jobs(db) -> None:
+async def delete_expired_jobs(db: AsyncSession) -> None:
     """Delete raw job rows (and their results) older than RETENTION_DAYS.
 
     job_analytics rows are permanent and are NOT deleted here."""
@@ -38,8 +39,9 @@ async def delete_expired_jobs(db) -> None:
         ),
         {"cutoff": cutoff},
     )
-    result = await db.execute(
-        text("DELETE FROM jobs WHERE finished_at < :cutoff"), {"cutoff": cutoff}
+    result = cast(
+        "CursorResult[Any]",
+        await db.execute(text("DELETE FROM jobs WHERE finished_at < :cutoff"), {"cutoff": cutoff}),
     )
     await db.commit()
     if result.rowcount:
@@ -82,9 +84,7 @@ async def main() -> None:
                             for i in range(0, len(expired), 1000):
                                 batch = expired[i : i + 1000]
                                 await delete_objects(client, bucket, batch)
-                                logger.info(
-                                    f"Deleted {len(batch)} expired objects from {bucket}"
-                                )
+                                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
 
                     await delete_expired_jobs(db)
             except Exception as e:

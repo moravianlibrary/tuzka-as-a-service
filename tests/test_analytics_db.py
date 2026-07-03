@@ -123,18 +123,22 @@ async def test_write_done_job_populates_row_durations_and_lookups(session):
     )
 
     row = (
-        await session.execute(
-            text(
-                "SELECT ja.status::text, ja.stat_date, ja.system_queue_s, ja.engine_queue_s,"
-                "  ja.ocr_running_s, ja.time_in_system_s, ja.alto_lines, ja.mean_conf,"
-                "  u.username, ev.name AS engine_version, d.name AS domain, ja.engine_device::text"
-                " FROM job_analytics ja"
-                " LEFT JOIN users u ON u.id = ja.user_id"
-                " LEFT JOIN engine_versions ev ON ev.id = ja.engine_version_id"
-                " LEFT JOIN domains d ON d.id = ja.domain_id"
+        (
+            await session.execute(
+                text(
+                    "SELECT ja.status::text, ja.stat_date, ja.system_queue_s, ja.engine_queue_s,"
+                    "  ja.ocr_running_s, ja.time_in_system_s, ja.alto_lines, ja.mean_conf,"
+                    "  u.username, ev.name AS engine_version, d.name AS domain, ja.engine_device::text"
+                    " FROM job_analytics ja"
+                    " LEFT JOIN users u ON u.id = ja.user_id"
+                    " LEFT JOIN engine_versions ev ON ev.id = ja.engine_version_id"
+                    " LEFT JOIN domains d ON d.id = ja.domain_id"
+                )
             )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
 
     assert row["status"] == "done"
     assert row["stat_date"] == BASE.date()
@@ -166,13 +170,17 @@ async def test_write_failed_before_dispatch_leaves_timings_null(session):
     )
 
     row = (
-        await session.execute(
-            text(
-                "SELECT status::text, system_queue_s, engine_queue_s, ocr_running_s,"
-                "  time_in_system_s, engine_device FROM job_analytics"
+        (
+            await session.execute(
+                text(
+                    "SELECT status::text, system_queue_s, engine_queue_s, ocr_running_s,"
+                    "  time_in_system_s, engine_device FROM job_analytics"
+                )
             )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert row["status"] == "failed"
     assert row["system_queue_s"] is None
     assert row["engine_queue_s"] is None
@@ -198,9 +206,17 @@ async def test_write_is_idempotent_on_job_id_conflict(session):
 
 async def _raw(session, **overrides):
     params = dict(
-        from_date=None, to_date=None, username=None, domain=None, engine_device=None,
-        engine_version=None, status=None, line_category=None, block_category=None,
-        char_category=None, page=1,
+        from_date=None,
+        to_date=None,
+        username=None,
+        domain=None,
+        engine_device=None,
+        engine_version=None,
+        status=None,
+        line_category=None,
+        block_category=None,
+        char_category=None,
+        page=1,
     )
     params.update(overrides)
     return await analytics_raw(db=session, **params)
@@ -247,9 +263,14 @@ async def test_raw_pagination_has_next(session):
 
 async def _breakdown(session, **overrides):
     params = dict(
-        from_date=BASE - timedelta(days=1), to_date=BASE + timedelta(days=1),
-        granularity="day", domain=None, engine_device=None, engine_version=None,
-        username=None, page=1,
+        from_date=BASE - timedelta(days=1),
+        to_date=BASE + timedelta(days=1),
+        granularity="day",
+        domain=None,
+        engine_device=None,
+        engine_version=None,
+        username=None,
+        page=1,
     )
     params.update(overrides)
     return await analytics_breakdown(db=session, **params)
@@ -317,9 +338,17 @@ async def test_raw_csv_streams_header_and_rows(session):
     await _write(session, status="failed", engine_version=None, engine_device=None)
 
     resp = await analytics_raw_csv(
-        db=session, from_date=None, to_date=None, username=None, domain=None,
-        engine_device=None, engine_version=None, status=None, line_category=None,
-        block_category=None, char_category=None,
+        db=session,
+        from_date=None,
+        to_date=None,
+        username=None,
+        domain=None,
+        engine_device=None,
+        engine_version=None,
+        status=None,
+        line_category=None,
+        block_category=None,
+        char_category=None,
     )
     body = await _csv_body(resp)
     lines = [ln for ln in body.splitlines() if ln.strip()]

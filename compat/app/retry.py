@@ -1,5 +1,6 @@
 import asyncio
 import random
+from typing import Any
 
 import httpx
 from fastapi import HTTPException
@@ -13,7 +14,7 @@ JITTER_MAX_SECONDS = 0.5
 
 
 async def request_with_retry(
-    http: httpx.AsyncClient, method: str, url: str, **kwargs
+    http: httpx.AsyncClient, method: str, url: str, **kwargs: Any
 ) -> httpx.Response:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + RETRY_BUDGET_SECONDS
@@ -25,9 +26,7 @@ async def request_with_retry(
             retry_after = float(resp.headers.get("Retry-After", "1"))
         except ValueError:
             retry_after = 1.0
-        sleep = min(retry_after, MAX_SLEEP_PER_ATTEMPT) + random.uniform(
-            0, JITTER_MAX_SECONDS
-        )
+        sleep = min(retry_after, MAX_SLEEP_PER_ATTEMPT) + random.uniform(0, JITTER_MAX_SECONDS)
         if loop.time() + sleep > deadline:
             raise HTTPException(status_code=503, detail="Service busy, retry later")
         await asyncio.sleep(sleep)

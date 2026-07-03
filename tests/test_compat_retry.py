@@ -7,9 +7,7 @@ from compat.app.retry import request_with_retry
 
 
 def make_client(handler):
-    return httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="http://taas"
-    )
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://taas")
 
 
 async def test_passes_through_non_429():

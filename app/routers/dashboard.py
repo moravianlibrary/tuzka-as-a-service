@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,7 +37,7 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
-def _csv_cell(value):
+def _csv_cell(value: Any) -> Any:
     """Defuse CSV formula injection: a cell whose text starts with = + - @ is
     prefixed with a single quote so spreadsheet apps don't execute it as a formula."""
     if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
@@ -50,7 +51,7 @@ def _csv_cell(value):
     summary="Get aggregate stats",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(db: AsyncSession = Depends(get_db)) -> DashboardStats:
     """Return aggregate job stats over the **last 24 hours**: total jobs, counts by
     status (by submission time), and two averages for done jobs — OCR running time
     (finished − started, engine clock) and total time in system (stored − submitted).
@@ -65,9 +66,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
     # Jobs by status in the window.
     by_status_result = await db.execute(
-        select(Job.status, func.count())
-        .where(Job.submitted_at >= cutoff)
-        .group_by(Job.status)
+        select(Job.status, func.count()).where(Job.submitted_at >= cutoff).group_by(Job.status)
     )
     jobs_by_status = {row[0]: row[1] for row in by_status_result.all()}
 
@@ -111,7 +110,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     summary="Get per-user job stats",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def get_dashboard_users(db: AsyncSession = Depends(get_db)):
+async def get_dashboard_users(db: AsyncSession = Depends(get_db)) -> list[DashboardUser]:
     """Return per-user job stats grouped by username: total jobs, done and failed
     counts, and last-active timestamp. Requires a master key."""
     result = await db.execute(
@@ -149,7 +148,7 @@ async def get_dashboard_jobs(
     limit: int = Query(50),
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """List jobs newest-first with optional username/status/from/to date filters and
     limit/offset pagination, returning the matching jobs plus the total filtered count.
     Requires a master key."""
@@ -195,7 +194,9 @@ async def get_dashboard_jobs(
                 "domain": j.domain,
                 "submitted_at": j.submitted_at.isoformat() if j.submitted_at else None,
                 "dispatched_at": j.dispatched_at.isoformat() if j.dispatched_at else None,
-                "engine_received_at": j.engine_received_at.isoformat() if j.engine_received_at else None,
+                "engine_received_at": j.engine_received_at.isoformat()
+                if j.engine_received_at
+                else None,
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
                 "stored_at": j.stored_at.isoformat() if j.stored_at else None,
@@ -219,7 +220,7 @@ async def get_dashboard_jobs(
 async def get_usage(
     days: int = Query(30, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """Return daily job counts over the trailing ``days`` window (1-90). Provides both a
     per-user ``series`` and a per-status ``status_series`` (done/failed/queued/running)
     aligned to the same ``days`` axis. Requires a master key."""
@@ -244,7 +245,7 @@ async def get_usage(
     day_list = [(start + timedelta(days=i)).date().isoformat() for i in range(days)]
     day_index = {d: i for i, d in enumerate(day_list)}
 
-    def day_of(row):
+    def day_of(row: Any) -> str:
         return row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
 
     users = sorted({row.username for row in rows})
@@ -278,7 +279,7 @@ async def get_dashboard_backends(
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
-):
+) -> list[DashboardBackend]:
     """List configured backends with their config plus live state, probing every backend
     concurrently for current in-flight count (Redis) and health (engine healthcheck).
     Disabled backends are not health-probed (``healthy`` is reported as ``null``).
@@ -334,7 +335,13 @@ async def get_dashboard_backends(
 
 # --- Analytics ---
 
-_GRANULARITY_TRUNC = {"hour": "hour", "day": "day", "week": "week", "month": "month", "year": "year"}
+_GRANULARITY_TRUNC = {
+    "hour": "hour",
+    "day": "day",
+    "week": "week",
+    "month": "month",
+    "year": "year",
+}
 
 # Max buckets per granularity so clients can't request unbounded result sets.
 _MAX_BUCKETS = 500
@@ -351,7 +358,9 @@ def _bucket_count(from_dt: datetime, to_dt: datetime, granularity: str) -> int:
     "/analytics/breakdown",
     summary="Analytics breakdown by time, engine, user, domain",
     responses={
-        400: {"description": "Too many buckets — narrow the date range or use a coarser granularity"},
+        400: {
+            "description": "Too many buckets — narrow the date range or use a coarser granularity"
+        },
         401: {"description": "Missing or invalid master key"},
     },
 )
@@ -365,15 +374,17 @@ async def analytics_breakdown(
     username: str | None = Query(None),
     page: int = Query(1, ge=1, le=10),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """Group job_analytics by time bucket × engine × device × user × domain.
 
     Returns up to 500 rows (50 per page, max 10 pages). Requires a master key."""
     if granularity not in _GRANULARITY_TRUNC:
-        raise HTTPException(status_code=400, detail=f"granularity must be one of {list(_GRANULARITY_TRUNC)}")
-    from_date = _naive_utc(from_date)
-    to_date = _naive_utc(to_date)
-    if _bucket_count(from_date, to_date, granularity) > _MAX_BUCKETS:
+        raise HTTPException(
+            status_code=400, detail=f"granularity must be one of {list(_GRANULARITY_TRUNC)}"
+        )
+    from_naive = cast(datetime, _naive_utc(from_date))
+    to_naive = cast(datetime, _naive_utc(to_date))
+    if _bucket_count(from_naive, to_naive, granularity) > _MAX_BUCKETS:
         raise HTTPException(
             status_code=400,
             detail=f"Too many {granularity} buckets in the requested range — narrow the window or use a coarser granularity",
@@ -413,8 +424,8 @@ async def analytics_breakdown(
         ),
         {
             "gran": granularity,
-            "from_date": from_date,
-            "to_date": to_date,
+            "from_date": from_naive,
+            "to_date": to_naive,
             "username": username,
             "domain": domain,
             "engine_device": engine_device,
@@ -426,7 +437,7 @@ async def analytics_breakdown(
     has_next = len(rows) > 50
     rows = rows[:50]
 
-    def _round(v):
+    def _round(v: float | None) -> float | None:
         return round(v, 3) if v is not None else None
 
     return {
@@ -457,15 +468,24 @@ def _alto_range(category: str | None, column: str) -> str:
     """Return a SQL BETWEEN clause for an ALTO line/block/char category filter."""
     ranges: dict[str, dict[str, tuple[int, int | None]]] = {
         "alto_lines": {
-            "empty": (0, 0), "sparse": (1, 15), "normal": (16, 60),
-            "dense": (61, 300), "very_dense": (301, None),
+            "empty": (0, 0),
+            "sparse": (1, 15),
+            "normal": (16, 60),
+            "dense": (61, 300),
+            "very_dense": (301, None),
         },
         "alto_blocks": {
-            "empty": (0, 0), "simple": (1, 2), "multi": (3, 10),
-            "complex": (11, 30), "fragmented": (31, None),
+            "empty": (0, 0),
+            "simple": (1, 2),
+            "multi": (3, 10),
+            "complex": (11, 30),
+            "fragmented": (31, None),
         },
         "alto_chars": {
-            "empty": (0, 0), "sparse": (1, 499), "normal": (500, 3000), "rich": (3001, None),
+            "empty": (0, 0),
+            "sparse": (1, 499),
+            "normal": (500, 3000),
+            "rich": (3001, None),
         },
     }
     if category is None or column not in ranges or category not in ranges[column]:
@@ -497,11 +517,11 @@ def _analytics_filters(
     line_category: str | None,
     block_category: str | None,
     char_category: str | None,
-) -> tuple[str, dict]:
+) -> tuple[str, dict[str, Any]]:
     """Build the WHERE clause + bind params shared by /analytics/raw and
     /analytics/raw.csv, so the table view and the CSV export filter identically."""
     where = " WHERE 1=1"
-    params: dict = {}
+    params: dict[str, Any] = {}
     from_date = _naive_utc(from_date)
     to_date = _naive_utc(to_date)
     if from_date:
@@ -553,16 +573,22 @@ async def analytics_raw(
     char_category: str | None = Query(None),
     page: int = Query(1, ge=1, le=10),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     """Return up to 50 raw job_analytics rows per page (max 10 pages / 500 rows total).
 
     Category filters map line/block/char counts to named buckets defined in the design doc.
     Requires a master key."""
     offset = (page - 1) * 50
     where, params = _analytics_filters(
-        from_date=from_date, to_date=to_date, username=username, domain=domain,
-        engine_device=engine_device, engine_version=engine_version, status=status,
-        line_category=line_category, block_category=block_category,
+        from_date=from_date,
+        to_date=to_date,
+        username=username,
+        domain=domain,
+        engine_device=engine_device,
+        engine_version=engine_version,
+        status=status,
+        line_category=line_category,
+        block_category=block_category,
         char_category=char_category,
     )
 
@@ -585,7 +611,7 @@ async def analytics_raw(
     has_next = len(rows) > 50
     rows = rows[:50]
 
-    def _fmt_row(r):
+    def _fmt_row(r: Any) -> dict[str, Any]:
         return {
             "job_id": str(r["job_id"]),
             "external_id": str(r["external_id"]) if r["external_id"] else None,
@@ -627,14 +653,20 @@ async def analytics_raw_csv(
     block_category: str | None = Query(None),
     char_category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
-):
+) -> StreamingResponse:
     """Stream the full filtered result set from job_analytics as a CSV download.
 
     No page limit — use date filters to bound the result. Requires a master key."""
     where, params = _analytics_filters(
-        from_date=from_date, to_date=to_date, username=username, domain=domain,
-        engine_device=engine_device, engine_version=engine_version, status=status,
-        line_category=line_category, block_category=block_category,
+        from_date=from_date,
+        to_date=to_date,
+        username=username,
+        domain=domain,
+        engine_device=engine_device,
+        engine_version=engine_version,
+        status=status,
+        line_category=line_category,
+        block_category=block_category,
         char_category=char_category,
     )
 
@@ -655,10 +687,24 @@ async def analytics_raw_csv(
     rows = result.all()
 
     CSV_COLUMNS = [
-        "submitted_at", "job_id", "external_id", "username", "status", "fmt",
-        "domain", "engine_version", "engine_device", "file_size_bytes",
-        "system_queue_s", "engine_queue_s", "ocr_running_s", "time_in_system_s",
-        "alto_lines", "alto_blocks", "alto_chars", "mean_conf",
+        "submitted_at",
+        "job_id",
+        "external_id",
+        "username",
+        "status",
+        "fmt",
+        "domain",
+        "engine_version",
+        "engine_device",
+        "file_size_bytes",
+        "system_queue_s",
+        "engine_queue_s",
+        "ocr_running_s",
+        "time_in_system_s",
+        "alto_lines",
+        "alto_blocks",
+        "alto_chars",
+        "mean_conf",
     ]
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -679,7 +725,7 @@ async def analytics_raw_csv(
     summary="Distinct filter values (usernames, domains, engine versions) for the dropdowns",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def get_facets(db: AsyncSession = Depends(get_db)):
+async def get_facets(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """Return the value sets that populate the jobs/analytics filter dropdowns — all
     usernames, all known domains, and all known engine versions, each sorted. These are
     small lookup/user tables, so this is a cheap query. Requires a master key."""
@@ -691,5 +737,3 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
         "domains": [r[0] for r in domains],
         "engine_versions": [r[0] for r in engines],
     }
-
-

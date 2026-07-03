@@ -2,6 +2,8 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 COMPOSE := docker compose
+# Run dev tooling in the locked env (installs the dev extra on demand).
+UV := uv run --extra dev
 
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
@@ -145,29 +147,54 @@ local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + f
 local-deploy-bench-db: ## Seed ~10M synthetic analytics rows + time the dashboard queries (ROWS=, MODE=seed|query|clean)
 	bash $(LOCAL_DIR)/bench-analytics-db.sh
 
+.PHONY: check
+check: lint typecheck version-check test-unit ## Run the full quality gate (lint + types + version + unit tests)
+
 .PHONY: format
 format: ## Format code + auto-fix lint issues (ruff)
-	ruff format .
-	ruff check --fix .
+	$(UV) ruff format .
+	$(UV) ruff check --fix .
 
 .PHONY: lint
 lint: ## Check formatting + lint without changes (ruff)
-	ruff check .
-	ruff format --check .
+	$(UV) ruff check .
+	$(UV) ruff format --check .
+
+.PHONY: typecheck
+typecheck: ## Type-check with mypy --strict
+	$(UV) mypy
+
+.PHONY: test-unit
+test-unit: ## Run the Python unit tests (pytest; DB/redis tests skip if absent)
+	$(UV) pytest
+
+.PHONY: version-check
+version-check: ## Fail if version literals have drifted from ./VERSION
+	@bash scripts/check-version.sh
+
+.PHONY: set-version
+set-version: ## Set the version everywhere (make set-version VERSION=x.y.z)
+	@test -n "$(VERSION)" || { echo "usage: make set-version VERSION=x.y.z"; exit 1; }
+	@echo "$(VERSION)" > VERSION
+	@sed -i 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml compat/pyproject.toml
+	@sed -i 's/version="[^"]*"/version="$(VERSION)"/' app/main.py compat/app/main.py
+	@sed -i 's/^version: .*/version: $(VERSION)/' deploy/helm/taas/Chart.yaml
+	@sed -i 's/^appVersion: .*/appVersion: "$(VERSION)"/' deploy/helm/taas/Chart.yaml
+	@echo "set version to $(VERSION); run 'make version-check' to confirm"
 
 .PHONY: secret
 secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
 	@python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 .PHONY: tag-version
-tag-version:
+tag-version: ## Force-retag v$(VERSION) and push it
 	@git tag -d $(GIT_TAG) 2>/dev/null || true
 	@git push origin :refs/tags/$(GIT_TAG) 2>/dev/null || true
 	git tag $(GIT_TAG)
 	git push origin $(GIT_TAG)
 
 .PHONY: tag-latest
-tag-latest:
+tag-latest: ## Move the `latest` tag to HEAD and push it
 	@git tag -d latest 2>/dev/null || true
 	@git push origin :refs/tags/latest 2>/dev/null || true
 	git tag latest

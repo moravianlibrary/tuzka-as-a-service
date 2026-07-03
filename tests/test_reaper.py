@@ -13,14 +13,21 @@ class _Job:
 def test_select_stale_jobs_flags_queued_and_running_past_deadline():
     now = datetime(2026, 6, 11, 12, 0, 0)
     jobs = [
-        _Job("queued", submitted_at=now - timedelta(seconds=1000)),   # stale queued
-        _Job("queued", submitted_at=now - timedelta(seconds=100)),    # fresh queued
-        _Job("running", submitted_at=now - timedelta(seconds=5000),
-             dispatched_at=now - timedelta(seconds=400)),             # stale running
-        _Job("running", submitted_at=now - timedelta(seconds=5000),
-             dispatched_at=now - timedelta(seconds=100)),             # fresh running
-        _Job("running", submitted_at=now - timedelta(seconds=5000),
-             dispatched_at=None),                                     # not yet dispatched -> skip
+        _Job("queued", submitted_at=now - timedelta(seconds=1000)),  # stale queued
+        _Job("queued", submitted_at=now - timedelta(seconds=100)),  # fresh queued
+        _Job(
+            "running",
+            submitted_at=now - timedelta(seconds=5000),
+            dispatched_at=now - timedelta(seconds=400),
+        ),  # stale running
+        _Job(
+            "running",
+            submitted_at=now - timedelta(seconds=5000),
+            dispatched_at=now - timedelta(seconds=100),
+        ),  # fresh running
+        _Job(
+            "running", submitted_at=now - timedelta(seconds=5000), dispatched_at=None
+        ),  # not yet dispatched -> skip
     ]
     stale = select_stale_jobs(jobs, now=now, queued_timeout=900, running_timeout=300)
     assert [jobs.index(j) for j, _ in stale] == [0, 2]

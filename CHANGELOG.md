@@ -1,0 +1,37 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Security
+
+- Master-key authentication now uses a constant-time comparison (`hmac.compare_digest`),
+  removing a timing side-channel on the secret.
+- An invalid or missing master key is now rejected with `401 Unauthorized` (was `403`),
+  matching the documented API contract.
+
+### Added
+
+- Quality gate: `make check` (lint + `mypy --strict` types + version drift + unit tests),
+  plus `make typecheck`, `make test-unit`, and `make version-check`.
+- `make set-version VERSION=x.y.z` propagates the version into every manifest
+  (`VERSION`, both `pyproject.toml`s, `app/main.py`, `compat/app/main.py`,
+  Helm `Chart.yaml`); `make version-check` fails on drift.
+- Committed `uv.lock` for reproducible installs; dev tooling runs via `uv`.
+- CI: secret scanning (gitleaks) and dependency CVE audit (pip-audit).
+
+### Changed
+
+- The whole codebase now passes `mypy --strict` and an expanded Ruff rule set
+  (`B` bugbear, `SIM` simplify); all `app/` and `compat/` code is fully type-annotated.
+- `alembic/env.py` imports every model via the `app.models` package so
+  `Base.metadata` is complete — autogenerate can no longer propose dropping the
+  `domains`, `backend_domains`, or `config` tables.
+
+### Fixed
+
+- Corrected the drifted `compat` service version (`0.5.2` → in step with the main
+  version) via the new single-source version propagation.

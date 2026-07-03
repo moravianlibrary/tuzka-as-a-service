@@ -12,6 +12,4 @@ class ConfigEntry(Base):
 
     key: Mapped[str] = mapped_column(primary_key=True)
     value: Mapped[Any] = mapped_column(JSON, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

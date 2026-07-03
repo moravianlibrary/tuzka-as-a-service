@@ -40,7 +40,7 @@ router = APIRouter(dependencies=[Depends(require_master)])
     summary="List all users",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def list_users(db: AsyncSession = Depends(get_db)):
+async def list_users(db: AsyncSession = Depends(get_db)) -> list[UserList]:
     """List all users with their status and per-user rate-limit overrides.
 
     Requires a valid master key. Newest users are returned first.
@@ -74,7 +74,7 @@ async def list_users(db: AsyncSession = Depends(get_db)):
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
+async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)) -> UserResponse:
     """Create a new user and generate their API key.
 
     Requires a valid master key. The raw API key is returned once in the response
@@ -100,7 +100,7 @@ async def create_user(body: UserCreate, db: AsyncSession = Depends(get_db)):
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def delete_user(username: str, db: AsyncSession = Depends(get_db)):
+async def delete_user(username: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     """Permanently delete a user.
 
     Refuses with **409** while any jobs still reference the user (they hold a
@@ -133,7 +133,7 @@ async def delete_user(username: str, db: AsyncSession = Depends(get_db)):
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def rotate_key(username: str, db: AsyncSession = Depends(get_db)):
+async def rotate_key(username: str, db: AsyncSession = Depends(get_db)) -> UserResponse:
     """Generate a fresh API key for the user, invalidating the previous one.
 
     Requires a valid master key. The new raw API key is returned once in the
@@ -158,7 +158,9 @@ async def rotate_key(username: str, db: AsyncSession = Depends(get_db)):
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def set_key(username: str, body: SetKeyRequest, db: AsyncSession = Depends(get_db)):
+async def set_key(
+    username: str, body: SetKeyRequest, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
     """Replace the user's API key with a caller-supplied value.
 
     Requires a valid master key. The provided key is hashed before storage,
@@ -188,7 +190,7 @@ async def update_user_limits(
     username: str,
     body: UserUpdate,
     db: AsyncSession = Depends(get_db),
-):
+) -> UserLimitsResponse:
     """Update a user's rate-limit overrides and/or ``active`` flag (enable/disable),
     returning the resolved effective limits. Mirrors ``PATCH /backends/{id}``.
 
@@ -255,7 +257,7 @@ def _backend_response(b: Backend) -> BackendResponse:
     summary="List all backends",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def list_backends(db: AsyncSession = Depends(get_db)):
+async def list_backends(db: AsyncSession = Depends(get_db)) -> list[BackendResponse]:
     """List all configured OCR backends ordered by id.
 
     Requires a valid master key. Stored backend API keys are never returned.
@@ -275,7 +277,7 @@ async def create_backend(
     body: BackendCreate,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-):
+) -> BackendResponse:
     """Register a new OCR backend.
 
     Requires a valid master key. If an API key is supplied it is encrypted at rest;
@@ -313,7 +315,7 @@ async def upsert_backend(
     body: BackendCreate,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-):
+) -> BackendResponse:
     """Declaratively register a backend keyed by ``url``: create it if new, otherwise
     update its label/api_key/max_inflight/device/managed in place.
 
@@ -366,7 +368,7 @@ async def update_backend(
     body: BackendUpdate,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-):
+) -> BackendResponse:
     """Update fields of an existing backend.
 
     Requires a valid master key. Only fields present in the request are changed;
@@ -406,7 +408,7 @@ async def update_backend(
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     """Permanently delete a backend.
 
     Refuses with **409** while any jobs still reference it (foreign key); once
@@ -438,7 +440,7 @@ async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)):
     summary="Get runtime config",
     responses={401: {"description": "Missing or invalid master key"}},
 )
-async def get_config(db: AsyncSession = Depends(get_db)):
+async def get_config(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """Return all runtime configuration values as a key/value map.
 
     Requires a valid master key.
@@ -454,7 +456,9 @@ async def get_config(db: AsyncSession = Depends(get_db)):
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def update_config(values: dict[str, Any], db: AsyncSession = Depends(get_db)):
+async def update_config(
+    values: dict[str, Any], db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
     """Upsert one or more runtime configuration values from the request body.
 
     Requires a valid master key. An empty payload is rejected.

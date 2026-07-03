@@ -1,4 +1,5 @@
 import time
+from typing import Any
 
 import httpx
 
@@ -66,9 +67,12 @@ class EngineClient:
         if resp.status_code == 503:
             raise EngineFullError(f"Engine at {url} is full")
         resp.raise_for_status()
-        return resp.json()["job_id"]
+        job_id: str = resp.json()["job_id"]
+        return job_id
 
-    async def check_status(self, url: str, api_key: str | None, engine_job_id: str) -> dict:
+    async def check_status(
+        self, url: str, api_key: str | None, engine_job_id: str
+    ) -> dict[str, Any]:
         headers = {}
         if api_key:
             headers["X-API-Key"] = api_key
@@ -78,7 +82,8 @@ class EngineClient:
             headers=headers,
         )
         resp.raise_for_status()
-        return resp.json()
+        status: dict[str, Any] = resp.json()
+        return status
 
     async def get_result(
         self, url: str, api_key: str | None, engine_job_id: str, which: str | None = None

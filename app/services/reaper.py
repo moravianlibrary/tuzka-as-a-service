@@ -8,8 +8,10 @@ and emits the WS failed event.
 """
 
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 
+import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +22,12 @@ from app.services.redis_jobs import publish_event, set_failed
 logger = logging.getLogger("reaper")
 
 
-def select_stale_jobs(jobs, now, queued_timeout, running_timeout):
+def select_stale_jobs(
+    jobs: Iterable[Job],
+    now: datetime,
+    queued_timeout: int,
+    running_timeout: int,
+) -> list[tuple[Job, str]]:
     """Return [(job, reason), ...] for jobs past their phase deadline.
 
     Pure function (no I/O) so it is unit-testable. `queued` is measured from
@@ -30,7 +37,7 @@ def select_stale_jobs(jobs, now, queued_timeout, running_timeout):
     """
     queued_cutoff = now - timedelta(seconds=queued_timeout)
     running_cutoff = now - timedelta(seconds=running_timeout)
-    stale = []
+    stale: list[tuple[Job, str]] = []
     for job in jobs:
         if job.status == "queued" and job.submitted_at < queued_cutoff:
             stale.append((job, f"timed out in queue after {queued_timeout}s"))
@@ -43,7 +50,7 @@ def select_stale_jobs(jobs, now, queued_timeout, running_timeout):
     return stale
 
 
-async def reap_stale_jobs(db: AsyncSession, r) -> int:
+async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     """Find stale jobs, fail them, release Redis/backend state, emit events.
 
     Returns the number of jobs reaped.

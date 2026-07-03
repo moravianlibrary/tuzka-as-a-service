@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import time
+from typing import Any
 from uuid import uuid4
 
 import zstandard
@@ -56,7 +57,7 @@ async def validate_api_key(request: Request, api_key: str) -> None:
         503: {"description": "taas rate limit could not be absorbed within the retry budget."},
     },
 )
-async def post_processing_request(request: Request):
+async def post_processing_request(request: Request) -> dict[str, Any]:
     """Open a PERO-style processing request and reserve slots for its images.
 
     Validates the ``api-key`` header against the modern taas API (via a cached
@@ -90,7 +91,7 @@ async def post_processing_request(request: Request):
         503: {"description": "taas rate limit could not be absorbed within the retry budget."},
     },
 )
-async def get_status(request: Request, request_id: str):
+async def get_status(request: Request, request_id: str) -> dict[str, Any]:
     """Report whether a previously opened request_id is still known to the shim.
 
     Validates the ``api-key`` header against taas, then looks the request up in
@@ -123,7 +124,7 @@ async def upload_image(
     request_id: str,
     filename: str,
     file: UploadFile = File(...),
-):
+) -> dict[str, Any]:
     """Upload a single image for a request and start its OCR job on taas.
 
     Reads the upload, then forwards it as a ``POST /api/v1/jobs`` multipart call
@@ -183,7 +184,7 @@ async def upload_image(
         503: {"description": "taas rate limit could not be absorbed within the retry budget."},
     },
 )
-async def request_status(request: Request, request_id: str):
+async def request_status(request: Request, request_id: str) -> dict[str, Any]:
     """Return PERO-style per-image processing states for every image in a request.
 
     Fans out ``GET /api/v1/jobs/{job_id}`` (bounded to four concurrent calls to
@@ -203,7 +204,7 @@ async def request_status(request: Request, request_id: str):
     # through the user's query limit in one burst.
     sem = asyncio.Semaphore(4)
 
-    async def check_status(fname: str, job_id: str | None) -> tuple[str, dict]:
+    async def check_status(fname: str, job_id: str | None) -> tuple[str, dict[str, Any]]:
         if job_id is None:
             return fname, {"state": "WAITING"}
         async with sem:
@@ -248,7 +249,7 @@ async def download_results(
     request_id: str,
     filename: str,
     format: str,
-):
+) -> Response:
     """Fetch and return the OCR output for one image in ``alto`` (XML) or text form.
 
     Confirms the taas job is ``done``, lists its results via
@@ -312,7 +313,7 @@ async def download_results(
         503: {"description": "taas rate limit could not be absorbed within the retry budget."},
     },
 )
-async def get_engines(request: Request):
+async def get_engines(request: Request) -> dict[str, Any]:
     """List the OCR engines exposed to legacy clients, keyed by display label.
 
     Validates the ``api-key`` header against taas, then returns the statically

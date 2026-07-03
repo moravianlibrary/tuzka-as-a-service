@@ -116,15 +116,18 @@ async def get_default_limits(db: AsyncSession, limit_class: str) -> ClassLimits:
 
 
 async def _get_user_overrides(db: AsyncSession, username: str) -> dict[str, int | None]:
-    overrides, ok = _cache_get(f"user:{username}")
+    cached, ok = _cache_get(f"user:{username}")
     if ok:
-        return overrides
+        cached_overrides: dict[str, int | None] = cached
+        return cached_overrides
     columns = [c for pair in USER_OVERRIDE_COLUMNS.values() for c in pair]
     result = await db.execute(
         select(*(getattr(User, c) for c in columns)).where(User.username == username)
     )
     row = result.one_or_none()
-    overrides = dict(zip(columns, row)) if row else {c: None for c in columns}
+    overrides: dict[str, int | None] = (
+        dict(zip(columns, row, strict=True)) if row else {c: None for c in columns}
+    )
     _cache_put(f"user:{username}", overrides)
     return overrides
 

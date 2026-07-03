@@ -1,6 +1,6 @@
 [project]
 name = "taas"
-version = "0.6.0"
+version = "0.7.0"
 requires-python = ">=3.13"
 # Base = what the workers need (no web framework). The API/dashboard web stack is
 # the `api` extra, so the worker image stays lean: `pip install .` for workers,
@@ -8,7 +8,7 @@ requires-python = ">=3.13"
 dependencies = [
   "sqlalchemy[asyncio]>=2.0",
   "asyncpg>=0.29",
-  "redis[asyncio]>=5.0",
+  "redis>=5.0",
   "miniopy-async>=1.19",
   "httpx>=0.27",
   "cryptography>=42",
@@ -25,7 +25,7 @@ api = [
   "python-multipart>=0.0.9",
   "jinja2>=3.1",
 ]
-dev = ["taas[api]", "pytest", "pytest-asyncio", "ruff"]
+dev = ["taas[api]", "pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
@@ -33,14 +33,42 @@ include = ["app*"]
 [tool.ruff]
 target-version = "py313"
 line-length = 100
-extend-exclude = ["TuzkaOCR"]
+# TuzkaOCR: vendored engine. bench: throwaway benchmarking scratch. alembic/versions:
+# shipped migrations are immutable — we don't reformat them after they land.
+extend-exclude = ["TuzkaOCR", "bench", "alembic/versions"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP"]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's DI markers are call-in-default by design and are effectively immutable
+# singletons; B008 would otherwise fire on every dependency parameter.
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Security",
+  "fastapi.Header",
+  "fastapi.Cookie",
+  "fastapi.Body",
+  "fastapi.Path",
+]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["app", "compat"]
+
+# Third-party libraries without bundled type stubs. Strict mode treats untyped
+# imports as errors; these have no stubs on PyPI, so ignore just their imports.
+[[tool.mypy.overrides]]
+module = ["miniopy_async", "miniopy_async.*", "zstandard", "zstandard.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

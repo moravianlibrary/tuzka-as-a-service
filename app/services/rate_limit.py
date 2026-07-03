@@ -32,7 +32,7 @@ class RateLimitResult:
     retry_after: float
 
 
-def _as_float(raw) -> float:
+def _as_float(raw: bytes | str | float) -> float:
     return float(raw.decode() if isinstance(raw, bytes) else raw)
 
 

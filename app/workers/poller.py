@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
@@ -87,7 +88,9 @@ async def main() -> None:
             backend_keys[backend_id] = key
         return backend_keys[backend_id]
 
-    async def check_one(job_id: str) -> tuple[str, str, dict, dict]:
+    async def check_one(
+        job_id: str,
+    ) -> tuple[str, str, dict[str, str], dict[str, Any]]:
         meta = await get_job(r, job_id)
         if not meta:
             return (job_id, "unknown", {}, {})
@@ -108,7 +111,7 @@ async def main() -> None:
             logger.error(f"Failed to check status for job {job_id}: {e}")
             return (job_id, "error", meta, {})
 
-    async def harvest(job_id: str, meta: dict, times: dict) -> None:
+    async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         username = meta["username"]
         external_id = meta["external_id"]
         fmt = meta.get("fmt", "multi")
@@ -168,7 +171,7 @@ async def main() -> None:
             if isinstance(times.get("mean_conf"), (int, float)):
                 mean_conf = float(times["mean_conf"])
 
-            event_data: dict = {
+            event_data: dict[str, str] = {
                 "status": "done",
                 "uuid": external_id,
             }
@@ -206,15 +209,18 @@ async def main() -> None:
                         job_id=job_id,
                         fmt=result_fmt,
                         presigned_url=presigned_url,
-                        presigned_until=datetime.utcnow()
-                        + timedelta(minutes=presigned_ttl),
+                        presigned_until=datetime.utcnow() + timedelta(minutes=presigned_ttl),
                     )
                     db.add(jr)
 
                     url_key = "alto_url" if result_fmt == "alto" else "txt_url"
                     event_data[url_key] = presigned_url
 
-                done_values = {"status": "done", "stored_at": datetime.utcnow()}
+                stored_at = datetime.utcnow()
+                done_values: dict[str, str | datetime] = {
+                    "status": "done",
+                    "stored_at": stored_at,
+                }
                 # Adopt the engine's own created/started/finished (engine clock) into the
                 # engine-side stamps. We keep the taas-clock dispatched_at as set by the
                 # submit worker (do NOT overwrite it): that preserves a single-clock
@@ -228,10 +234,9 @@ async def main() -> None:
                     done_values["engine_received_at"] = engine_created
                 if engine_started is not None:
                     done_values["started_at"] = engine_started
-                done_values["finished_at"] = engine_finished or datetime.utcnow()
-                await db.execute(
-                    update(Job).where(Job.id == job_id).values(**done_values)
-                )
+                finished_at: datetime = engine_finished or datetime.utcnow()
+                done_values["finished_at"] = finished_at
+                await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
 
                 # Write permanent analytics row
                 if job_rec is not None:
@@ -249,10 +254,10 @@ async def main() -> None:
                         status="done",
                         file_size_bytes=job_rec.file_size_bytes,
                         dispatched_at=job_rec.dispatched_at,
-                        engine_received_at=done_values.get("engine_received_at"),
-                        started_at=done_values.get("started_at"),
-                        finished_at=done_values["finished_at"],
-                        stored_at=done_values["stored_at"],
+                        engine_received_at=engine_created,
+                        started_at=engine_started,
+                        finished_at=finished_at,
+                        stored_at=stored_at,
                         alto_lines=alto_lines,
                         alto_blocks=alto_blocks,
                         alto_chars=alto_chars,
@@ -269,7 +274,7 @@ async def main() -> None:
             logger.error(f"Failed to harvest job {job_id}: {e}")
             await mark_failed(job_id, meta, str(e))
 
-    async def mark_failed(job_id: str, meta: dict, error: str) -> None:
+    async def mark_failed(job_id: str, meta: dict[str, str], error: str) -> None:
         username = meta.get("username", "")
         external_id = meta.get("external_id", "")
         failed_at = datetime.utcnow()
@@ -323,7 +328,7 @@ async def main() -> None:
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
 
-    async def harvest_with_sem(job_id: str, meta: dict, times: dict) -> None:
+    async def harvest_with_sem(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         async with sem:
             await harvest(job_id, meta, times)
 
@@ -396,7 +401,9 @@ async def main() -> None:
 
             # Harvest done jobs
             if done_jobs:
-                await asyncio.gather(*[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs])
+                await asyncio.gather(
+                    *[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs]
+                )
 
             # Mark failed jobs
             for job_id, meta, error in failed_jobs:

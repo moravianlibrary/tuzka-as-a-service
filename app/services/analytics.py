@@ -53,7 +53,8 @@ async def _get_or_create_id(db: AsyncSession, table: str, name: str) -> int | No
         {"name": name},
     )
     row = await db.execute(text(f"SELECT id FROM {table} WHERE name = :name"), {"name": name})
-    return row.scalar_one()
+    row_id: int = row.scalar_one()
+    return row_id
 
 
 async def write_analytics_row(

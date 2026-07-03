@@ -16,7 +16,7 @@ class JobSubmitResponse(BaseModel):
 _UUID_PLACEHOLDER = re.compile(r"\{uuid\}", re.IGNORECASE)
 
 
-def render_external_url(template: str | None, external_id) -> str | None:
+def render_external_url(template: str | None, external_id: UUID | str | None) -> str | None:
     """Resolve a user's ``external_url_template`` for a job by substituting the
     ``{UUID}`` placeholder with the job's ``external_id`` (case-insensitive, so
     ``{uuid}`` also works). Returns ``None`` when no template is configured."""

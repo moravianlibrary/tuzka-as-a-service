@@ -1,5 +1,7 @@
+import contextlib
 import json
 import time
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 
@@ -27,12 +29,16 @@ async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: flo
     await r.sadd(_PENDING_LEVELS_KEY, str(priority))
 
 
-async def enqueue_job(r: aioredis.Redis, job_id: str, metadata: dict, state_ttl: int) -> None:
+async def enqueue_job(
+    r: aioredis.Redis, job_id: str, metadata: dict[str, str], state_ttl: int
+) -> None:
     priority = int(metadata.get("priority", 0))
     key = f"job:{job_id}"
-    await r.hset(key, mapping=metadata)
+    # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
+    # does not upcast; cast around the third-party stub friction (values are all strings).
+    await r.hset(key, mapping=cast("dict[Any, Any]", metadata))
     await r.expire(key, state_ttl)
-    await _add_pending(r, priority, job_id, metadata.get("submitted_at", time.time()))
+    await _add_pending(r, priority, job_id, float(metadata.get("submitted_at", time.time())))
 
 
 async def dequeue_jobs(r: aioredis.Redis, count: int) -> list[tuple[str, float]]:
@@ -44,10 +50,8 @@ async def dequeue_jobs(r: aioredis.Redis, count: int) -> list[tuple[str, float]]
     members = await r.smembers(_PENDING_LEVELS_KEY)
     prios: list[int] = []
     for m in members:
-        try:
+        with contextlib.suppress(ValueError):
             prios.append(int(m.decode() if isinstance(m, bytes) else m))
-        except ValueError:
-            pass
     prios.sort(reverse=True)
     if not prios:
         prios = [0]
@@ -58,17 +62,20 @@ async def dequeue_jobs(r: aioredis.Redis, count: int) -> list[tuple[str, float]]
     for prio in prios:
         if remaining <= 0:
             break
-        batch = await r.zpopmin(_pending_key(prio), remaining)
+        # zpopmin returns [(member, score), ...]; the stub over-broadens this to a union,
+        # so narrow to the documented shape for the decode step.
+        batch = cast(
+            "list[tuple[bytes | str, float]]", await r.zpopmin(_pending_key(prio), remaining)
+        )
         for member, score in batch:
-            results.append(
-                (member.decode() if isinstance(member, bytes) else member, score)
-            )
+            member_str = member.decode() if isinstance(member, bytes) else member
+            results.append((member_str, float(score)))
         remaining -= len(batch)
 
     return results
 
 
-async def get_job(r: aioredis.Redis, job_id: str) -> dict | None:
+async def get_job(r: aioredis.Redis, job_id: str) -> dict[str, str] | None:
     data = await r.hgetall(f"job:{job_id}")
     if not data:
         return None
@@ -172,6 +179,6 @@ async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:
     return int(val) if val else 0
 
 
-async def publish_event(r: aioredis.Redis, username: str, event: dict) -> None:
+async def publish_event(r: aioredis.Redis, username: str, event: dict[str, str]) -> None:
     channel = f"job:{username}:events"
     await r.publish(channel, json.dumps(event))

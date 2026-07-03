@@ -44,7 +44,7 @@ async def main() -> None:
     # Background domain-sync tasks, kept referenced so they aren't GC'd mid-flight
     # and their exceptions surface; gated per backend so concurrent rebuilds of the
     # same backend's domain set can't race.
-    sync_tasks: set[asyncio.Task] = set()
+    sync_tasks: set[asyncio.Task[None]] = set()
     domains_synced_at: dict[int, float] = {}
 
     async def refresh_backends() -> None:
@@ -80,9 +80,7 @@ async def main() -> None:
                 domain_ids.append(row.scalar_one())
 
             # Rebuild backend_domains for this backend (remove stale, add new)
-            await db.execute(
-                delete(BackendDomain).where(BackendDomain.backend_id == backend.id)
-            )
+            await db.execute(delete(BackendDomain).where(BackendDomain.backend_id == backend.id))
             for did in domain_ids:
                 await db.execute(
                     text(
@@ -191,9 +189,7 @@ async def main() -> None:
 
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_running(
-                    r, job_id, engine_job_id, backend.url, backend.id, state_ttl
-                )
+                await set_running(r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)

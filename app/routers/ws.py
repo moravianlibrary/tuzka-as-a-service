@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -16,7 +17,7 @@ router = APIRouter()
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket) -> None:
     """Realtime job-update stream over WebSocket.
 
     Connect to ``ws://<host>/ws`` (or ``wss://`` behind TLS). This is a
@@ -88,7 +89,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Authenticate
     hashed = hash_key(api_key)
     async with async_session() as db:
-        result = await db.execute(
+        result: Any = await db.execute(
             select(User).where(User.hashed_key == hashed, User.active == True)  # noqa: E712
         )
         user = result.scalar_one_or_none()
@@ -145,6 +146,6 @@ async def websocket_endpoint(ws: WebSocket):
             pass
         finally:
             await pubsub.unsubscribe(f"job:{username}:events")
-            await pubsub.aclose()
+            await pubsub.aclose()  # type: ignore[no-untyped-call]
     finally:
         await r.aclose()

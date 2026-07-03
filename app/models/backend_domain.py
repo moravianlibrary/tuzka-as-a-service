@@ -10,7 +10,11 @@ from .db import Base
 class BackendDomain(Base):
     __tablename__ = "backend_domains"
 
-    backend_id: Mapped[int] = mapped_column(ForeignKey("backends.id", ondelete="CASCADE"), nullable=False)
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), nullable=False)
+    backend_id: Mapped[int] = mapped_column(
+        ForeignKey("backends.id", ondelete="CASCADE"), nullable=False
+    )
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), nullable=False
+    )
 
     __table_args__ = (PrimaryKeyConstraint("backend_id", "domain_id"),)

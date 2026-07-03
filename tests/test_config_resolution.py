@@ -41,6 +41,7 @@ def test_parse_default_limits_missing_or_malformed_falls_back():
 
 class _FakeDB:
     """Minimal stand-in: config_service.get_value only calls db.execute()."""
+
     def __init__(self, rows: dict):
         self._rows = rows
 

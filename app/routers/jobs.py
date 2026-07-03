@@ -3,6 +3,7 @@ import time
 from datetime import datetime, timedelta
 from uuid import UUID
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,9 +49,9 @@ async def submit_job(
     domain: str | None = Form(None),
     username: str = Depends(rate_limit_submit()),
     db: AsyncSession = Depends(get_db),
-    r=Depends(get_redis),
+    r: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
-):
+) -> JobSubmitResponse:
     """Submit an image for OCR and enqueue it for asynchronous processing.
 
     Requires a valid API key in the ``X-API-Key`` header. The upload is stored and the job
@@ -61,7 +62,7 @@ async def submit_job(
     try:
         external_id = UUID(uuid)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid UUID")
+        raise HTTPException(status_code=400, detail="Invalid UUID") from None
 
     # Validate fmt
     if fmt not in ("alto", "txt", "multi"):
@@ -159,7 +160,7 @@ async def get_job_status(
     job_id: UUID,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
-):
+) -> JobStatus:
     """Return the current status of one of your jobs.
 
     Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
@@ -208,7 +209,7 @@ async def get_job_result(
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-):
+) -> JobResultResponse:
     """Return presigned download URLs for a finished job's OCR output.
 
     Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
@@ -272,7 +273,7 @@ async def download_job_result(
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-):
+) -> Response:
     """Stream a finished job's stored OCR artifact (zstd-compressed) through taas.
 
     Unlike ``/result`` — which returns presigned URLs signed for the *public* MinIO
@@ -319,7 +320,7 @@ async def list_jobs(
     offset: int = 0,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
-):
+) -> JobListResponse:
     """List the authenticated user's jobs, newest first.
 
     Requires a valid API key in the ``X-API-Key`` header and returns only jobs owned by that

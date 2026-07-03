@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from io import BytesIO
 
-from miniopy_async import Minio
+from miniopy_async.api import Minio
 
 from app.config import Settings
 
@@ -77,15 +77,23 @@ async def delete_objects(client: Minio, bucket: str, paths: list[str]) -> None:
     from miniopy_async.deleteobjects import DeleteObject
 
     objects = [DeleteObject(p) for p in paths]
+    # NOTE: `remove_objects` returns a `DeleteErrors` async iterable. `await`-ing it
+    # collapses it to a `list[DeleteError]`, which is then not async-iterable — a latent
+    # runtime bug (out of scope: annotations-only change here). The ignore documents that
+    # mypy correctly flags the `async for` over the awaited list.
     errors = await client.remove_objects(bucket, objects)
-    async for error in errors:
+    async for error in errors:  # type: ignore[attr-defined]
         print(f"Delete error: {error}")
 
 
 async def list_expired_objects(client: Minio, bucket: str, older_than: datetime) -> list[str]:
-    expired = []
+    expired: list[str] = []
     objects = client.list_objects(bucket, recursive=True)
     async for obj in objects:
-        if obj.last_modified and obj.last_modified.replace(tzinfo=None) < older_than:
+        if (
+            obj.object_name is not None
+            and obj.last_modified
+            and obj.last_modified.replace(tzinfo=None) < older_than
+        ):
             expired.append(obj.object_name)
     return expired
