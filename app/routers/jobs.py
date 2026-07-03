@@ -3,10 +3,21 @@
 import os
 import time
 from datetime import timedelta
+from typing import Literal
 from uuid import UUID
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,16 +50,17 @@ router = APIRouter()
     status_code=202,
     summary="Submit an OCR job",
     responses={
-        400: {"description": "Invalid UUID, unsupported fmt or extension, or file too large"},
+        400: {"description": "Unsupported extension or file too large"},
         401: {"description": "Missing or invalid X-API-Key header"},
+        422: {"description": "Invalid UUID or unsupported fmt"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
 async def submit_job(
     request: Request,
     image: UploadFile = File(...),
-    uuid: str = Form(...),
-    fmt: str = Form("multi"),
+    uuid: UUID = Form(...),
+    fmt: Literal["alto", "txt", "multi"] = Form("multi"),
     domain: str | None = Form(None),
     username: str = Depends(rate_limit_submit()),
     db: AsyncSession = Depends(get_db),
@@ -61,15 +73,9 @@ async def submit_job(
     is queued, returning ``202 Accepted`` with a job id immediately; poll the status and
     result endpoints to retrieve output once processing finishes.
     """
-    # Validate UUID
-    try:
-        external_id = UUID(uuid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid UUID") from None
-
-    # Validate fmt
-    if fmt not in ("alto", "txt", "multi"):
-        raise HTTPException(status_code=400, detail="fmt must be alto, txt, or multi")
+    # uuid and fmt are parsed and validated at the boundary (UUID / Literal), so the
+    # body below trusts them.
+    external_id = uuid
 
     # Validate extension
     filename = image.filename or "image"
@@ -271,7 +277,7 @@ async def get_job_result(
 )
 async def download_job_result(
     job_id: UUID,
-    fmt: str,
+    fmt: Literal["alto", "txt"],
     request: Request,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
@@ -319,8 +325,8 @@ async def download_job_result(
 )
 async def list_jobs(
     status: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
 ) -> JobListResponse:

@@ -289,9 +289,6 @@ async def create_backend(
     if body.api_key:
         api_key_enc = encrypt_backend_key(body.api_key, settings.key_encryption_secret)
 
-    if body.device not in ("gpu", "cpu"):
-        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
-
     backend = Backend(
         url=body.url,
         label=body.label,
@@ -327,9 +324,6 @@ async def upsert_backend(
     dashboard/PATCH survives redeploys. New backends start at the default (0).
     Requires a master key.
     """
-    if body.device not in ("gpu", "cpu"):
-        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
-
     api_key_enc = None
     if body.api_key:
         api_key_enc = encrypt_backend_key(body.api_key, settings.key_encryption_secret)
@@ -390,8 +384,6 @@ async def update_backend(
         update_data["api_key_enc"] = (
             encrypt_backend_key(api_key, settings.key_encryption_secret) if api_key else None
         )
-    if "device" in update_data and update_data["device"] not in ("gpu", "cpu"):
-        raise HTTPException(status_code=400, detail="device must be 'gpu' or 'cpu'")
 
     for field, value in update_data.items():
         setattr(backend, field, value)

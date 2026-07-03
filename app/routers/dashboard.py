@@ -148,8 +148,8 @@ async def get_dashboard_jobs(
     status: str | None = Query(None),
     from_date: datetime | None = Query(None, alias="from"),
     to_date: datetime | None = Query(None, alias="to"),
-    limit: int = Query(50),
-    offset: int = Query(0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List jobs newest-first with optional username/status/from/to date filters and

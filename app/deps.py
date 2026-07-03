@@ -19,9 +19,12 @@ from app.services import rate_limit
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
 
-# Simple TTL cache for user lookups
+# TTL cache for successful user lookups, keyed by hashed API key. Only *valid* users
+# are cached (invalid keys raise before reaching the insert), so it is bounded by the
+# active-user count; the hard cap is belt-and-suspenders against unbounded growth.
 _user_cache: dict[str, tuple[str, float]] = {}
 _USER_CACHE_TTL = 10.0
+_USER_CACHE_MAX = 10_000
 
 
 @lru_cache
@@ -59,6 +62,8 @@ async def require_user(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+    if len(_user_cache) >= _USER_CACHE_MAX:
+        _user_cache.pop(next(iter(_user_cache)))  # evict oldest (insertion order)
     _user_cache[hashed] = (user.username, now)
     return user.username
 

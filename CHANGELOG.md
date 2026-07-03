@@ -25,6 +25,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- Job submit now validates `uuid` and `fmt` at the boundary (parsed as `UUID` /
+  `Literal`), so an invalid value returns `422` instead of `400`. List endpoints cap
+  `limit` at 200 (`limit`/`offset` are range-validated). Backend `device` is validated
+  as `cpu`/`gpu` at the schema boundary.
 - The whole codebase now passes `mypy --strict` and an expanded Ruff rule set
   (`B` bugbear, `SIM` simplify); all `app/` and `compat/` code is fully type-annotated.
 - `alembic/env.py` imports every model via the `app.models` package so
