@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
@@ -31,6 +32,50 @@ from app.services.storage import get_incoming_client, get_object
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("submit-worker")
+
+
+@dataclass
+class BackendSlot:
+    """A healthy backend with remaining free capacity and the domains it serves."""
+
+    backend: Backend
+    free: int
+    domains: set[str]
+
+
+def allocate_jobs(
+    slots: list[BackendSlot], jobs: list[tuple[str, float, str | None]]
+) -> tuple[list[tuple[str, float, BackendSlot]], list[tuple[str, float]]]:
+    """Deal one priority tier's jobs round-robin across its backends.
+
+    Spreads jobs evenly rather than filling the first backend to capacity, so results
+    come back with more parallelism across comparable backends. Respects each slot's
+    free capacity and served domains: a job with a domain only lands on a backend that
+    serves it. Pure apart from decrementing the passed slots' ``free`` counters.
+
+    Returns ``(assignments, leftovers)``; leftovers are jobs no slot in this tier can
+    take (e.g. their domain is served only by a lower tier) and should be re-queued.
+    """
+    assignments: list[tuple[str, float, BackendSlot]] = []
+    leftovers: list[tuple[str, float]] = []
+    if not slots:
+        return assignments, [(job_id, score) for job_id, score, _ in jobs]
+
+    count = len(slots)
+    start = 0
+    for job_id, score, domain in jobs:
+        placed = False
+        for step in range(count):
+            slot = slots[(start + step) % count]
+            if slot.free > 0 and (domain is None or domain in slot.domains):
+                slot.free -= 1
+                assignments.append((job_id, score, slot))
+                start = (start + step + 1) % count  # next job starts after this backend
+                placed = True
+                break
+        if not placed:
+            leftovers.append((job_id, score))
+    return assignments, leftovers
 
 
 async def main() -> None:
@@ -251,27 +296,47 @@ async def main() -> None:
             try:
                 await refresh_backends()
 
+                # This tick's eligible backends: healthy, with free capacity + their
+                # served domains (each looked up once).
+                eligible: list[BackendSlot] = []
                 for backend in backends:
                     if not await check_health(backend):
                         continue
-
-                    inflight = await get_backend_inflight(r, backend.id)
-                    slots = backend.max_inflight - inflight
-                    if slots <= 0:
+                    free = backend.max_inflight - await get_backend_inflight(r, backend.id)
+                    if free <= 0:
                         continue
+                    eligible.append(BackendSlot(backend, free, await served_domains(backend.id)))
 
-                    job_entries = await dequeue_jobs(r, slots)
-                    if not job_entries:
+                # Strict priority tiers: a higher-priority tier drains first; within a tier
+                # spread jobs round-robin so no single backend fills before its peers.
+                for priority in sorted({slot.backend.priority for slot in eligible}, reverse=True):
+                    tier = [slot for slot in eligible if slot.backend.priority == priority]
+                    entries = await dequeue_jobs(r, sum(slot.free for slot in tier))
+                    if not entries:
+                        break  # nothing pending — lower tiers have nothing to do either
+
+                    jobs_with_domain: list[tuple[str, float, str | None]] = []
+                    for job_id, score in entries:
+                        meta = await get_job(r, job_id)
+                        jobs_with_domain.append(
+                            (job_id, score, (meta.get("domain") or None) if meta else None)
+                        )
+
+                    assignments, leftovers = allocate_jobs(tier, jobs_with_domain)
+                    for job_id, score in leftovers:
+                        await requeue_job(r, job_id, score)  # a lower tier may serve its domain
+
+                    if not assignments:
                         continue
 
                     logger.info(
-                        f"Dispatching {len(job_entries)} job(s) to {backend.label or backend.url}"
+                        f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "
+                        f"at priority {priority}"
                     )
-                    backend_domains = await served_domains(backend.id)
                     results = await asyncio.gather(
                         *[
-                            dispatch(jid, score, backend, backend_domains)
-                            for jid, score in job_entries
+                            dispatch(job_id, score, slot.backend, slot.domains)
+                            for job_id, score, slot in assignments
                         ],
                         return_exceptions=True,
                     )

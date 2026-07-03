@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Even dispatch within a priority tier: the submit worker now deals jobs round-robin
+  across the healthy backends of a priority tier (highest tier first), respecting each
+  backend's free capacity and served domains, instead of filling one backend to
+  capacity before the next. Spreads load so results return with more parallelism.
 - Event-driven dispatch: the submit worker now blocks on a Redis wakeup signal
   (`signal_submit`) raised whenever a job becomes pending or a backend slot frees, so
   fast jobs refill slots immediately instead of waiting out the fixed tick. The tick

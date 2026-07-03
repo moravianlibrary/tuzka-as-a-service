@@ -46,9 +46,7 @@ class Job(Base):
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_backend_id", "backend_id"),
         UniqueConstraint("username", "external_id", name="uq_jobs_username_external"),
-        CheckConstraint(
-            "status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"
-        ),
+        CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"),
     )
 
 
