@@ -26,6 +26,8 @@ logger = logging.getLogger("cleanup-worker")
 
 # Raw jobs are deleted after this many days; analytics rows in job_analytics are permanent.
 RETENTION_DAYS = 30
+# Max objects per remove_objects call when purging expired storage objects.
+DELETE_BATCH_SIZE = 1000
 
 
 async def delete_expired_jobs(db: AsyncSession) -> None:
@@ -68,33 +70,39 @@ async def main() -> None:
     REAP_TICK_SECONDS = 60
     HEAVY_EVERY = 10  # heavy object/retention sweep every 10th tick (~10 min)
     tick = 0
-    while True:
-        try:
-            async with session_factory() as db:
-                await reap_stale_jobs(db, r)
-        except Exception as e:
-            logger.error(f"Reaper error: {e}")
-
-        if tick % HEAVY_EVERY == 0:
+    try:
+        while True:
             try:
                 async with session_factory() as db:
-                    ttls = await get_storage_ttl_minutes(db, list(bucket_clients.keys()))
-                    for bucket, ttl_minutes in ttls.items():
-                        client = bucket_clients[bucket]
-                        cutoff = utcnow() - timedelta(minutes=ttl_minutes)
-                        expired = await list_expired_objects(client, bucket, cutoff)
-                        if expired:
-                            for i in range(0, len(expired), 1000):
-                                batch = expired[i : i + 1000]
-                                await delete_objects(client, bucket, batch)
-                                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
+                    await reap_stale_jobs(db, r)
+            except Exception:
+                logger.exception("Reaper failed")
 
-                    await delete_expired_jobs(db)
-            except Exception as e:
-                logger.error(f"Cleanup worker error: {e}")
+            if tick % HEAVY_EVERY == 0:
+                try:
+                    async with session_factory() as db:
+                        ttls = await get_storage_ttl_minutes(db, list(bucket_clients.keys()))
+                        for bucket, ttl_minutes in ttls.items():
+                            client = bucket_clients[bucket]
+                            cutoff = utcnow() - timedelta(minutes=ttl_minutes)
+                            expired = await list_expired_objects(client, bucket, cutoff)
+                            if expired:
+                                for i in range(0, len(expired), DELETE_BATCH_SIZE):
+                                    batch = expired[i : i + DELETE_BATCH_SIZE]
+                                    await delete_objects(client, bucket, batch)
+                                    logger.info(
+                                        f"Deleted {len(batch)} expired objects from {bucket}"
+                                    )
 
-        tick += 1
-        await asyncio.sleep(REAP_TICK_SECONDS)
+                        await delete_expired_jobs(db)
+                except Exception:
+                    logger.exception("Cleanup worker failed")
+
+            tick += 1
+            await asyncio.sleep(REAP_TICK_SECONDS)
+    finally:
+        await r.aclose()
+        await db_engine.dispose()
 
 
 if __name__ == "__main__":

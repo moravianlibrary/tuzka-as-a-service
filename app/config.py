@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     poller_harvest_concurrency: int = 10
     poll_backoff_initial: float = 1.0
     poll_backoff_max: float = 5.0
+    # Submit-worker caches: how often to reload the backend list, re-check a backend's
+    # health, and re-sync a backend's served domains.
+    backend_refresh_seconds: float = 30.0
+    health_cache_seconds: float = 10.0
+    domain_sync_seconds: float = 300.0
 
     # Compression
     zstd_compression_level: int = 3

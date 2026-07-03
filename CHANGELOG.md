@@ -40,5 +40,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Worker robustness: loop errors now log full tracebacks (`logger.exception`); a failed
+  domain sync retries next tick instead of being locked out; `storage.delete_objects`
+  iterates delete errors correctly (was an unreachable `async for`) and logs them
+  instead of `print`; fan-out dispatch/harvest no longer let one failure cancel
+  siblings; workers close their engine/redis/DB clients on shutdown.
 - Corrected the drifted `compat` service version (`0.5.2` → in step with the main
   version) via the new single-source version propagation.

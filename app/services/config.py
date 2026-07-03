@@ -96,9 +96,10 @@ async def get_all(db: AsyncSession) -> dict[str, Any]:
 
 
 async def set_values(db: AsyncSession, values: dict[str, Any]) -> None:
+    result = await db.execute(select(ConfigEntry).where(ConfigEntry.key.in_(values)))
+    existing = {entry.key: entry for entry in result.scalars().all()}
     for key, value in values.items():
-        result = await db.execute(select(ConfigEntry).where(ConfigEntry.key == key))
-        entry = result.scalar_one_or_none()
+        entry = existing.get(key)
         if entry:
             entry.value = value
         else:

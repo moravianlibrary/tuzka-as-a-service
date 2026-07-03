@@ -1,11 +1,14 @@
 """MinIO/S3 clients and helpers for incoming uploads and OCR result objects."""
 
+import logging
 from datetime import datetime, timedelta
 from io import BytesIO
 
 from miniopy_async.api import Minio
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def _make_client(url: str, access_key: str, secret_key: str, region: str) -> Minio:
@@ -79,13 +82,10 @@ async def delete_objects(client: Minio, bucket: str, paths: list[str]) -> None:
     from miniopy_async.deleteobjects import DeleteObject
 
     objects = [DeleteObject(p) for p in paths]
-    # NOTE: `remove_objects` returns a `DeleteErrors` async iterable. `await`-ing it
-    # collapses it to a `list[DeleteError]`, which is then not async-iterable — a latent
-    # runtime bug (out of scope: annotations-only change here). The ignore documents that
-    # mypy correctly flags the `async for` over the awaited list.
+    # `remove_objects` returns a `DeleteErrors` that, once awaited, is a plain iterable.
     errors = await client.remove_objects(bucket, objects)
-    async for error in errors:  # type: ignore[attr-defined]
-        print(f"Delete error: {error}")
+    for error in errors:
+        logger.error("Failed to delete object in %s: %s", bucket, error)
 
 
 async def list_expired_objects(client: Minio, bucket: str, older_than: datetime) -> list[str]:

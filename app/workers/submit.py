@@ -48,10 +48,11 @@ async def main() -> None:
     # same backend's domain set can't race.
     sync_tasks: set[asyncio.Task[None]] = set()
     domains_synced_at: dict[int, float] = {}
+    domain_sync_inflight: set[int] = set()
 
     async def refresh_backends() -> None:
         nonlocal backends, backends_refreshed_at
-        if time.time() - backends_refreshed_at < 30:
+        if time.time() - backends_refreshed_at < settings.backend_refresh_seconds:
             return
         async with session_factory() as db:
             result = await db.execute(
@@ -68,7 +69,7 @@ async def main() -> None:
         try:
             domain_names = await engine_client.get_models(backend.url, api_key)
         except Exception as exc:
-            logger.debug("Domain sync failed for %s: %s", backend.url, exc)
+            logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
         async with session_factory() as db:
             # Upsert domain names
@@ -92,16 +93,29 @@ async def main() -> None:
                     {"b": backend.id, "d": did},
                 )
             await db.commit()
+            domains_synced_at[backend.id] = time.time()
             logger.debug("Synced %d domain(s) for backend %s", len(domain_ids), backend.url)
 
     def spawn_domain_sync(backend: Backend, api_key: str | None) -> None:
-        """Kick off a background domain sync at most once per 5 min per backend."""
-        if time.time() - domains_synced_at.get(backend.id, 0.0) < 300:
+        """Kick off a background domain sync at most once per interval per backend.
+
+        Stamps ``domains_synced_at`` only on success (in ``sync_domains``), so a failed
+        sync retries on the next eligible tick; ``domain_sync_inflight`` prevents a second
+        concurrent sync of the same backend from starting meanwhile.
+        """
+        if backend.id in domain_sync_inflight:
             return
-        domains_synced_at[backend.id] = time.time()
+        if time.time() - domains_synced_at.get(backend.id, 0.0) < settings.domain_sync_seconds:
+            return
+        domain_sync_inflight.add(backend.id)
         task = asyncio.create_task(sync_domains(backend, api_key))
         sync_tasks.add(task)
-        task.add_done_callback(sync_tasks.discard)
+
+        def _done(t: asyncio.Task[None]) -> None:
+            sync_tasks.discard(t)
+            domain_sync_inflight.discard(backend.id)
+
+        task.add_done_callback(_done)
 
     async def served_domains(backend_id: int) -> set[str]:
         """Domain names ``backend_id`` currently serves (from the synced mapping)."""
@@ -116,7 +130,7 @@ async def main() -> None:
     async def check_health(backend: Backend) -> bool:
         now = time.time()
         cached = health_cache.get(backend.id)
-        if cached and now - cached[1] < 10:
+        if cached and now - cached[1] < settings.health_cache_seconds:
             return cached[0]
 
         api_key = None
@@ -231,35 +245,47 @@ async def main() -> None:
             )
 
     logger.info("Submit worker started")
-    while True:
-        try:
-            await refresh_backends()
+    try:
+        while True:
+            try:
+                await refresh_backends()
 
-            for backend in backends:
-                if not await check_health(backend):
-                    continue
+                for backend in backends:
+                    if not await check_health(backend):
+                        continue
 
-                inflight = await get_backend_inflight(r, backend.id)
-                slots = backend.max_inflight - inflight
-                if slots <= 0:
-                    continue
+                    inflight = await get_backend_inflight(r, backend.id)
+                    slots = backend.max_inflight - inflight
+                    if slots <= 0:
+                        continue
 
-                job_entries = await dequeue_jobs(r, slots)
-                if not job_entries:
-                    continue
+                    job_entries = await dequeue_jobs(r, slots)
+                    if not job_entries:
+                        continue
 
-                logger.info(
-                    f"Dispatching {len(job_entries)} job(s) to {backend.label or backend.url}"
-                )
-                backend_domains = await served_domains(backend.id)
-                await asyncio.gather(
-                    *[dispatch(jid, score, backend, backend_domains) for jid, score in job_entries]
-                )
+                    logger.info(
+                        f"Dispatching {len(job_entries)} job(s) to {backend.label or backend.url}"
+                    )
+                    backend_domains = await served_domains(backend.id)
+                    results = await asyncio.gather(
+                        *[
+                            dispatch(jid, score, backend, backend_domains)
+                            for jid, score in job_entries
+                        ],
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.error("Dispatch failed: %s", result)
 
-        except Exception as e:
-            logger.error(f"Submit worker error: {e}")
+            except Exception:
+                logger.exception("Submit worker failed")
 
-        await asyncio.sleep(settings.submit_tick_seconds)
+            await asyncio.sleep(settings.submit_tick_seconds)
+    finally:
+        await engine_client.close()
+        await r.aclose()
+        await engine.dispose()
 
 
 if __name__ == "__main__":
