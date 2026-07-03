@@ -25,6 +25,7 @@ from app.services.redis_jobs import (
     requeue_job,
     set_failed,
     set_running,
+    wait_for_submit_signal,
 )
 from app.services.storage import get_incoming_client, get_object
 
@@ -281,7 +282,10 @@ async def main() -> None:
             except Exception:
                 logger.exception("Submit worker failed")
 
-            await asyncio.sleep(settings.submit_tick_seconds)
+            # Block until new work / a freed slot signals (signal_submit), with the tick
+            # as an idle-wait floor. Event-driven so fast jobs refill slots immediately
+            # and slow jobs don't busy-poll.
+            await wait_for_submit_signal(r, settings.submit_tick_seconds)
     finally:
         await engine_client.close()
         await r.aclose()

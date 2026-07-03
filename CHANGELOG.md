@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Event-driven dispatch: the submit worker now blocks on a Redis wakeup signal
+  (`signal_submit`) raised whenever a job becomes pending or a backend slot frees, so
+  fast jobs refill slots immediately instead of waiting out the fixed tick. The tick
+  becomes a max idle-wait floor.
 - Quality gate: `make check` (lint + `mypy --strict` types + version drift + unit tests),
   plus `make typecheck`, `make test-unit`, and `make version-check`.
 - `make set-version VERSION=x.y.z` propagates the version into every manifest

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # Workers. Ticks tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps
     # backend slots turning over near the job time. Backoff still adapts upward
     # (to poll_backoff_max) for slow/dense GPU jobs.
+    # Dispatch is event-driven (the worker blocks on a wakeup signal); this is the
+    # max idle wait between passes when no signal arrives, not a fixed cadence.
     submit_tick_seconds: float = 1.0
     poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10

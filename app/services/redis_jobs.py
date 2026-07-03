@@ -20,15 +20,40 @@ _PENDING_KEY = "jobs:pending:{priority}"
 # so no job is ever missed.
 _PENDING_LEVELS_KEY = "jobs:pending:levels"
 
+# Submit-worker wakeup list. signal_submit() pushes a token the submit worker blocks on
+# (BLPOP) so newly-pending work or a freed slot dispatches immediately instead of waiting
+# out the tick. The TTL keeps tokens from piling up if the worker is down.
+_SUBMIT_WAKEUP_KEY = "jobs:submit_wakeup"
+_SUBMIT_WAKEUP_TTL_SECONDS = 60
+
+
+async def signal_submit(r: aioredis.Redis) -> None:
+    """Wake the submit worker — new pending work or a freed slot. One round-trip."""
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.rpush(_SUBMIT_WAKEUP_KEY, b"1")
+        pipe.expire(_SUBMIT_WAKEUP_KEY, _SUBMIT_WAKEUP_TTL_SECONDS)
+        await pipe.execute()
+
+
+async def wait_for_submit_signal(r: aioredis.Redis, timeout: float) -> None:
+    """Block until a wakeup token arrives or ``timeout`` elapses, then drain the backlog
+    so a burst of signals coalesces into a single dispatch pass."""
+    await r.blpop(_SUBMIT_WAKEUP_KEY, timeout=timeout)
+    await r.delete(_SUBMIT_WAKEUP_KEY)
+
 
 def _pending_key(priority: int) -> str:
     return _PENDING_KEY.format(priority=priority)
 
 
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
-    """Add a job to its priority ZSET and register the level for discovery."""
+    """Add a job to its priority ZSET, register the level, and wake the submit worker.
+
+    Every path that makes a job dispatchable (enqueue, requeue, release-and-requeue)
+    routes through here, so the wakeup is signalled in exactly one place."""
     await r.zadd(_pending_key(priority), {job_id: score})
     await r.sadd(_PENDING_LEVELS_KEY, str(priority))
+    await signal_submit(r)
 
 
 async def enqueue_job(
@@ -126,6 +151,7 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
+        await signal_submit(r)  # a slot just freed — let the worker refill it now
 
 
 async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int) -> None:
@@ -143,6 +169,7 @@ async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int)
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
+        await signal_submit(r)  # a slot just freed — let the worker refill it now
 
 
 async def requeue_job(r: aioredis.Redis, job_id: str, original_score: float) -> None:
