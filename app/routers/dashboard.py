@@ -3,8 +3,9 @@
 import asyncio
 import csv
 import io
+import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Query
@@ -39,7 +40,12 @@ from app.schemas.job import render_external_url
 from app.services.engine_client import EngineClient
 from app.services.redis_jobs import get_backend_inflight
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(dependencies=[Depends(require_master)])
+
+# Hard cap on rows exported by the analytics CSV endpoint (loudly logged when hit).
+CSV_MAX_ROWS = 100_000
 
 
 def _naive_utc(dt: datetime | None) -> datetime | None:
@@ -159,7 +165,7 @@ async def get_dashboard_users(db: AsyncSession = Depends(get_db)) -> list[Dashbo
 )
 async def get_dashboard_jobs(
     username: str | None = Query(None),
-    status: str | None = Query(None),
+    status: Literal["queued", "running", "done", "failed"] | None = Query(None),
     from_date: datetime | None = Query(None, alias="from"),
     to_date: datetime | None = Query(None, alias="to"),
     limit: int = Query(50, ge=1, le=200),
@@ -707,10 +713,13 @@ async def analytics_raw_csv(
             + _ANALYTICS_FROM
             + where
             + " ORDER BY ja.submitted_at DESC"
+            + f" LIMIT {CSV_MAX_ROWS:d}"
         ),
         params,
     )
     rows = result.all()
+    if len(rows) == CSV_MAX_ROWS:
+        logger.warning("analytics CSV export truncated at %d rows", CSV_MAX_ROWS)
 
     CSV_COLUMNS = [
         "submitted_at",

@@ -49,8 +49,9 @@ All notable changes to this project are documented here. The format is based on
   failure must now read the `status` field / handle `409`.
 - Job submit now validates `uuid` and `fmt` at the boundary (parsed as `UUID` /
   `Literal`), so an invalid value returns `422` instead of `400`. List endpoints cap
-  `limit` at 200 (`limit`/`offset` are range-validated). Backend `device` is validated
-  as `cpu`/`gpu` at the schema boundary.
+  `limit` at 200 (`limit`/`offset` are range-validated) and the `status` filter is a
+  `Literal` (invalid value → `422`). Backend `device` is validated as `cpu`/`gpu` at the
+  schema boundary. The analytics CSV export is capped at 100k rows (logged if truncated).
 - Index `jobs.backend_id` and add a `ck_jobs_status` CHECK constraint pinning
   `jobs.status` to the four lifecycle values (migration 010). ORM relationships now
   use `lazy="raise"`, so related rows must be loaded explicitly (no accidental N+1).

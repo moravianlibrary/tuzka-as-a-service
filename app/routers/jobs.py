@@ -315,7 +315,7 @@ async def download_job_result(
     },
 )
 async def list_jobs(
-    status: str | None = None,
+    status: Literal["queued", "running", "done", "failed"] | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     username: str = Depends(rate_limit_query()),

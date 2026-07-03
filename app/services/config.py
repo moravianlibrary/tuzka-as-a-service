@@ -143,9 +143,12 @@ async def effective_limits(db: AsyncSession, username: str, limit_class: str) ->
 
 
 async def get_storage_ttl_minutes(db: AsyncSession, buckets: list[str]) -> dict[str, int]:
+    keys = [f"storage.{bucket}_ttl_minutes" for bucket in buckets]
+    result = await db.execute(select(ConfigEntry).where(ConfigEntry.key.in_(keys)))
+    values = {entry.key: entry.value for entry in result.scalars().all()}
     out: dict[str, int] = {}
     for bucket in buckets:
-        value = await get_value(db, f"storage.{bucket}_ttl_minutes")
+        value = values.get(f"storage.{bucket}_ttl_minutes")
         out[bucket] = int(value) if value is not None else STORAGE_TTL_DEFAULT_MINUTES
     return out
 

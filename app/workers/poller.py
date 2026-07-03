@@ -35,7 +35,6 @@ from app.services.storage import (
     put_object,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller-worker")
 
 
@@ -70,6 +69,7 @@ def classify_poll_result(status: str, requeues: int, max_requeues: int) -> str:
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -274,7 +274,7 @@ async def main() -> None:
             logger.info(f"Published done event for {username}")
 
         except Exception as e:
-            logger.error(f"Failed to harvest job {job_id}: {e}")
+            logger.exception("Failed to harvest job %s", job_id)
             await mark_failed(job_id, meta, str(e))
 
     async def mark_failed(job_id: str, meta: dict[str, str], error: str) -> None:

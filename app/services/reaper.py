@@ -7,9 +7,11 @@ reads DB state directly, marks stale jobs failed, releases their Redis/backend s
 and emits the WS failed event.
 """
 
+import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Coroutine, Iterable
 from datetime import datetime, timedelta
+from typing import Any
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -21,6 +23,11 @@ from app.services import config as config_service
 from app.services.redis_jobs import publish_event, set_failed
 
 logger = logging.getLogger("reaper")
+
+# Cap how many stale jobs one sweep reaps; the rest are picked up on later ticks.
+REAP_MAX_PER_TICK = 500
+# Cap concurrent Redis set_failed / publish_event calls within a sweep.
+_REAP_CONCURRENCY = 10
 
 
 def select_stale_jobs(
@@ -61,23 +68,40 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     state_ttl = await config_service.get_state_ttl_seconds(db)
     now = utcnow()
 
-    result = await db.execute(select(Job).where(Job.status.in_(("queued", "running"))))
+    result = await db.execute(
+        select(Job).where(Job.status.in_(("queued", "running"))).limit(REAP_MAX_PER_TICK)
+    )
     candidates = result.scalars().all()
     stale = select_stale_jobs(candidates, now, queued_timeout, running_timeout)
 
+    sem = asyncio.Semaphore(_REAP_CONCURRENCY)
+
+    async def _bounded(coro: Coroutine[Any, Any, Any]) -> None:
+        async with sem:
+            await coro
+
+    # set_failed releases the inflight slot (srem + decr backend counter). These calls are
+    # independent per job, so run them concurrently (bounded) before the single DB commit.
+    await asyncio.gather(
+        *(_bounded(set_failed(r, str(job.id), reason, state_ttl)) for job, reason in stale)
+    )
     for job, reason in stale:
-        # set_failed releases the inflight slot (srem + decr backend counter).
-        await set_failed(r, str(job.id), reason, state_ttl)
         job.status = "failed"
         job.error = reason
         job.finished_at = now
     if stale:
         await db.commit()
-        for job, reason in stale:
-            await publish_event(
-                r,
-                job.username,
-                {"status": "failed", "uuid": str(job.external_id), "error": reason},
+        await asyncio.gather(
+            *(
+                _bounded(
+                    publish_event(
+                        r,
+                        job.username,
+                        {"status": "failed", "uuid": str(job.external_id), "error": reason},
+                    )
+                )
+                for job, reason in stale
             )
+        )
         logger.info(f"Reaped {len(stale)} stale job(s)")
     return len(stale)

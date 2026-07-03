@@ -21,7 +21,6 @@ from app.services.storage import (
     list_expired_objects,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cleanup-worker")
 
 # Raw jobs are deleted after this many days; analytics rows in job_analytics are permanent.
@@ -54,6 +53,7 @@ async def delete_expired_jobs(db: AsyncSession) -> None:
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)

@@ -30,7 +30,6 @@ from app.services.redis_jobs import (
 )
 from app.services.storage import get_incoming_client, get_object
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("submit-worker")
 
 
@@ -79,6 +78,7 @@ def allocate_jobs(
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -221,7 +221,7 @@ async def main() -> None:
                 incoming_client, settings.minio_incoming_bucket, object_path
             )
         except Exception as e:
-            logger.error(f"Failed to read image for job {job_id}: {e}")
+            logger.exception("Failed to read image for job %s", job_id)
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 await set_failed(r, job_id, f"Failed to read image: {e}", state_ttl)
@@ -270,7 +270,7 @@ async def main() -> None:
             await requeue_job(r, job_id, original_score)
 
         except Exception as e:
-            logger.error(f"Failed to dispatch job {job_id}: {e}")
+            logger.exception("Failed to dispatch job %s", job_id)
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 await set_failed(r, job_id, str(e), state_ttl)
