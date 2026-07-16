@@ -63,6 +63,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Admin backend/user endpoints no longer return `500` on invalid input. `POST`/`PUT`/`PATCH
+  /admin/backends` and `PATCH /admin/users/{username}` accepted an empty or non-`http(s)`
+  URL, strings with NUL bytes, integers outside the 32-bit column range, and an explicit
+  `null` for a NOT NULL column — each of which reached the database and surfaced as a raw
+  `IntegrityError`/`DataError` (`500`), and a persisted bad row then `500`ed every
+  backend-listing endpoint. These are now validated at the boundary (`422`), an
+  out-of-range `{backend_id}` path param is bounded (`422`), and a duplicate backend URL
+  returns `409`. Surfaced by the now-seeded Schemathesis contract run (`make
+  test-contract-local`).
 - Re-submitting a job with an `external_id` already used by that caller no longer fails.
   `external_id` was both the object-storage key and a unique `(username, external_id)`
   constraint, so re-running OCR on the same document (same `external_id`) hit an

@@ -1,9 +1,10 @@
 """Master-key admin API for managing users, backends, and runtime config."""
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -32,6 +33,10 @@ from app.services.auth import (
 )
 
 router = APIRouter(dependencies=[Depends(require_master)])
+
+# Postgres INTEGER path params are 32-bit; bound them so an out-of-range id is a clean 422
+# rather than an asyncpg DataError (500) once it reaches the query.
+BackendId = Annotated[int, Path(ge=1, le=2_147_483_647)]
 
 
 # --- Users ---
@@ -242,6 +247,16 @@ async def update_user_limits(
 # --- Backends ---
 
 
+async def _commit_backend(db: AsyncSession) -> None:
+    """Commit a backend write, turning the unique-URL violation into a clean 409 instead of
+    letting the raw IntegrityError surface as a 500."""
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        raise Conflict("A backend with this URL already exists") from e
+
+
 def _backend_response(b: Backend) -> BackendResponse:
     return BackendResponse(
         id=b.id,
@@ -302,7 +317,7 @@ async def create_backend(
         managed=body.managed,
     )
     db.add(backend)
-    await db.commit()
+    await _commit_backend(db)
     await db.refresh(backend)
     return _backend_response(backend)
 
@@ -348,7 +363,7 @@ async def upsert_backend(
     if body.api_key is not None:
         backend.api_key_enc = api_key_enc
 
-    await db.commit()
+    await _commit_backend(db)
     await db.refresh(backend)
     return _backend_response(backend)
 
@@ -363,7 +378,7 @@ async def upsert_backend(
     },
 )
 async def update_backend(
-    backend_id: int,
+    backend_id: BackendId,
     body: BackendUpdate,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -391,7 +406,7 @@ async def update_backend(
     for field, value in update_data.items():
         setattr(backend, field, value)
 
-    await db.commit()
+    await _commit_backend(db)
     await db.refresh(backend)
     return _backend_response(backend)
 
@@ -405,7 +420,9 @@ async def update_backend(
         401: {"description": "Missing or invalid master key"},
     },
 )
-async def delete_backend(backend_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def delete_backend(
+    backend_id: BackendId, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
     """Permanently delete a backend.
 
     Refuses with **409** while any jobs still reference it (foreign key); once
