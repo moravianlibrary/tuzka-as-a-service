@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-16
+
 ### Security
 
 - Master-key authentication now uses a constant-time comparison (`hmac.compare_digest`),
