@@ -37,7 +37,9 @@ def test_backend_update_partial_is_allowed():
     assert BackendUpdate(label="x").model_dump(exclude_unset=True) == {"label": "x"}
 
 
-@pytest.mark.parametrize("field", ["url", "max_inflight", "enabled", "priority", "device", "managed"])
+@pytest.mark.parametrize(
+    "field", ["url", "max_inflight", "enabled", "priority", "device", "managed"]
+)
 def test_backend_update_rejects_explicit_null_on_not_null_columns(field):
     with pytest.raises(ValidationError):
         BackendUpdate(**{field: None})

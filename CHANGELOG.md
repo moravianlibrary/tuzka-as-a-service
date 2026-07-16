@@ -20,6 +20,13 @@ All notable changes to this project are documented here. The format is based on
   (pytest-cov). The Makefile Tests group now follows the house taxonomy — `make test`
   is the unit suite (was the e2e smoke), the full-stack smoke is `make test-integration`
   (fast variant `test-integration-fast`), and `test-compat` is unchanged.
+- Contract test is now runnable in one command: `make test-contract-local` brings up the
+  API and its deps via compose (no workers/engine), seeds a stable fixture (API user,
+  backend, one queued job) via `scripts/seed-contract.sh`, and runs Schemathesis with the
+  seeded `X-API-Key`. `make test-contract` still targets an already-running/remote instance.
+- Locust load test (`make load-test`, headless; `USERS`/`RATE`/`DURATION` to tune) modelling
+  the submit → poll-status loop plus light reads in `tests/load/locustfile.py`. Note: without
+  workers/engine it loads ingest + status/read paths, not end-to-end OCR throughput.
 - Even dispatch within a priority tier: the submit worker now deals jobs round-robin
   across the healthy backends of a priority tier (highest tier first), respecting each
   backend's free capacity and served domains, instead of filling one backend to

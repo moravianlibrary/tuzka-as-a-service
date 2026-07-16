@@ -102,6 +102,13 @@ test-contract-local: env ## One command: bring up the API (migrated, no workers/
 	@MASTER_KEY="$$(grep -E '^MASTER_KEY=' .env.app | cut -d= -f2-)" TAAS_URL=http://localhost:8080 \
 	  $(MAKE) --no-print-directory test-contract
 
+.PHONY: load-test
+load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= to tune)
+	@url=$${TAAS_URL:-http://localhost:8080}; \
+	key=$$(TAAS_URL=$$url MASTER_KEY=$${MASTER_KEY:-test-master-key} bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
+	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
+	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
+
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
