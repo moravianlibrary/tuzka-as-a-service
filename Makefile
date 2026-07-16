@@ -85,8 +85,15 @@ coverage-report: ## Unit tests with a coverage summary
 .PHONY: test-contract
 test-contract: ## Schemathesis contract/property tests vs a running instance (TAAS_URL, MASTER_KEY)
 	@url=$${TAAS_URL:-http://localhost:8080}; \
+	key=$$(TAAS_URL=$$url MASTER_KEY=$$MASTER_KEY bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	args="run $$url/openapi.json -c all"; \
 	[ -n "$$MASTER_KEY" ] && args="$$args -H X-Master-Key:$$MASTER_KEY"; \
+	[ -n "$$key" ] && args="$$args -H X-API-Key:$$key"; \
+	: "Only the two ops that rotate the fixture user's key are excluded — otherwise the"; \
+	: "fuzzer reuses the username from GET /admin/users and rotates the key mid-run,"; \
+	: "invalidating the X-API-Key for every later request. Everything else (incl. DELETE,"; \
+	: "which is harmlessly 409-guarded by the seeded job) stays in scope."; \
+	args="$$args --exclude-path /admin/users/{username}/rotate-key --exclude-path /admin/users/{username}/key"; \
 	$(UV) schemathesis $$args
 
 .PHONY: test-integration
