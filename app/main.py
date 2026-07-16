@@ -92,10 +92,12 @@ def create_app() -> FastAPI:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         force=True,
     )
+    # httpx emits one INFO line per request; quiet it so it doesn't drown app logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     app = FastAPI(
         title="taas",
-        version="0.7.0",
+        version="0.8.0",
         lifespan=lifespan,
         description=DESCRIPTION,
         license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},

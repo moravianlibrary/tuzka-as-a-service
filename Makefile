@@ -201,14 +201,13 @@ version-check: ## Fail if version literals have drifted from ./VERSION
 	@bash scripts/check-version.sh
 
 .PHONY: set-version
-set-version: ## Set the version everywhere (make set-version VERSION=x.y.z)
+set-version: ## Set the app version everywhere (make set-version VERSION=x.y.z)
 	@test -n "$(VERSION)" || { echo "usage: make set-version VERSION=x.y.z"; exit 1; }
 	@echo "$(VERSION)" > VERSION
 	@sed -i 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml compat/pyproject.toml
 	@sed -i 's/version="[^"]*"/version="$(VERSION)"/' app/main.py compat/app/main.py
-	@sed -i 's/^version: .*/version: $(VERSION)/' deploy/helm/taas/Chart.yaml
 	@sed -i 's/^appVersion: .*/appVersion: "$(VERSION)"/' deploy/helm/taas/Chart.yaml
-	@echo "set version to $(VERSION); run 'make version-check' to confirm"
+	@echo "set app version to $(VERSION). Helm chart 'version' is packaging-only and bumped separately; run 'make version-check' to confirm"
 
 .PHONY: secret
 secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET

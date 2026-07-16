@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Fail if any embedded version literal has drifted from ./VERSION.
+# Fail if any embedded APP version literal has drifted from ./VERSION.
 # Manifests can't reference $(VERSION), so `make set-version` propagates it into each
 # file; this guard (run by `make check`) ensures they never silently diverge.
+# Note: the Helm chart's own `version:` is packaging-only and tracked separately (bumped
+# when the chart's templates/values change), so it is intentionally NOT checked here.
+# Only `appVersion:` — the app image the chart deploys — must match ./VERSION.
 set -euo pipefail
 
 version="$(cat VERSION)"
@@ -19,7 +22,6 @@ require pyproject.toml "version = \"$version\""
 require app/main.py "version=\"$version\""
 require compat/pyproject.toml "version = \"$version\""
 require compat/app/main.py "version=\"$version\""
-require deploy/helm/taas/Chart.yaml "version: $version"
 require deploy/helm/taas/Chart.yaml "appVersion: \"$version\""
 
 if [ "$fail" -ne 0 ]; then

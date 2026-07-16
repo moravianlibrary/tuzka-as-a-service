@@ -26,6 +26,14 @@ _PENDING_LEVELS_KEY = "jobs:pending:levels"
 _SUBMIT_WAKEUP_KEY = "jobs:submit_wakeup"
 _SUBMIT_WAKEUP_TTL_SECONDS = 60
 
+# Poller-worker wakeup list, mirroring the submit one. signal_poll() pushes a token the
+# poller blocks on (BLPOP) so a job that just went in-flight (set_running) is polled at
+# its scheduled first poll instead of waiting out an idle tick. The engine can't push
+# completion, so completion is still discovered by polling — this only tightens the first
+# poll after dispatch. The TTL keeps tokens from piling up if the poller is down.
+_POLL_WAKEUP_KEY = "jobs:poll_wakeup"
+_POLL_WAKEUP_TTL_SECONDS = 60
+
 
 async def signal_submit(r: aioredis.Redis) -> None:
     """Wake the submit worker — new pending work or a freed slot. One round-trip."""
@@ -40,6 +48,24 @@ async def wait_for_submit_signal(r: aioredis.Redis, timeout: float) -> None:
     so a burst of signals coalesces into a single dispatch pass."""
     await r.blpop(_SUBMIT_WAKEUP_KEY, timeout=timeout)
     await r.delete(_SUBMIT_WAKEUP_KEY)
+
+
+async def signal_poll(r: aioredis.Redis) -> None:
+    """Wake the poller — a job just entered the in-flight set. One round-trip."""
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.rpush(_POLL_WAKEUP_KEY, b"1")
+        pipe.expire(_POLL_WAKEUP_KEY, _POLL_WAKEUP_TTL_SECONDS)
+        await pipe.execute()
+
+
+async def wait_for_poll_signal(r: aioredis.Redis, timeout: float) -> None:
+    """Block until a wakeup token arrives or ``timeout`` elapses, then drain the backlog
+    so a burst of signals coalesces into a single poll pass. A non-positive timeout means
+    'don't wait' — BLPOP treats 0 as block-forever, so return immediately instead."""
+    if timeout <= 0:
+        return
+    await r.blpop(_POLL_WAKEUP_KEY, timeout=timeout)
+    await r.delete(_POLL_WAKEUP_KEY)
 
 
 def _pending_key(priority: int) -> str:
@@ -134,6 +160,7 @@ async def set_running(
     await r.expire(key, state_ttl)
     await r.sadd("jobs:inflight", job_id)
     await r.incr(f"backend:{backend_id}:inflight")
+    await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
 async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:

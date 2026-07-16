@@ -27,6 +27,7 @@ from app.services.redis_jobs import (
     release_and_requeue,
     set_done,
     set_failed,
+    wait_for_poll_signal,
 )
 from app.services.storage import (
     get_results_client,
@@ -68,8 +69,24 @@ def classify_poll_result(status: str, requeues: int, max_requeues: int) -> str:
     return "running"
 
 
+def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
+    """How long to wait before the next poll pass. Pure (no I/O) so it's unit-testable.
+
+    Wakes at the soonest scheduled ``next_poll_at`` so a running job is polled right when
+    its backoff deadline arrives (not on a coarse grid), clamped to ``[0, cap]``: a past
+    deadline means poll now (0), and ``cap`` is the idle/self-heal ceiling. With no pending
+    deadlines — nothing in flight — wait the full ``cap``; a dispatch signal wakes sooner.
+    """
+    if not deadlines:
+        return cap
+    return min(cap, max(0.0, min(deadlines) - now))
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    # httpx emits one INFO line per request; at poll volume it floods the log and
+    # rotates real errors out of `kubectl logs`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     db_engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -338,115 +355,131 @@ async def main() -> None:
     logger.info("Poller worker started")
     try:
         while True:
+            # How long to wait before the next pass. Recomputed each iteration from the
+            # nearest scheduled next_poll_at, so we wake exactly when a running job is due
+            # rather than on a coarse grid; capped by poller_tick_seconds as an idle/self-
+            # heal ceiling. A dispatch (signal_poll from set_running) wakes us sooner still.
+            wait_timeout = settings.poller_tick_seconds
             try:
                 job_ids = await get_inflight_ids(r)
-                if not job_ids:
-                    await asyncio.sleep(settings.poller_tick_seconds)
-                    continue
-
                 now = time.time()
-                due = []
-                metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
-                for jid, meta in zip(job_ids, metas, strict=True):
-                    if not meta:
-                        continue
-                    next_poll = float(meta.get("next_poll_at", 0))
-                    if next_poll <= now:
-                        due.append(jid)
+                metas_by_id: dict[str, dict[str, str]] = {}
+                if job_ids:
+                    metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
+                    metas_by_id = {jid: m for jid, m in zip(job_ids, metas, strict=True) if m}
 
-                if not due:
-                    await asyncio.sleep(settings.poller_tick_seconds)
-                    continue
+                due = [
+                    jid for jid, m in metas_by_id.items() if float(m.get("next_poll_at", 0)) <= now
+                ]
+                due_set = set(due)
+                # Jobs not due yet keep their scheduled time; we must wake for the soonest.
+                pending_deadlines = [
+                    float(m.get("next_poll_at", 0))
+                    for jid, m in metas_by_id.items()
+                    if jid not in due_set
+                ]
 
-                logger.info(f"Checking {len(due)} inflight jobs")
-                statuses = await asyncio.gather(*[check_one(jid) for jid in due])
+                if due:
+                    logger.info(f"Checking {len(due)} inflight jobs")
+                    statuses = await asyncio.gather(*[check_one(jid) for jid in due])
 
-                done_jobs = []
-                failed_jobs = []
-                requeue_jobs = []
-                running_jobs = []
+                    done_jobs = []
+                    failed_jobs = []
+                    requeue_jobs = []
+                    running_jobs = []
 
-                async with session_factory() as db:
-                    max_requeues = await config_service.get_max_requeues(db)
-                    state_ttl = await config_service.get_state_ttl_seconds(db)
-
-                for job_id, status, meta, times in statuses:
-                    requeues = int(meta.get("requeues", 0))
-                    action = classify_poll_result(status, requeues, max_requeues)
-                    if action == "harvest":
-                        done_jobs.append((job_id, meta, times))
-                    elif action == "fail":
-                        if status == "unreachable":
-                            err = f"engine unreachable, exceeded {max_requeues} requeue attempts"
-                        else:
-                            err = times.get("error") or meta.get("error") or "Engine error"
-                        failed_jobs.append((job_id, meta, err))
-                    elif action == "requeue":
-                        requeue_jobs.append((job_id, meta))
-                    else:
-                        running_jobs.append((job_id, meta))
-
-                # Update next_poll_at with backoff for running jobs
-                for job_id, meta in running_jobs:
-                    current_backoff = float(meta.get("next_poll_at", time.time())) - float(
-                        meta.get("last_poll", time.time())
-                    )
-                    next_backoff = min(
-                        max(current_backoff * 2, settings.poll_backoff_initial),
-                        settings.poll_backoff_max,
-                    )
-                    await r.hset(
-                        f"job:{job_id}",
-                        mapping={
-                            "next_poll_at": str(time.time() + next_backoff),
-                            "last_poll": str(time.time()),
-                        },
-                    )
-
-                # Harvest done jobs
-                if done_jobs:
-                    results = await asyncio.gather(
-                        *[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs],
-                        return_exceptions=True,
-                    )
-                    for result in results:
-                        if isinstance(result, Exception):
-                            logger.error("Harvest failed: %s", result)
-
-                # Mark failed jobs
-                for job_id, meta, error in failed_jobs:
-                    await mark_failed(job_id, meta, error)
-
-                # Re-queue jobs whose engine became unreachable (scaled-down pod) so a live
-                # backend picks them up. Redis is updated first (release slot + bump the
-                # requeue counter that the budget reads); the DB column mirrors it for
-                # visibility in one batched session.
-                if requeue_jobs:
-                    for job_id, meta in requeue_jobs:
-                        await release_and_requeue(
-                            r, job_id, float(meta.get("submitted_at", time.time())), state_ttl
-                        )
-                        await r.hincrby(f"job:{job_id}", "requeues", 1)
-                        logger.info(f"Re-queued unreachable job {job_id}")
                     async with session_factory() as db:
-                        for job_id, _meta in requeue_jobs:
-                            await db.execute(
-                                update(Job)
-                                .where(Job.id == job_id)
-                                .values(
-                                    status="queued",
-                                    engine_job_id=None,
-                                    backend_id=None,
-                                    dispatched_at=None,
-                                    requeues=Job.requeues + 1,
+                        max_requeues = await config_service.get_max_requeues(db)
+                        state_ttl = await config_service.get_state_ttl_seconds(db)
+
+                    for job_id, status, meta, times in statuses:
+                        requeues = int(meta.get("requeues", 0))
+                        action = classify_poll_result(status, requeues, max_requeues)
+                        if action == "harvest":
+                            done_jobs.append((job_id, meta, times))
+                        elif action == "fail":
+                            if status == "unreachable":
+                                err = (
+                                    f"engine unreachable, exceeded {max_requeues} requeue attempts"
                                 )
+                            else:
+                                err = times.get("error") or meta.get("error") or "Engine error"
+                            failed_jobs.append((job_id, meta, err))
+                        elif action == "requeue":
+                            requeue_jobs.append((job_id, meta))
+                        else:
+                            running_jobs.append((job_id, meta))
+
+                    # Update next_poll_at with backoff for running jobs; remember each new
+                    # deadline so the wait below fires right when the soonest job is due.
+                    for job_id, meta in running_jobs:
+                        current_backoff = float(meta.get("next_poll_at", time.time())) - float(
+                            meta.get("last_poll", time.time())
+                        )
+                        next_backoff = min(
+                            max(current_backoff * 2, settings.poll_backoff_initial),
+                            settings.poll_backoff_max,
+                        )
+                        new_deadline = time.time() + next_backoff
+                        await r.hset(
+                            f"job:{job_id}",
+                            mapping={
+                                "next_poll_at": str(new_deadline),
+                                "last_poll": str(time.time()),
+                            },
+                        )
+                        pending_deadlines.append(new_deadline)
+
+                    # Harvest done jobs
+                    if done_jobs:
+                        results = await asyncio.gather(
+                            *[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs],
+                            return_exceptions=True,
+                        )
+                        for result in results:
+                            if isinstance(result, Exception):
+                                logger.error("Harvest failed: %s", result)
+
+                    # Mark failed jobs
+                    for job_id, meta, error in failed_jobs:
+                        await mark_failed(job_id, meta, error)
+
+                    # Re-queue jobs whose engine became unreachable (scaled-down pod) so a
+                    # live backend picks them up. Redis is updated first (release slot + bump
+                    # the requeue counter that the budget reads); the DB column mirrors it
+                    # for visibility in one batched session.
+                    if requeue_jobs:
+                        for job_id, meta in requeue_jobs:
+                            await release_and_requeue(
+                                r, job_id, float(meta.get("submitted_at", time.time())), state_ttl
                             )
-                        await db.commit()
+                            await r.hincrby(f"job:{job_id}", "requeues", 1)
+                            logger.info(f"Re-queued unreachable job {job_id}")
+                        async with session_factory() as db:
+                            for job_id, _meta in requeue_jobs:
+                                await db.execute(
+                                    update(Job)
+                                    .where(Job.id == job_id)
+                                    .values(
+                                        status="queued",
+                                        engine_job_id=None,
+                                        backend_id=None,
+                                        dispatched_at=None,
+                                        requeues=Job.requeues + 1,
+                                    )
+                                )
+                            await db.commit()
+
+                # Wake at the soonest scheduled poll, capped by the idle ceiling.
+                wait_timeout = next_poll_timeout(
+                    pending_deadlines, time.time(), settings.poller_tick_seconds
+                )
 
             except Exception:
                 logger.exception("Poller worker failed")
+                wait_timeout = settings.poller_tick_seconds
 
-            await asyncio.sleep(settings.poller_tick_seconds)
+            await wait_for_poll_signal(r, wait_timeout)
     finally:
         await engine_client.close()
         await r.aclose()

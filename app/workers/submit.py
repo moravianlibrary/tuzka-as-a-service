@@ -5,6 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -31,6 +32,34 @@ from app.services.redis_jobs import (
 from app.services.storage import get_incoming_client, get_object
 
 logger = logging.getLogger("submit-worker")
+
+
+def describe_exception(exc: Exception) -> str:
+    """A never-empty, human-readable description of an exception.
+
+    Some transport errors (notably httpx connect/read errors) carry no message, so
+    ``str(exc)`` is empty — which previously stored a blank ``error`` and left the
+    dashboard's error box (shown only for a truthy error) hidden. Fall back to
+    ``repr`` so the exception type always survives to the DB and the UI.
+    """
+    return str(exc) or repr(exc)
+
+
+def is_transient_dispatch_error(exc: Exception) -> bool:
+    """True if a dispatch failure looks transient — worth retrying on another backend.
+
+    Pure (no I/O) so it's unit-testable. Transport-level failures (connect/read/write/pool
+    errors and timeouts) and 5xx engine responses point at an unhealthy or overloaded
+    backend, not a bad request, so the same job may succeed elsewhere. Everything else —
+    4xx (bad image, auth, unsupported domain), malformed responses, unexpected bugs — is
+    terminal: retrying would just loop until the requeue budget is spent. (Engine 503 is
+    handled earlier as EngineFullError, so it never reaches here.)
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
 
 
 @dataclass
@@ -79,6 +108,9 @@ def allocate_jobs(
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    # httpx emits one INFO line per request; at dispatch volume it floods the log and
+    # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -222,17 +254,18 @@ async def main() -> None:
             )
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
+            msg = f"Failed to read image: {describe_exception(e)}"
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_failed(r, job_id, f"Failed to read image: {e}", state_ttl)
+                await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
-                    update(Job).where(Job.id == job_id).values(status="failed", error=str(e))
+                    update(Job).where(Job.id == job_id).values(status="failed", error=msg)
                 )
                 await db.commit()
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": str(e)},
+                {"status": "failed", "uuid": external_id, "error": msg},
             )
             return
 
@@ -270,16 +303,54 @@ async def main() -> None:
             await requeue_job(r, job_id, original_score)
 
         except Exception as e:
-            logger.exception("Failed to dispatch job %s", job_id)
+            msg = describe_exception(e)
+            transient = is_transient_dispatch_error(e)
             async with session_factory() as db:
+                max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_failed(r, job_id, str(e), state_ttl)
+            requeues = int(meta.get("requeues", 0))
+
+            # Transient failure (backend down/overloaded) with budget left: sideline this
+            # backend for the health-cache window so the retry lands elsewhere, bump the
+            # requeue counter the budget reads (Redis + DB), and put the job back to pending.
+            if transient and requeues < max_requeues:
+                logger.warning(
+                    "Transient dispatch error for job %s on %s (attempt %d/%d), requeuing: %s",
+                    job_id,
+                    backend.url,
+                    requeues + 1,
+                    max_requeues,
+                    msg,
+                )
+                health_cache[backend.id] = (False, time.time())
+                await requeue_job(r, job_id, original_score)
+                await r.hincrby(f"job:{job_id}", "requeues", 1)
+                async with session_factory() as db:
+                    await db.execute(
+                        update(Job).where(Job.id == job_id).values(requeues=Job.requeues + 1)
+                    )
+                    await db.commit()
+                return
+
+            # Terminal: not transient, or the retry budget is spent.
+            if transient:
+                logger.error(
+                    "Dispatch for job %s failed after %d requeue attempts: %s",
+                    job_id,
+                    max_requeues,
+                    msg,
+                )
+                msg = f"{msg} (exceeded {max_requeues} requeue attempts)"
+            else:
+                logger.exception("Failed to dispatch job %s", job_id)
+            async with session_factory() as db:
+                await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
                     .values(
                         status="failed",
-                        error=str(e),
+                        error=msg,
                         finished_at=utcnow(),
                     )
                 )
@@ -287,7 +358,7 @@ async def main() -> None:
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": str(e)},
+                {"status": "failed", "uuid": external_id, "error": msg},
             )
 
     logger.info("Submit worker started")

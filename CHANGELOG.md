@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-17
+
+### Added
+
+- The submit worker now retries transient dispatch failures instead of failing the job
+  outright. A transport-level error (connect/read/write/pool, timeout) or a 5xx engine
+  response requeues the job — bounded by `jobs.max_requeues` (shared with the poller's
+  budget) and sidelining the offending backend for the health-cache window so the retry
+  lands elsewhere. Non-transient failures (4xx, malformed responses, unexpected bugs) still
+  fail fast, since retrying can't fix a bad request. Engine 503 is unchanged (EngineFull →
+  unbounded requeue as backpressure).
+
+### Fixed
+
+- A failed dispatch (or image read) whose exception carried no message — e.g. an httpx
+  transport error raised with no args — stored a blank `error`, so the dashboard's error
+  box (rendered only for a truthy value) stayed hidden and the failure looked reasonless.
+  The submit worker now records `str(exc) or repr(exc)`, so the exception type always
+  survives to the DB and the UI.
+
+### Changed
+
+- The poller is now event-driven, mirroring the submit worker: `set_running` signals it
+  (`signal_poll`) so a freshly in-flight job is polled at its scheduled first poll instead
+  of after up to a full idle tick, and the loop now waits until the nearest `next_poll_at`
+  (capped by `poller_tick_seconds`) rather than sleeping a fixed tick — cutting the
+  finished→stored "harvest" latency by removing tick-quantization and backoff overshoot.
+  The engine still can't push completion, so running jobs are polled on the existing
+  backoff schedule; this only tightens *when* those polls fire.
+- Quieted httpx's per-request `INFO` logging to `WARNING` in the API and both workers.
+  At dispatch/poll volume it flooded stdout and rotated real errors (like a failed
+  dispatch's traceback) out of `kubectl logs` before they could be read.
+
 ## [0.7.0] - 2026-07-16
 
 ### Security
