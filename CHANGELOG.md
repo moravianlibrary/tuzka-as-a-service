@@ -63,6 +63,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Re-submitting a job with an `external_id` already used by that caller no longer fails.
+  `external_id` was both the object-storage key and a unique `(username, external_id)`
+  constraint, so re-running OCR on the same document (same `external_id`) hit an
+  unhandled `IntegrityError` (`500`) and would have overwritten the prior result. Storage
+  is now keyed by the server-generated `jobs.id` (globally unique) for both incoming
+  uploads and stored results, and the unique constraint is dropped (migration 011), so
+  `external_id` is purely a caller-chosen correlation label that may repeat.
+  **Breaking (storage layout):** objects moved from `{username}/{external_id}` to
+  `{username}/{job_id}`, so results stored by an earlier version are not readable by this
+  one — drain in-flight jobs before upgrading.
 - A deleted/disabled user or a rotated key now stops authenticating immediately — admin
   key/active changes clear the API-key lookup cache, instead of a revoked key working for
   up to the cache TTL. HTTP and WebSocket auth now share one `authenticate_api_key` path.

@@ -4,7 +4,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
 from fastapi import (
@@ -75,7 +75,13 @@ async def submit_job(
     """
     # uuid and fmt are parsed and validated at the boundary (UUID / Literal), so the
     # body below trusts them.
+    #
+    # external_id is a caller-chosen label, echoed back in status/events/external URLs so the
+    # client can correlate — it is NOT unique and may repeat (e.g. re-running OCR on the same
+    # document). The storage key is job.id (the server-generated PK, globally unique); we mint
+    # it here so the upload can use it before the row is inserted.
     external_id = uuid
+    job_id = uuid4()
 
     # Validate extension
     filename = image.filename or "image"
@@ -102,7 +108,7 @@ async def submit_job(
 
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
-    object_path = f"{username}/{external_id}{ext}"
+    object_path = f"{username}/{job_id}{ext}"
     await storage.put_object(
         incoming_client,
         settings.minio_incoming_bucket,
@@ -113,6 +119,7 @@ async def submit_job(
 
     # Insert job in Postgres
     job = Job(
+        id=job_id,
         username=username,
         external_id=external_id,
         status="queued",
@@ -240,7 +247,7 @@ async def get_job_result(
         if not jr.presigned_url or (jr.presigned_until and jr.presigned_until < now):
             ext_map = {"alto": "xml", "txt": "txt"}
             file_ext = ext_map.get(jr.fmt, jr.fmt)
-            obj_path = f"{username}/{job.external_id}.{file_ext}.zst"
+            obj_path = f"{username}/{job.id}.{file_ext}.zst"
             jr.presigned_url = await storage.presign_get(
                 results_client,
                 settings.minio_results_bucket,
@@ -299,7 +306,7 @@ async def download_job_result(
         raise NotFound(f"No {fmt} result available")
 
     ext_map = {"alto": "xml", "txt": "txt"}
-    obj_path = f"{username}/{job.external_id}.{ext_map.get(fmt, fmt)}.zst"
+    obj_path = f"{username}/{job.id}.{ext_map.get(fmt, fmt)}.zst"
     results_client = request.app.state.results_client
     data = await storage.get_object(results_client, settings.minio_results_bucket, obj_path)
     return Response(content=data, media_type="application/octet-stream")

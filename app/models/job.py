@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, func, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -16,6 +16,9 @@ class Job(Base):
         primary_key=True, server_default=text("gen_random_uuid()")
     )
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=False)
+    # Caller-chosen correlation label, echoed back in status/events/external URLs. NOT unique:
+    # a caller may reuse it (e.g. re-running OCR on the same document). The unique per-job
+    # identity and storage key is `id` (the server PK).
     external_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(default="queued", nullable=False)
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
@@ -45,7 +48,6 @@ class Job(Base):
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_backend_id", "backend_id"),
-        UniqueConstraint("username", "external_id", name="uq_jobs_username_external"),
         CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"),
     )
 

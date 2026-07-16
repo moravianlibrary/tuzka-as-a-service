@@ -138,21 +138,21 @@ async def main() -> None:
                     backend_url, api_key, engine_job_id, which="txt"
                 )
                 results_to_store = [
-                    ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
-                    ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
+                    ("alto", f"{username}/{job_id}.xml.zst", alto_bytes),
+                    ("txt", f"{username}/{job_id}.txt.zst", txt_bytes),
                 ]
                 alto_bytes_for_analytics = alto_bytes
                 txt_bytes_for_analytics = txt_bytes
             elif fmt == "alto":
                 alto_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
-                    ("alto", f"{username}/{external_id}.xml.zst", alto_bytes),
+                    ("alto", f"{username}/{job_id}.xml.zst", alto_bytes),
                 ]
                 alto_bytes_for_analytics = alto_bytes
             else:
                 txt_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
                 results_to_store = [
-                    ("txt", f"{username}/{external_id}.txt.zst", txt_bytes),
+                    ("txt", f"{username}/{job_id}.txt.zst", txt_bytes),
                 ]
                 txt_bytes_for_analytics = txt_bytes
 

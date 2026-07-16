@@ -214,8 +214,8 @@ async def main() -> None:
             await requeue_job(r, job_id, original_score)
             return
 
-        # Read image from MinIO
-        object_path = f"{username}/{external_id}{ext}"
+        # Read image from MinIO — keyed by job_id (the server PK), matching the submit upload.
+        object_path = f"{username}/{job_id}{ext}"
         try:
             image_bytes = await get_object(
                 incoming_client, settings.minio_incoming_bucket, object_path
