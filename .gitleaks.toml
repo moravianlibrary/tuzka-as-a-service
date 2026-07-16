@@ -1,0 +1,18 @@
+# gitleaks configuration for taas.
+#
+# Extends the built-in ruleset and allowlists files that intentionally hold throwaway
+# local-dev / example secrets (not real credentials), so the CI secret scan stays green
+# without ignoring genuine leaks elsewhere.
+title = "taas gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Designated throwaway dev/example secrets — not real credentials"
+paths = [
+  # Local Helm overrides: explicitly labelled "Throwaway test secrets" in the file itself.
+  '''deploy/local/values\.local\.yaml''',
+  # Committed env templates carry placeholder values (e.g. MASTER_KEY=test-master-key).
+  '''\.env(\.[a-z]+)?\.example''',
+]

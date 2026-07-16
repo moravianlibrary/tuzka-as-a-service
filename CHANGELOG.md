@@ -43,7 +43,10 @@ All notable changes to this project are documented here. The format is based on
   (`VERSION`, both `pyproject.toml`s, `app/main.py`, `compat/app/main.py`,
   Helm `Chart.yaml`); `make version-check` fails on drift.
 - Committed `uv.lock` for reproducible installs; dev tooling runs via `uv`.
-- CI: secret scanning (gitleaks) and dependency CVE audit (pip-audit).
+- CI: secret scanning (gitleaks) and dependency CVE audit (pip-audit). Gitleaks runs via
+  the MIT-licensed CLI (not `gitleaks-action`, which now requires a paid license for org
+  repos), with a `.gitleaks.toml` that allowlists the designated throwaway dev/example
+  secret files (`deploy/local/values.local.yaml`, `.env.*.example`).
 
 ### Changed
 
