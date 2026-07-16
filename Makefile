@@ -96,6 +96,12 @@ test-contract: ## Schemathesis contract/property tests vs a running instance (TA
 	args="$$args --exclude-path /admin/users/{username}/rotate-key --exclude-path /admin/users/{username}/key"; \
 	$(UV) schemathesis $$args
 
+.PHONY: test-contract-local
+test-contract-local: env ## One command: bring up the API (migrated, no workers/engine), seed, run Schemathesis
+	$(COMPOSE) up -d --build --wait api
+	@MASTER_KEY="$$(grep -E '^MASTER_KEY=' .env.app | cut -d= -f2-)" TAAS_URL=http://localhost:8080 \
+	  $(MAKE) --no-print-directory test-contract
+
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
