@@ -8,12 +8,13 @@ from dataclasses import dataclass
 import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
+from app.models.db import make_engine
 from app.models.domain import Domain
 from app.models.job import Job
 from app.services import config as config_service
@@ -112,7 +113,7 @@ async def main() -> None:
     # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
-    engine = create_async_engine(settings.database_url)
+    engine = make_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)

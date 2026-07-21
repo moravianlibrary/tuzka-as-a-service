@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-21
+
+### Fixed
+
+- Jobs no longer fail with a raw `asyncpg.ConnectionDoesNotExistError` ("connection was
+  closed in the middle of operation"). The engine and workers hold a connection pool
+  between DB calls, and a pooled connection can be closed under them by the server (idle
+  timeout, restart) or a proxy — asyncpg only notices mid-statement. The async engine now
+  enables `pool_pre_ping` (validate and transparently replace a dead connection on
+  checkout) and `pool_recycle` (retire connections before a server-side idle timeout can
+  close them), configurable via `DB_POOL_PRE_PING` / `DB_POOL_RECYCLE_SECONDS`. This
+  surfaced mainly on the compat shim's polling path, whose idle-then-reuse access pattern
+  let pooled connections go stale between polls (the WebSocket path keeps them warm).
+- The poller no longer marks a completed job `failed` when a transient DB or storage error
+  hits during harvest. The engine has already produced the OCR output by then, so an
+  infrastructure error is not the job's fault: the job is left inflight and re-harvested on
+  the next poll (the reaper remains the backstop if it truly stays stuck). Genuine harvest
+  failures (bad result, unexpected bug) still fail fast as before.
+
 ## [0.8.0] - 2026-07-17
 
 ### Added

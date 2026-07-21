@@ -10,11 +10,13 @@ import httpx
 import redis.asyncio as aioredis
 import zstandard
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend
+from app.models.db import make_engine
 from app.models.job import Job, JobResult
 from app.services import config as config_service
 from app.services.analytics import parse_alto, write_analytics_row
@@ -37,6 +39,21 @@ from app.services.storage import (
 )
 
 logger = logging.getLogger("poller-worker")
+
+
+def is_transient_harvest_error(exc: Exception) -> bool:
+    """True if a harvest failure is infrastructure (DB/storage), not a bad result.
+
+    The engine has already produced the OCR output by the time we harvest, so a dropped
+    DB connection or a transient storage/transport error must NOT permanently fail the
+    job: we leave it inflight and let the next poll re-harvest it (the reaper is the
+    backstop if it stays stuck). A pooled connection closed under us surfaces as a
+    DBAPIError with ``connection_invalidated`` set (e.g. asyncpg's
+    ConnectionDoesNotExistError). Pure (no I/O) so it is unit-testable.
+    """
+    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+        return True
+    return isinstance(exc, httpx.TransportError)
 
 
 def _parse_engine_dt(value: str | None) -> datetime | None:
@@ -88,7 +105,7 @@ async def main() -> None:
     # rotates real errors out of `kubectl logs`.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
-    db_engine = create_async_engine(settings.database_url)
+    db_engine = make_engine(settings)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     engine_client = EngineClient()
@@ -291,6 +308,17 @@ async def main() -> None:
             logger.info(f"Published done event for {username}")
 
         except Exception as e:
+            # The engine already finished this job; a transient DB/storage error here is
+            # not the job's fault. Leave it inflight so the next poll re-harvests it (the
+            # reaper fails it eventually if it truly stays stuck) rather than stamping a
+            # raw infrastructure traceback as a permanent user-visible failure.
+            if is_transient_harvest_error(e):
+                logger.warning(
+                    "Transient error harvesting job %s; leaving inflight to retry: %s",
+                    job_id,
+                    e,
+                )
+                return
             logger.exception("Failed to harvest job %s", job_id)
             await mark_failed(job_id, meta, str(e))
 

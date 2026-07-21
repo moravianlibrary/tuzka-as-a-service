@@ -6,6 +6,13 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql+asyncpg://taas:taas@localhost:5432/taas"
+    # Pooled connections can be silently closed by the server (idle timeout, restart)
+    # or a proxy (pgbouncer) between checkouts; asyncpg only notices mid-statement and
+    # raises ConnectionDoesNotExistError. pre_ping validates each connection on checkout
+    # and transparently replaces dead ones; recycle retires connections before a typical
+    # server-side idle timeout can close them.
+    db_pool_pre_ping: bool = True
+    db_pool_recycle_seconds: int = 1800
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

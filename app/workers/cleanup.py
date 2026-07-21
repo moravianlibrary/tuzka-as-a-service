@@ -7,11 +7,12 @@ from typing import Any, cast
 
 import redis.asyncio as aioredis
 from sqlalchemy import CursorResult, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
+from app.models.db import make_engine
 from app.services.config import get_storage_ttl_minutes
 from app.services.reaper import reap_stale_jobs
 from app.services.storage import (
@@ -55,7 +56,7 @@ async def delete_expired_jobs(db: AsyncSession) -> None:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
-    db_engine = create_async_engine(settings.database_url)
+    db_engine = make_engine(settings)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)
