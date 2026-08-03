@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- The Python client (`TaasClient`) no longer opens a fresh `httpx.AsyncClient` for every
+  presigned result fetch. One pooled client now lives for the lifetime of the WebSocket
+  connection, so a result download reuses the connection instead of paying a new TCP — and,
+  over https, TLS — handshake per artifact. On a high-latency link that handshake cost more
+  than the download itself. `AsyncTaasClient` and the Java client already reused theirs.
+  Result fetches now also use the same 60 s timeout as the rest of the client, instead of
+  httpx's 5 s default — that default could abort a large ALTO download over a slow link.
+
 ## [0.8.1] - 2026-07-21
 
 ### Fixed

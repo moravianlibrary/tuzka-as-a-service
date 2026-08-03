@@ -31,6 +31,9 @@ class TaasClient:
         self._fmt = fmt
         self._domain = domain
         self._http = httpx.Client(timeout=60.0)
+        # Created inside the WebSocket loop (it must live on that thread's event loop)
+        # and reused for every presigned result fetch; see _ws_listen.
+        self._fetch_http: httpx.AsyncClient | None = None
         self._pending: set[UUID] = set()
         self._pending_lock = threading.Lock()
         self._all_done = threading.Event()
@@ -109,21 +112,29 @@ class TaasClient:
         ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/ws?api_key={self._api_key}"
 
-        while not self._stop_event.is_set():
+        # One client for every presigned result fetch, for the lifetime of the socket.
+        # Opening one per artifact pays a fresh TCP (and, over https, TLS) handshake per
+        # result — on a high-latency link that handshake costs more than the download.
+        async with httpx.AsyncClient(timeout=60.0) as fetch_http:
+            self._fetch_http = fetch_http
             try:
-                async with websockets.connect(ws_url) as ws:
-                    async for raw in ws:
+                while not self._stop_event.is_set():
+                    try:
+                        async with websockets.connect(ws_url) as ws:
+                            async for raw in ws:
+                                if self._stop_event.is_set():
+                                    break
+                                await self._handle_event(raw)
+                    except websockets.ConnectionClosed:
                         if self._stop_event.is_set():
                             break
-                        await self._handle_event(raw)
-            except websockets.ConnectionClosed:
-                if self._stop_event.is_set():
-                    break
-                await asyncio.sleep(2)
-            except Exception:
-                if self._stop_event.is_set():
-                    break
-                await asyncio.sleep(5)
+                        await asyncio.sleep(2)
+                    except Exception:
+                        if self._stop_event.is_set():
+                            break
+                        await asyncio.sleep(5)
+            finally:
+                self._fetch_http = None
 
     async def _handle_event(self, raw: str) -> None:
         event = json.loads(raw)
@@ -155,10 +166,13 @@ class TaasClient:
             self._resolve(ext_id)
 
     async def _fetch_url(self, url: str) -> bytes:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.content
+        client = self._fetch_http
+        if client is None:
+            raise RuntimeError("result fetch attempted outside the WebSocket loop")
+
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
 
     def _resolve(self, uuid: UUID) -> None:
         with self._pending_lock:
