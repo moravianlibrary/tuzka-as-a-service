@@ -8,6 +8,9 @@ in-cluster backend. No taas changes — the remoteness is transparent.
 ```
 GPU box (outbound only)                 cluster (taas Helm chart)
  tuzkaocr :8000                          <release>-frps Deployment
+   ▲
+ gate :8000  (pass-through proxy)
+   ▲
  frpc ──dials node:32700──────────────►  control :7000
    ▲                                      opens remotePort :8000 on the frps pod
    └─ reverse tunnel ◄───────────────── <release>-tunnel-engine-box1-gpu1:8000
@@ -76,11 +79,74 @@ Then submit a job through the taas API and confirm it returns ALTO produced on t
   `tunnelBoxes[].engines[].remotePort`. Add more boxes by adding `tunnelBoxes` entries
   (each engine/exporter a distinct `remotePort`) and running this stack on each with the
   matching `REMOTE_PORT`.
+- **Engine version**: TuzkaOCR **v1.7.0** is verified against this box — same routes, form
+  fields and status payload, and its spool directory is baked into the image, so only the
+  tag (`OCR_IMAGE`) or the `./TuzkaOCR` checkout changes. Note that handwritten/Kurrent
+  output differs from v1.6.x (unified `rec-H-v6` model); print/kramarky is unaffected.
 - **Debugging**: failures show up in `frpc` (box) and `<release>-frps` (cluster) logs,
   not in Kubernetes endpoints — the Service is only a port-alias to the frps socket.
 - **NodePort reachability**: the node IP must be routable from the box and `nodePort`
   open in any firewall. On cloud / MetalLB, prefer `tunnel.service.type: LoadBalancer`
   and point `FRP_SERVER_ADDR`/`FRP_SERVER_PORT` at the LB.
+
+## Up-hours: run OCR only outside working hours
+
+A box that has a day job (a work PC, a shared workstation) can serve OCR only in a
+weekly window. Two containers implement it, both present by default and both inert while
+`OCR_UP_SCHEDULE=always`:
+
+- **`gate`** — nginx between `frpc` and the engine. The tunnel now terminates here.
+  Open, it is a pass-through. Closed, it 503s `/healthz` and `POST /api/v1/process` and
+  passes everything else through.
+- **`scheduler`** — reconciles container state against the schedule once a minute,
+  driving the host docker daemon through the socket. It only touches containers labelled
+  with this compose project.
+
+Set the window in `.env`:
+
+```sh
+TZ=Europe/Prague                                              # the schedule's timezone
+OCR_UP_SCHEDULE="Mon-Fri 17:30-07:30; Sat,Sun 00:00-24:00"    # nights + weekends
+OCR_DRAIN_MINUTES=10
+docker compose up -d        # or restart just the scheduler after an edit
+```
+
+Syntax: `<days> <HH:MM>-<HH:MM>` entries separated by `;` (a comma right after a time
+range also works, so day lists like `Sat,Sun` stay unambiguous). Days accept ranges and
+lists, both wrapping (`Fri-Mon`); an end time at or before the start runs past midnight
+into the next day, attributed to the day it *starts* on — `Fri 22:00-06:00` covers
+Saturday morning whether or not `Sat` is listed. `always` (default) and `never` are
+accepted in place of any window.
+
+**What happens at the boundaries**
+
+| when | what the scheduler does |
+| --- | --- |
+| window start | opens the gate, starts engine + gate + frpc |
+| window end | closes the gate — taas drops the backend within `health_cache_seconds` (10s), so no new pages arrive |
+| + `OCR_DRAIN_MINUTES` | stops the engine, releasing the GPU |
+
+The tunnel stays up the whole time, which is the point of the gate: pages the engine is
+already working on finish during the drain and the poller harvests them normally
+through `/api/v1/status` + `/api/v1/result`. Only pages still unfinished when the drain
+expires are given up, and taas requeues those (an unreachable engine is already a
+retryable state), so they are redone in the next window, not lost. Queued jobs simply
+wait — an off-hours box is an unhealthy backend, not a failing one.
+
+Notes:
+
+- Set `OCR_STOP_TUNNEL=1` to stop `frpc` too, after the engine. Off by default so the
+  box's cAdvisor / GPU metrics keep reaching the cluster Prometheus while it's parked.
+- The scheduler reconciles what it *observes*, so it recovers on its own after a reboot,
+  a suspend/resume, or a manual `docker compose up -d` inside a closed window.
+- `docker compose down` stops everything including the scheduler; the box then stays
+  down until you bring it back up. `restart: unless-stopped` keeps a stopped engine
+  stopped across daemon restarts, which is what the schedule wants.
+- To skip the gate entirely (and with it up-hours scheduling), set `FRP_LOCAL_IP=tuzkaocr`
+  in `.env` so the tunnel delivers straight to the engine.
+- Multi-engine boxes: `compose.multi.example.yaml` has no gate. Add one gate per engine
+  (each with its own `gate-state` volume, `frpc.toml` pointing at it) and list the engine
+  services in `SCHED_ENGINE_SERVICES`.
 
 ## Multiple engines on one box (CPU + GPU mix)
 

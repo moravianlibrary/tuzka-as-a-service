@@ -59,6 +59,53 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
     expose: ["8080"]
 
+  # Dispatch gate — the tunnel's endpoint, proxying to the engine. Always present and a
+  # plain pass-through unless the scheduler closes it; closed, it 503s /healthz and
+  # POST /api/v1/process (so taas stops dispatching) while still passing status/result
+  # through (so in-flight pages can be harvested). See gate/nginx.conf.
+  gate:
+    image: ${GATE_IMAGE:-nginx:1.27-alpine}
+    profiles: ["registry", "build"]
+    restart: unless-stopped
+    volumes:
+      - ./gate/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - gate-state:/gate:ro
+    expose: ["8000"]
+
+  # Up-hours scheduler — closes the gate and stops the engine outside a weekly schedule,
+  # so a box that has a day job (work PC, shared workstation) only serves OCR off-hours.
+  # Inert by default (OCR_UP_SCHEDULE=always). Drives the host daemon through the docker
+  # socket; it only touches containers labelled with THIS compose project. See README.
+  scheduler:
+    build:
+      context: ./scheduler
+    image: ${SCHEDULER_IMAGE:-taas-box-scheduler:local}
+    profiles: ["registry", "build"]
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gate-state:/gate
+    environment:
+      # Timezone the schedule is written in — without it the container runs on UTC.
+      TZ: ${TZ:-UTC}
+      # "always" (default) | "never" | windows, e.g. "Mon-Fri 17:30-07:30; Sat,Sun 00:00-24:00"
+      OCR_UP_SCHEDULE: ${OCR_UP_SCHEDULE:-always}
+      # Grace between closing the gate (dispatch stops) and stopping the engine — how
+      # long in-flight pages have to finish and be harvested through the open tunnel.
+      OCR_DRAIN_MINUTES: ${OCR_DRAIN_MINUTES:-10}
+      OCR_POLL_SECONDS: ${OCR_POLL_SECONDS:-60}
+      OCR_STOP_TIMEOUT: ${OCR_STOP_TIMEOUT:-120}
+      # 1 = also stop frpc after the engine. Off by default: the tunnel is idle-cheap and
+      # keeping it up leaves the box's cAdvisor/GPU metrics visible to the cluster.
+      OCR_STOP_TUNNEL: ${OCR_STOP_TUNNEL:-0}
+      # Compose services to control. Both engine profiles are listed: whichever one
+      # isn't running simply matches no containers. Override for a multi-engine box.
+      SCHED_ENGINE_SERVICES: ${SCHED_ENGINE_SERVICES:-tuzkaocr,tuzkaocr-build}
+      SCHED_TUNNEL_SERVICES: ${SCHED_TUNNEL_SERVICES:-frpc}
+      SCHED_GATE_SERVICES: ${SCHED_GATE_SERVICES:-gate}
+      # Auto-detected from this container's own compose label; set only if that fails.
+      SCHED_PROJECT: ${COMPOSE_PROJECT_NAME:-}
+
   frpc:
     image: ${FRPC_IMAGE:-snowdreamtech/frpc:0.61.1}
     profiles: ["registry", "build"]
@@ -74,10 +121,20 @@ services:
       # Box name — used to prefix the exporter proxy names so they stay unique across boxes.
       BOX_NAME: ${BOX_NAME:-box1}
       FRP_PROXY_NAME: ${ENGINE_NAME:-gpu1}
-      # The port TuzkaOCR listens on inside its container (fixed by the image).
+      # What the tunnel delivers to. Default is the gate (pass-through unless the
+      # scheduler closes it); set FRP_LOCAL_IP=tuzkaocr to bypass the gate entirely.
+      FRP_LOCAL_IP: ${FRP_LOCAL_IP:-gate}
+      # The port TuzkaOCR listens on inside its container (fixed by the image), and the
+      # port the gate listens on — same either way.
       FRP_LOCAL_PORT: "8000"
       FRP_REMOTE_PORT: ${REMOTE_PORT:?set REMOTE_PORT (== this engine's tunnelBoxes[].engines[].remotePort) in .env}
       # Optional exporter tunnels. Leave unset on a box without exporters — the matching
       # frpc.toml blocks are then skipped. Must match the box's tunnelBoxes[].exporters[].remotePort.
       FRP_CADVISOR_REMOTE_PORT: ${FRP_CADVISOR_REMOTE_PORT:-}
       FRP_GPU_EXPORTER_REMOTE_PORT: ${FRP_GPU_EXPORTER_REMOTE_PORT:-}
+
+volumes:
+  # One flag file, written by the scheduler and read by the gate. A named volume (not a
+  # bind mount) so the gate's state survives container recreation without leaving
+  # anything behind on the host.
+  gate-state:

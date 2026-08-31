@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Up-hours scheduling for a tunnel box (`deploy/box`): a box that has a day job — a work
+  PC, a shared workstation — can now serve OCR only inside a weekly window, set with
+  `OCR_UP_SCHEDULE` in its `.env` (e.g. `"Mon-Fri 17:30-07:30; Sat,Sun 00:00-24:00"`,
+  plus `TZ`). Two new containers implement it, both inert at the default
+  `OCR_UP_SCHEDULE=always`: a `gate` (nginx) that the tunnel now terminates at, and a
+  `scheduler` that reconciles container state against the schedule. At window end the
+  gate closes — `/healthz` and `POST /api/v1/process` 503, so taas drops the backend from
+  rotation within `health_cache_seconds`, while status/result requests keep passing
+  through, so pages already in flight finish and are harvested over the still-open tunnel.
+  `OCR_DRAIN_MINUTES` (default 10) later, the engine stops and releases the GPU. Queued
+  jobs just wait for the next window; only pages unfinished at the drain deadline are
+  requeued. See `deploy/box/README.md`.
+
+### Changed
+
+- The box tunnel now delivers to the `gate` service rather than straight to the engine
+  (`FRP_LOCAL_IP`, default `gate`) — a pass-through unless the up-hours scheduler closes
+  it. Set `FRP_LOCAL_IP=tuzkaocr` in the box `.env` to keep the old direct path.
+- Verified TuzkaOCR **v1.7.0** against the box and the dispatch/harvest path: no compose,
+  `frpc.toml` or app changes needed beyond the image tag. Its one client-visible change —
+  an undecodable or oversized image now fails the engine job (status `failed`, 422 on
+  result) instead of rejecting the `POST /api/v1/process` — is already handled: the poller
+  fails such jobs on the engine's reported status, as the dispatch path did before.
+
 ### Fixed
 
 - The Python client (`TaasClient`) no longer opens a fresh `httpx.AsyncClient` for every
