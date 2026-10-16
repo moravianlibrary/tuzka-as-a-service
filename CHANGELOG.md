@@ -57,6 +57,9 @@ All notable changes to this project are documented here. The format is based on
   are handled by a one-shot probe: when an engine reports `failed` without `error_status`,
   the poller fetches `/api/v1/result/{id}` once to determine the HTTP status and classify
   the failure accordingly.
+- Engines are now reached through the `app.engines` adapter interface (`backends.adapter`,
+  default `tuzkaocr`). No behaviour change — the TuzkaOCR adapter is a 1:1 port of the
+  previous `EngineClient` calls, just through a clean Protocol boundary.
 - MinIO images: MinIO stopped publishing free images, and `minio/minio` and `minio/mc`
   can no longer be pulled from Docker Hub or quay.io. Compose and the Helm chart now use
   the frozen `bitnamilegacy/minio` and `bitnamilegacy/minio-client` builds (pinned, July
