@@ -5,12 +5,17 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
+from app.engines import make_adapter
+from app.engines.base import EngineAdapter, EngineFullError
+from app.engines.outputs import fmt_to_outputs
+from app.engines.tuzkaocr import NoOptions
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.db import make_engine
@@ -18,7 +23,6 @@ from app.models.domain import Domain
 from app.models.job import Job
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
-from app.services.engine_client import EngineClient, EngineFullError
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
@@ -116,7 +120,9 @@ async def main() -> None:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)
-    engine_client = EngineClient()
+    http = httpx.AsyncClient(timeout=60.0)
+    # Per-backend adapter cache keyed by backend id.
+    adapters: dict[int, EngineAdapter] = {}
 
     backends: list[Backend] = []
     backends_refreshed_at = 0.0
@@ -127,6 +133,21 @@ async def main() -> None:
     sync_tasks: set[asyncio.Task[None]] = set()
     domains_synced_at: dict[int, float] = {}
     domain_sync_inflight: set[int] = set()
+
+    def adapter_for(backend: Backend) -> "EngineAdapter":
+        """Build or return a cached adapter for the given backend.
+
+        Rebuilds when the backend's url or adapter id changes.
+        """
+        cached = adapters.get(backend.id)
+        if cached is not None:
+            return cached
+        api_key = None
+        if backend.api_key_enc:
+            api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
+        a = make_adapter(backend.adapter, backend.url, api_key, http)
+        adapters[backend.id] = a
+        return a
 
     async def refresh_backends() -> None:
         nonlocal backends, backends_refreshed_at
@@ -142,10 +163,11 @@ async def main() -> None:
         backends_refreshed_at = time.time()
         logger.info(f"Loaded {len(backends)} backend(s)")
 
-    async def sync_domains(backend: Backend, api_key: str | None) -> None:
+    async def sync_domains(backend: Backend) -> None:
         """Fetch selectable_via_domain from the engine and rebuild backend_domains."""
         try:
-            domain_names = await engine_client.get_models(backend.url, api_key)
+            info = await adapter_for(backend).describe()
+            domain_names = list(info.domains)
         except Exception as exc:
             logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
@@ -174,7 +196,7 @@ async def main() -> None:
             domains_synced_at[backend.id] = time.time()
             logger.debug("Synced %d domain(s) for backend %s", len(domain_ids), backend.url)
 
-    def spawn_domain_sync(backend: Backend, api_key: str | None) -> None:
+    def spawn_domain_sync(backend: Backend) -> None:
         """Kick off a background domain sync at most once per interval per backend.
 
         Stamps ``domains_synced_at`` only on success (in ``sync_domains``), so a failed
@@ -186,7 +208,7 @@ async def main() -> None:
         if time.time() - domains_synced_at.get(backend.id, 0.0) < settings.domain_sync_seconds:
             return
         domain_sync_inflight.add(backend.id)
-        task = asyncio.create_task(sync_domains(backend, api_key))
+        task = asyncio.create_task(sync_domains(backend))
         sync_tasks.add(task)
 
         def _done(t: asyncio.Task[None]) -> None:
@@ -211,16 +233,12 @@ async def main() -> None:
         if cached and now - cached[1] < settings.health_cache_seconds:
             return cached[0]
 
-        api_key = None
-        if backend.api_key_enc:
-            api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-
-        healthy = await engine_client.healthcheck(backend.url)
+        healthy = await adapter_for(backend).healthy()
         health_cache[backend.id] = (healthy, now)
         if healthy:
             logger.info(f"Backend {backend.label or backend.url} healthy")
             # Refresh the backend's served domains in the background (best-effort).
-            spawn_domain_sync(backend, api_key)
+            spawn_domain_sync(backend)
         else:
             logger.warning(f"Backend {backend.label or backend.url} unhealthy")
         return healthy
@@ -276,18 +294,14 @@ async def main() -> None:
             )
             return
 
-        # Decrypt backend API key
-        api_key = None
-        if backend.api_key_enc:
-            api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-
         filename = f"{external_id}{ext}"
         try:
-            engine_job_id = await engine_client.process(
-                backend.url, api_key, image_bytes, filename, fmt, domain
+            adapter = adapter_for(backend)
+            engine_job_id = await adapter.submit(
+                image_bytes, filename, domain, fmt_to_outputs(fmt), NoOptions()
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
-            engine_version = await engine_client.get_version(backend.url)
+            engine_version = adapter.version()
 
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -455,7 +469,7 @@ async def main() -> None:
             # and slow jobs don't busy-poll.
             await wait_for_submit_signal(r, settings.submit_tick_seconds)
     finally:
-        await engine_client.close()
+        await http.aclose()
         await r.aclose()
         await engine.dispose()
 
