@@ -5,7 +5,6 @@ import logging
 import time
 from dataclasses import dataclass
 
-import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -30,37 +29,10 @@ from app.services.redis_jobs import (
     set_running,
     wait_for_submit_signal,
 )
+from app.services.retry_policy import describe_exception, is_retryable_dispatch_error
 from app.services.storage import get_incoming_client, get_object
 
 logger = logging.getLogger("submit-worker")
-
-
-def describe_exception(exc: Exception) -> str:
-    """A never-empty, human-readable description of an exception.
-
-    Some transport errors (notably httpx connect/read errors) carry no message, so
-    ``str(exc)`` is empty — which previously stored a blank ``error`` and left the
-    dashboard's error box (shown only for a truthy error) hidden. Fall back to
-    ``repr`` so the exception type always survives to the DB and the UI.
-    """
-    return str(exc) or repr(exc)
-
-
-def is_transient_dispatch_error(exc: Exception) -> bool:
-    """True if a dispatch failure looks transient — worth retrying on another backend.
-
-    Pure (no I/O) so it's unit-testable. Transport-level failures (connect/read/write/pool
-    errors and timeouts) and 5xx engine responses point at an unhealthy or overloaded
-    backend, not a bad request, so the same job may succeed elsewhere. Everything else —
-    4xx (bad image, auth, unsupported domain), malformed responses, unexpected bugs — is
-    terminal: retrying would just loop until the requeue budget is spent. (Engine 503 is
-    handled earlier as EngineFullError, so it never reaches here.)
-    """
-    if isinstance(exc, httpx.TransportError):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return False
 
 
 @dataclass
@@ -305,7 +277,7 @@ async def main() -> None:
 
         except Exception as e:
             msg = describe_exception(e)
-            transient = is_transient_dispatch_error(e)
+            transient = is_retryable_dispatch_error(e)
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
