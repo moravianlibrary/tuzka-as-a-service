@@ -48,12 +48,17 @@ services:
     environment:
       TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
       TUZKAOCR_DEVICE: cuda
-      TUZKAOCR_PAGE_WORKERS: "4"   # exploit VRAM; tune 2-6 (lowest that pins GPU ~100%)
-      TUZKAOCR_OCR_THREADS: "4"    # capped so the GPU engine doesn't starve the CPU engines
+      # GPU_CONCURRENCY / GPU_ARENA_SHRINK need TuzkaOCR with the CUDA memory-growth fix
+      # (rrandiak/TuzkaOCR, branch fix/cuda-mem-growth).
+      TUZKAOCR_MAX_QUEUE: "20"
+      TUZKAOCR_PAGE_WORKERS: "10"
+      TUZKAOCR_GPU_CONCURRENCY: "4"  # inferences resident on the GPU at once
+      TUZKAOCR_GPU_ARENA_SHRINK: "1"
+      TUZKAOCR_OCR_THREADS: "4"      # capped so the GPU engine doesn't starve the CPU engines
       TUZKAOCR_LINE_WORKERS: "4"
-      OMP_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
     deploy:
       resources:
         reservations:
