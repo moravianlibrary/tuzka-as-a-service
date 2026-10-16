@@ -136,3 +136,29 @@ class EngineClient:
         except Exception as exc:
             logger.warning("healthcheck failed for %s: %s", url, exc)
             return False
+
+    async def probe_failure_status(
+        self, url: str, api_key: str | None, engine_job_id: str
+    ) -> dict[str, Any]:
+        """Probe the result endpoint for a failed job to get ``error_status`` / ``error``.
+
+        When the status response doesn't include ``error_status`` (old engine),
+        the result endpoint may carry an ``error_status`` code even for failures,
+        giving us the 4xx/5xx distinction needed for retry classification.
+
+        Returns a dict with ``error_status`` (int | None) and ``error`` (str | None).
+        Returns empty dict if the endpoint is unreachable.
+        """
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        try:
+            resp = await self._client.get(
+                f"{url}/api/v1/result/{engine_job_id}",
+                headers=headers,
+                timeout=10.0,
+            )
+            return resp.json() if resp.status_code == 200 else {}
+        except Exception as exc:
+            logger.warning("probe_failure_status failed for %s: %s", url, exc)
+            return {}
