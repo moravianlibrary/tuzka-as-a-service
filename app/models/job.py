@@ -1,9 +1,13 @@
 """ORM models for OCR jobs and their per-format results, tracking the full lifecycle."""
 
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -28,6 +32,9 @@ class Job(Base):
     backend_id: Mapped[int | None] = mapped_column(ForeignKey("backends.id"), default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     requeues: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
+    attempts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
+    )
     file_size_bytes: Mapped[int | None] = mapped_column(default=None)
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     # dispatched_at is on the taas clock (submit worker POST); engine_received_at /
@@ -42,7 +49,7 @@ class Job(Base):
     # lazy="raise": every access must be an explicit load (selectinload / a join) — an
     # accidental lazy load is a loud error, not a silent N+1 (and would fail anyway on
     # the async session outside a greenlet context).
-    results: Mapped[list["JobResult"]] = relationship(back_populates="job", lazy="raise")
+    results: Mapped[list[JobResult]] = relationship(back_populates="job", lazy="raise")
 
     __table_args__ = (
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
@@ -60,4 +67,4 @@ class JobResult(Base):
     presigned_url: Mapped[str | None] = mapped_column(default=None)
     presigned_until: Mapped[datetime | None] = mapped_column(default=None)
 
-    job: Mapped["Job"] = relationship(back_populates="results", lazy="raise")
+    job: Mapped[Job] = relationship(back_populates="results", lazy="raise")

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
@@ -89,3 +89,25 @@ def backoff_seconds(attempt: int, rng: random.Random | None = None) -> float:
     r = rng or random.Random()
     delay = min(_BACKOFF_CAP, _BACKOFF_BASE * (2**attempt))
     return r.uniform(0, delay)
+
+
+def attempt_entry(
+    stage: Stage,
+    backend_id: int | None,
+    http_status: int | None,
+    error: str,
+    retry: bool,
+    at: str,
+) -> dict[str, Any]:
+    """Return a JSON-safe dict shaped per D8.
+
+    ``at`` is an ISO-8601 timestamp string from ``utcnow().isoformat()``.
+    """
+    return {
+        "at": at,
+        "backend_id": backend_id,
+        "error": error,
+        "http_status": http_status,
+        "retry": retry,
+        "stage": stage,
+    }
