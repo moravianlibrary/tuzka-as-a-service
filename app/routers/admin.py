@@ -266,6 +266,7 @@ def _backend_response(b: Backend) -> BackendResponse:
         max_inflight=b.max_inflight,
         priority=b.priority,
         device=b.device,
+        adapter=b.adapter,
         managed=b.managed,
         created_at=b.created_at,
     )
@@ -314,6 +315,7 @@ async def create_backend(
         max_inflight=body.max_inflight,
         priority=body.priority,
         device=body.device,
+        adapter=body.adapter,
         managed=body.managed,
     )
     db.add(backend)
@@ -357,6 +359,7 @@ async def upsert_backend(
     backend.max_inflight = body.max_inflight
     # priority intentionally not set here — it is admin-managed (see docstring).
     backend.device = body.device
+    backend.adapter = body.adapter
     backend.managed = body.managed
     # Only overwrite the stored key when a new one is supplied (so re-deploys that omit
     # it don't wipe it); an explicit empty string clears it.

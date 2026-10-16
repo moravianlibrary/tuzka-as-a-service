@@ -15,6 +15,24 @@ from app.schemas.user import UserCreate, UserUpdate
 def test_backend_create_accepts_valid():
     b = BackendCreate(url="http://ocr-engine:8000", max_inflight=4)
     assert b.url == "http://ocr-engine:8000"
+    assert b.adapter == "tuzkaocr"  # default
+
+
+def test_backend_create_accepts_explicit_adapter():
+    b = BackendCreate(url="http://x", adapter="tuzkaocr")
+    assert b.adapter == "tuzkaocr"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"url": "http://x", "adapter": "unknown"},
+        {"url": "http://x", "adapter": "tuzkam"},
+    ],
+)
+def test_backend_create_rejects_unknown_adapter(kwargs):
+    with pytest.raises(ValidationError):
+        BackendCreate(**kwargs)
 
 
 @pytest.mark.parametrize(
@@ -38,7 +56,7 @@ def test_backend_update_partial_is_allowed():
 
 
 @pytest.mark.parametrize(
-    "field", ["url", "max_inflight", "enabled", "priority", "device", "managed"]
+    "field", ["url", "max_inflight", "enabled", "priority", "device", "adapter", "managed"]
 )
 def test_backend_update_rejects_explicit_null_on_not_null_columns(field):
     with pytest.raises(ValidationError):

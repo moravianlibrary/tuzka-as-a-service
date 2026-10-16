@@ -19,6 +19,9 @@ class Backend(Base):
     max_inflight: Mapped[int] = mapped_column(default=4)
     priority: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
     device: Mapped[str] = mapped_column(default="cpu", nullable=False, server_default="cpu")
+    adapter: Mapped[str] = mapped_column(
+        default="tuzkaocr", nullable=False, server_default="tuzkaocr"
+    )
     # True for backends owned by the Helm register hook (declarative, upserted on every
     # deploy). The dashboard flags these so operators know manual edits are transient.
     managed: Mapped[bool] = mapped_column(default=False, nullable=False, server_default="false")

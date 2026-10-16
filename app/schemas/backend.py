@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.engines import ADAPTERS
+
 # An engine runs on one of these devices; parsed at the boundary so the interior and
 # admin handlers never re-check the string.
 Device = Literal["cpu", "gpu"]
@@ -16,7 +18,7 @@ INT32_MAX = 2_147_483_647
 # Columns whose model definition is NOT NULL: reject an explicit `null` on update (an unset
 # field is simply absent, so this only fires when the caller literally sends `"field": null`,
 # which would otherwise hit a NotNull IntegrityError -> 500).
-_NON_NULLABLE = ("url", "max_inflight", "enabled", "priority", "device", "managed")
+_NON_NULLABLE = ("url", "max_inflight", "enabled", "priority", "device", "adapter", "managed")
 
 
 def _reject_nul(v: str | None) -> str | None:
@@ -43,9 +45,20 @@ class BackendCreate(BaseModel):
     priority: int = Field(default=0, ge=0, le=INT32_MAX)
     device: Device = "cpu"
     managed: bool = False
+    adapter: str = "tuzkaocr"
 
     _check_url = field_validator("url")(_validate_url)
     _no_nul = field_validator("url", "label", "api_key")(_reject_nul)
+
+    _validate_adapter = field_validator("adapter")(
+        lambda v: (
+            v
+            if v in ADAPTERS
+            else (_ for _ in ()).throw(
+                ValueError(f"unknown adapter: {v!r}; choose from {sorted(ADAPTERS)}")
+            )
+        )
+    )
 
 
 class BackendUpdate(BaseModel):
@@ -56,6 +69,7 @@ class BackendUpdate(BaseModel):
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=INT32_MAX)
     device: Device | None = None
+    adapter: str | None = None
     managed: bool | None = None
 
     _check_url = field_validator("url")(_validate_url)
@@ -80,5 +94,6 @@ class BackendResponse(BaseModel):
     priority: int = 0
     # Reflects the stored value as-is (input is validated as `Device` on create/update).
     device: str = "cpu"
+    adapter: str = "tuzkaocr"
     managed: bool = False
     created_at: datetime
