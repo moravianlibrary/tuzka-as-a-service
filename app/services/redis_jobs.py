@@ -34,6 +34,9 @@ _SUBMIT_WAKEUP_TTL_SECONDS = 60
 _POLL_WAKEUP_KEY = "jobs:poll_wakeup"
 _POLL_WAKEUP_TTL_SECONDS = 60
 
+# Delayed-retry ZSET: job_id scored by ready-at unix time.
+_DELAYED_KEY = "jobs:delayed"
+
 
 async def signal_submit(r: aioredis.Redis) -> None:
     """Wake the submit worker — new pending work or a freed slot. One round-trip."""
@@ -72,6 +75,18 @@ def _pending_key(priority: int) -> str:
     return _PENDING_KEY.format(priority=priority)
 
 
+def parse_avoid(meta: dict[str, str]) -> frozenset[int]:
+    """Parse ``avoid_backends`` from job metadata into a frozenset of backend ids.
+
+    The field is comma-separated numeric ids (deduplicated by the caller).
+    Returns an empty frozenset for missing or empty values.
+    """
+    raw = meta.get("avoid_backends", "")
+    if not raw:
+        return frozenset()
+    return frozenset(int(v) for v in raw.split(",") if v.strip())
+
+
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
     """Add a job to its priority ZSET, register the level, and wake the submit worker.
 
@@ -80,6 +95,64 @@ async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: flo
     await r.zadd(_pending_key(priority), {job_id: score})
     await r.sadd(_PENDING_LEVELS_KEY, str(priority))
     await signal_submit(r)
+
+
+async def schedule_retry(
+    r: aioredis.Redis,
+    job_id: str,
+    original_score: float,
+    delay_s: float,
+    avoid_backend_id: int | None,
+) -> None:
+    """Schedule a job for delayed retry.
+
+    Stores ``queue_score`` on the job hash so ``promote_due_retries`` knows
+    which priority ZSET to put it on.  Appends *avoid_backend_id* to the
+    job's ``avoid_backends`` field (comma-separated, deduplicated).
+    ZADDs to ``jobs:delayed`` with ``now() + delay_s``.  Does **not**
+    signal submit — the delayed-retry timer fires later.
+    """
+    key = f"job:{job_id}"
+    # Store the original score so promote can re-enqueue to the right level.
+    await r.hset(key, "queue_score", str(original_score))
+    # Accumulate avoid_backends (comma-separated, deduplicated).
+    if avoid_backend_id is not None:
+        existing = await r.hget(key, "avoid_backends") or ""
+        existing_str = existing.decode() if isinstance(existing, bytes) else existing
+        parts = existing_str.split(",") if existing_str else []
+        parts = [v for v in parts if v.strip() and int(v.strip()) != avoid_backend_id]
+        parts.append(str(avoid_backend_id))
+        await r.hset(key, "avoid_backends", ",".join(parts))
+    await r.zadd(_DELAYED_KEY, {job_id: time.time() + delay_s})
+
+
+async def promote_due_retries(r: aioredis.Redis, now: float) -> int:
+    """Promote delayed retries that are now due.
+
+    ZRANGEBYSCORE ``jobs:delayed`` with score ``-inf now``. For each id,
+    ZREM (only proceed if removed == 1 for idempotency with two workers),
+    then ``_add_pending`` with the stored ``queue_score``.  Returns the
+    number of jobs promoted.
+    """
+    members = cast("list[bytes | str]", await r.zrangebyscore(_DELAYED_KEY, "-inf", now))
+    if not members:
+        return 0
+
+    count = 0
+    for member in members:
+        job_id = member.decode() if isinstance(member, bytes) else member
+        removed = await r.zrem(_DELAYED_KEY, job_id)
+        if removed != 1:
+            continue  # another worker already promoted it
+
+        meta = await get_job(r, job_id)
+        if meta is None:
+            continue
+        priority = int(meta.get("priority", 0))
+        queue_score = float(meta.get("queue_score", time.time()))
+        await _add_pending(r, priority, job_id, queue_score)
+        count += 1
+    return count
 
 
 async def enqueue_job(
@@ -205,24 +278,38 @@ async def requeue_job(r: aioredis.Redis, job_id: str, original_score: float) -> 
     await _add_pending(r, priority, job_id, original_score)
 
 
-async def release_and_requeue(r: aioredis.Redis, job_id: str, score: float, state_ttl: int) -> None:
+async def release_and_requeue(
+    r: aioredis.Redis,
+    job_id: str,
+    score: float,
+    state_ttl: int,
+    delay_s: float = 0.0,
+    avoid_backend_id: int | None = None,
+) -> None:
     """Release an in-flight job's slot and put it back on the pending queue.
 
     For jobs whose engine pod became unreachable: drop it from the inflight set,
     release the (idempotent) backend counter, reset the hash to queued, and re-add to
     the appropriate priority queue so the submit worker dispatches it to a healthy backend.
+
+    If ``delay_s > 0`` the job is scheduled for delayed retry (with optional
+    ``avoid_backend_id``) instead of being re-added immediately.
     """
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
     backend_id = meta.get("backend_id") if meta else None
-    priority = int(meta.get("priority", 0)) if meta else 0
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
     await r.hset(key, mapping={"status": "queued"})
     await r.hdel(key, "engine_job_id", "backend_url", "backend_id")
     await r.expire(key, state_ttl)
-    await _add_pending(r, priority, job_id, score)
+
+    if delay_s > 0:
+        await schedule_retry(r, job_id, score, delay_s, avoid_backend_id)
+    else:
+        priority = int(meta.get("priority", 0)) if meta else 0
+        await _add_pending(r, priority, job_id, score)
 
 
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:
