@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -37,7 +38,6 @@ from app.schemas.dashboard import (
     UsageResponse,
 )
 from app.schemas.job import render_external_url
-from app.services.engine_client import EngineClient
 from app.services.redis_jobs import get_backend_inflight
 
 logger = logging.getLogger(__name__)
@@ -324,35 +324,37 @@ async def get_dashboard_backends(
     for backend_id, domain_name in domain_rows.all():
         domains_by_backend.setdefault(backend_id, []).append(domain_name)
 
-    engine_client = EngineClient()
-
-    async def probe(b: Backend) -> DashboardBackend:
-        if b.enabled:
-            inflight, healthy = await asyncio.gather(
-                get_backend_inflight(r, b.id),
-                engine_client.healthcheck(b.url),
-            )
-        else:
-            inflight, healthy = await get_backend_inflight(r, b.id), None
-        return DashboardBackend(
-            id=b.id,
-            url=b.url,
-            label=b.label,
-            enabled=b.enabled,
-            max_inflight=b.max_inflight,
-            inflight_now=inflight,
-            priority=b.priority,
-            device=b.device,
-            managed=b.managed,
-            healthy=healthy,
-            domains=domains_by_backend.get(b.id, []),
-            can_delete=b.id not in backends_with_jobs,
-        )
+    engine = httpx.AsyncClient(timeout=5.0)
 
     try:
+
+        async def probe(b: Backend) -> DashboardBackend:
+            resp = await engine.get(f"{b.url}/healthz", timeout=5.0)
+            healthy = resp.status_code == 200
+
+            if b.enabled:
+                inflight = await get_backend_inflight(r, b.id)
+            else:
+                inflight = None
+
+            return DashboardBackend(
+                id=b.id,
+                url=b.url,
+                label=b.label,
+                enabled=b.enabled,
+                max_inflight=b.max_inflight,
+                inflight_now=inflight or 0,
+                priority=b.priority,
+                device=b.device,
+                managed=b.managed,
+                healthy=healthy,
+                domains=domains_by_backend.get(b.id, []),
+                can_delete=b.id not in backends_with_jobs,
+            )
+
         return await asyncio.gather(*(probe(b) for b in backends))
     finally:
-        await engine_client.close()
+        await engine.aclose()
 
 
 # --- Analytics ---

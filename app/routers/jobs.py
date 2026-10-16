@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
+from app.engines.outputs import ext_for
 from app.exceptions import BadRequest, Conflict, NotFound, NotReady, Unprocessable
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
@@ -245,8 +246,7 @@ async def get_job_result(
     for jr in job_results:
         # Refresh presigned URL if expired (stored as naive UTC)
         if not jr.presigned_url or (jr.presigned_until and jr.presigned_until < now):
-            ext_map = {"alto": "xml", "txt": "txt"}
-            file_ext = ext_map.get(jr.fmt, jr.fmt)
+            file_ext = ext_for(jr.fmt)
             obj_path = f"{username}/{job.id}.{file_ext}.zst"
             jr.presigned_url = await storage.presign_get(
                 results_client,
@@ -305,8 +305,7 @@ async def download_job_result(
     if not res.scalar_one_or_none():
         raise NotFound(f"No {fmt} result available")
 
-    ext_map = {"alto": "xml", "txt": "txt"}
-    obj_path = f"{username}/{job.id}.{ext_map.get(fmt, fmt)}.zst"
+    obj_path = f"{username}/{job.id}.{ext_for(fmt)}.zst"
     results_client = request.app.state.results_client
     data = await storage.get_object(results_client, settings.minio_results_bucket, obj_path)
     return Response(content=data, media_type="application/octet-stream")

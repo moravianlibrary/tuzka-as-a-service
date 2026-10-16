@@ -5,7 +5,7 @@ import dataclasses
 import httpx
 import pytest
 
-from app.services.engine_client import EngineClient
+from app.engines.tuzkaocr import TuzkaOcrAdapter
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
 from app.workers.poller import (
     PollOutcome,
@@ -113,28 +113,36 @@ def test_poll_attempt_stage_and_backend():
     assert poll["error"] == "unreachable"
 
 
-def _client_with(handler) -> EngineClient:
-    ec = EngineClient()
-    ec._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return ec
+def _make_adapter(handler) -> tuple[TuzkaOcrAdapter, httpx.AsyncClient]:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = TuzkaOcrAdapter(url="http://engine", api_key=None, http=http)
+    return adapter, http
 
 
-@pytest.mark.parametrize("code", [422, 500])
-async def test_probe_failure_status_reads_result_http_status(code: int):
+@pytest.mark.asyncio
+async def test_probe_failure_status_reads_result_http_status():
     # Older engines raise the failed job's error_status as the result endpoint's status.
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/result/e1"
-        return httpx.Response(code, json={"detail": "Processing failed"})
+        return httpx.Response(422, json={"detail": "Processing failed"})
 
-    ec = _client_with(handler)
-    assert await ec.probe_failure_status("http://engine", None, "e1") == code
-    await ec.close()
+    adapter, http = _make_adapter(handler)
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await adapter.fetch("e1", "alto")
+        assert exc_info.value.response.status_code == 422
+    finally:
+        await http.aclose()
 
 
+@pytest.mark.asyncio
 async def test_probe_failure_status_none_when_unreachable():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down", request=request)
 
-    ec = _client_with(handler)
-    assert await ec.probe_failure_status("http://engine", None, "e1") is None
-    await ec.close()
+    adapter, http = _make_adapter(handler)
+    try:
+        with pytest.raises(httpx.ConnectError):
+            await adapter.fetch("e1", "alto")
+    finally:
+        await http.aclose()

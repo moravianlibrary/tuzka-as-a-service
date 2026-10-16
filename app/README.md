@@ -14,7 +14,7 @@ For the project overview and quickstart, see the [root README](../README.md).
 | `models/` | SQLAlchemy models — `user`, `job` (+ `JobResult`), `backend`, `storage_config`, `db` |
 | `schemas/` | Pydantic request/response schemas |
 | `routers/` | HTTP/WebSocket endpoints — `jobs`, `admin`, `dashboard`, `ws` |
-| `services/` | `auth`, `storage` (MinIO), `redis_jobs` (queue/state), `engine_client` (TuzkaOCR HTTP) |
+| `services/` | `auth`, `storage` (MinIO), `redis_jobs` (queue/state) |
 | `workers/` | standalone processes — `submit`, `poller`, `cleanup` |
 | `static/` | dashboard UI (`index.html`, `dashboard.js`, `style.css`) |
 
