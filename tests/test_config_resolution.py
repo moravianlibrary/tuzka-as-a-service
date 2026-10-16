@@ -88,6 +88,6 @@ async def test_overrides_from_config_rows():
 @pytest.mark.asyncio
 async def test_max_requeues_default_and_override():
     cfg._cache.clear()
-    assert await cfg.get_max_requeues(_FakeDB({})) == 3
+    assert await cfg.get_max_requeues(_FakeDB({})) == 5
     cfg._cache.clear()
     assert await cfg.get_max_requeues(_FakeDB({"jobs.max_requeues": 5})) == 5

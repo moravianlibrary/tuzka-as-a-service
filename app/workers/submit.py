@@ -19,18 +19,27 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.engine_client import EngineClient, EngineFullError
+from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
     get_backend_inflight,
     get_job,
     parse_avoid,
+    promote_due_retries,
     publish_event,
     requeue_job,
+    schedule_retry,
     set_failed,
     set_running,
     wait_for_submit_signal,
 )
-from app.services.retry_policy import describe_exception, is_retryable_dispatch_error
+from app.services.retry_policy import (
+    attempt_entry,
+    backoff_seconds,
+    describe_exception,
+    http_status_of,
+    is_retryable_dispatch_error,
+)
 from app.services.storage import get_incoming_client, get_object
 
 logger = logging.getLogger("submit-worker")
@@ -252,11 +261,18 @@ async def main() -> None:
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
+            attempt = attempt_entry(
+                "dispatch", backend.id, None, msg, retry=False, at=utcnow().isoformat()
+            )
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
-                    update(Job).where(Job.id == job_id).values(status="failed", error=msg)
+                    update(Job)
+                    .where(Job.id == job_id)
+                    .values(
+                        status="failed", error=msg, finished_at=utcnow(), **append_attempt(attempt)
+                    )
                 )
                 await db.commit()
             await publish_event(
@@ -302,6 +318,7 @@ async def main() -> None:
         except Exception as e:
             msg = describe_exception(e)
             transient = is_retryable_dispatch_error(e)
+            http_st = http_status_of(e)
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -309,24 +326,35 @@ async def main() -> None:
 
             # Transient failure (backend down/overloaded) with budget left: sideline this
             # backend for the health-cache window so the retry lands elsewhere, bump the
-            # requeue counter the budget reads (Redis + DB), and put the job back to pending.
+            # requeue counter the budget reads (Redis + DB), and schedule a delayed retry.
             if transient and requeues < max_requeues:
+                delay = backoff_seconds(requeues)
                 logger.warning(
-                    "Transient dispatch error for job %s on %s (attempt %d/%d), requeuing: %s",
+                    "Transient dispatch error for job %s on %s (attempt %d/%d), "
+                    "requeue in %.1fs: %s",
                     job_id,
                     backend.url,
                     requeues + 1,
                     max_requeues,
+                    delay,
                     msg,
                 )
                 health_cache[backend.id] = (False, time.time())
-                await requeue_job(r, job_id, original_score)
                 await r.hincrby(f"job:{job_id}", "requeues", 1)
+                attempt = attempt_entry(
+                    "dispatch", backend.id, http_st, msg, retry=True, at=utcnow().isoformat()
+                )
                 async with session_factory() as db:
                     await db.execute(
-                        update(Job).where(Job.id == job_id).values(requeues=Job.requeues + 1)
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            requeues=Job.requeues + 1,
+                            **append_attempt(attempt),
+                        )
                     )
                     await db.commit()
+                await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -340,6 +368,9 @@ async def main() -> None:
                 msg = f"{msg} (exceeded {max_requeues} requeue attempts)"
             else:
                 logger.exception("Failed to dispatch job %s", job_id)
+            attempt = attempt_entry(
+                "dispatch", backend.id, http_st, msg, retry=False, at=utcnow().isoformat()
+            )
             async with session_factory() as db:
                 await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
@@ -349,6 +380,7 @@ async def main() -> None:
                         status="failed",
                         error=msg,
                         finished_at=utcnow(),
+                        **append_attempt(attempt),
                     )
                 )
                 await db.commit()
@@ -363,6 +395,11 @@ async def main() -> None:
         while True:
             try:
                 await refresh_backends()
+
+                # Promote delayed retries that are now due.
+                promoted = await promote_due_retries(r, time.time())
+                if promoted:
+                    logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
 
                 # This tick's eligible backends: healthy, with free capacity + their
                 # served domains (each looked up once).
