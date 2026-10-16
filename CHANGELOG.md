@@ -40,9 +40,23 @@ All notable changes to this project are documented here. The format is based on
   `OCR_DRAIN_MINUTES` (default 10) later, the engine stops and releases the GPU. Queued
   jobs just wait for the next window; only pages unfinished at the drain deadline are
   requeued. See `deploy/box/README.md`.
+- Jobs now track a list of failed attempts on the `jobs.attempts` column (JSONB). Each
+  entry records the stage (`dispatch`, `poll`, `engine`, `harvest`), backend, HTTP status,
+  error message, retry decision, and timestamp — providing a full audit trail of every
+  failure and retry for a job.
 
 ### Changed
 
+- The retry policy is now uniform across dispatch, poll, and engine-reported failures:
+  transport errors, HTTP 5xx, 408, and 429 are retried at all three stages; on poll,
+  HTTP 404 (engine lost the job) is also retried. Engine-reported failures with
+  `error_status` ≥ 500 are retried; 4xx `error_status` (e.g. 422 bad input) fails
+  immediately. The default retry budget (`jobs.max_requeues`) increased from 3 to 5.
+  Each retry prefers a different backend; backoff uses full jitter (`base 1 s, cap
+  30 s`). Older engines that report `error_status` only on result fetch (not on status)
+  are handled by a one-shot probe: when an engine reports `failed` without `error_status`,
+  the poller fetches `/api/v1/result/{id}` once to determine the HTTP status and classify
+  the failure accordingly.
 - MinIO images: MinIO stopped publishing free images, and `minio/minio` and `minio/mc`
   can no longer be pulled from Docker Hub or quay.io. Compose and the Helm chart now use
   the frozen `bitnamilegacy/minio` and `bitnamilegacy/minio-client` builds (pinned, July
