@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select, text, update
@@ -23,6 +23,7 @@ from app.services.redis_jobs import (
     dequeue_jobs,
     get_backend_inflight,
     get_job,
+    parse_avoid,
     publish_event,
     requeue_job,
     set_failed,
@@ -35,6 +36,16 @@ from app.services.storage import get_incoming_client, get_object
 logger = logging.getLogger("submit-worker")
 
 
+@dataclass(frozen=True)
+class PendingJob:
+    """A job waiting to be dispatched, carrying its avoid-list from prior failures."""
+
+    job_id: str
+    score: float
+    domain: str | None
+    avoid: frozenset[int] = field(default_factory=frozenset)
+
+
 @dataclass
 class BackendSlot:
     """A healthy backend with remaining free capacity and the domains it serves."""
@@ -45,37 +56,50 @@ class BackendSlot:
 
 
 def allocate_jobs(
-    slots: list[BackendSlot], jobs: list[tuple[str, float, str | None]]
-) -> tuple[list[tuple[str, float, BackendSlot]], list[tuple[str, float]]]:
+    slots: list[BackendSlot], jobs: list[PendingJob]
+) -> tuple[list[tuple[PendingJob, BackendSlot]], list[PendingJob]]:
     """Deal one priority tier's jobs round-robin across its backends.
 
     Spreads jobs evenly rather than filling the first backend to capacity, so results
     come back with more parallelism across comparable backends. Respects each slot's
     free capacity and served domains: a job with a domain only lands on a backend that
-    serves it. Pure apart from decrementing the passed slots' ``free`` counters.
+    serves it. Per D7, jobs carrying ``avoid`` ids are first assigned to non-avoided
+    slots; only if no non-avoided slot can serve the job's tier does it fall back to
+    an avoided one (second pass).
 
     Returns ``(assignments, leftovers)``; leftovers are jobs no slot in this tier can
     take (e.g. their domain is served only by a lower tier) and should be re-queued.
     """
-    assignments: list[tuple[str, float, BackendSlot]] = []
-    leftovers: list[tuple[str, float]] = []
+    assignments: list[tuple[PendingJob, BackendSlot]] = []
+    leftovers: list[PendingJob] = []
     if not slots:
-        return assignments, [(job_id, score) for job_id, score, _ in jobs]
+        return assignments, list(jobs)
 
     count = len(slots)
     start = 0
-    for job_id, score, domain in jobs:
+
+    for job in jobs:
         placed = False
-        for step in range(count):
-            slot = slots[(start + step) % count]
-            if slot.free > 0 and (domain is None or domain in slot.domains):
-                slot.free -= 1
-                assignments.append((job_id, score, slot))
-                start = (start + step + 1) % count  # next job starts after this backend
-                placed = True
+        for pass_allowed in (False, True):  # pass 0: non-avoided only; pass 1: any
+            if placed:
                 break
+            for step in range(count):
+                if placed:
+                    break
+                slot = slots[(start + step) % count]
+                if slot.free <= 0:
+                    continue
+                job_domain = job.domain
+                if (job_domain is None or job_domain in slot.domains) and (
+                    pass_allowed or slot.backend.id not in job.avoid
+                ):
+                    slot.free -= 1
+                    assignments.append((job, slot))
+                    start = (start + step + 1) % count  # next job starts after this backend
+                    placed = True
+                    break
         if not placed:
-            leftovers.append((job_id, score))
+            leftovers.append(job)
     return assignments, leftovers
 
 
@@ -359,16 +383,18 @@ async def main() -> None:
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
-                    jobs_with_domain: list[tuple[str, float, str | None]] = []
+                    jobs_with_domain: list[PendingJob] = []
                     for job_id, score in entries:
                         meta = await get_job(r, job_id)
-                        jobs_with_domain.append(
-                            (job_id, score, (meta.get("domain") or None) if meta else None)
-                        )
+                        domain = meta.get("domain") if meta else None
+                        avoid = parse_avoid(meta) if meta else frozenset()
+                        jobs_with_domain.append(PendingJob(job_id, score, domain or None, avoid))
 
                     assignments, leftovers = allocate_jobs(tier, jobs_with_domain)
-                    for job_id, score in leftovers:
-                        await requeue_job(r, job_id, score)  # a lower tier may serve its domain
+                    for job in leftovers:
+                        await requeue_job(
+                            r, job.job_id, job.score
+                        )  # a lower tier may serve its domain
 
                     if not assignments:
                         continue
@@ -379,8 +405,8 @@ async def main() -> None:
                     )
                     results = await asyncio.gather(
                         *[
-                            dispatch(job_id, score, slot.backend, slot.domains)
-                            for job_id, score, slot in assignments
+                            dispatch(job.job_id, job.score, slot.backend, slot.domains)
+                            for job, slot in assignments
                         ],
                         return_exceptions=True,
                     )
