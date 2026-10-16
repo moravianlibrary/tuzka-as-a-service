@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clock import utcnow
 from app.config import Settings
 from app.deps import get_redis, get_settings, require_master
+from app.engines import make_adapter
 from app.exceptions import BadRequest
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
@@ -324,37 +325,36 @@ async def get_dashboard_backends(
     for backend_id, domain_name in domain_rows.all():
         domains_by_backend.setdefault(backend_id, []).append(domain_name)
 
-    engine = httpx.AsyncClient(timeout=5.0)
+    http = httpx.AsyncClient(timeout=5.0)
+
+    async def probe(b: Backend) -> DashboardBackend:
+        if b.enabled:
+            # healthz needs no key, so the adapter is built without decrypting one.
+            inflight, healthy = await asyncio.gather(
+                get_backend_inflight(r, b.id),
+                make_adapter(b.adapter, b.url, None, http).healthy(),
+            )
+        else:
+            inflight, healthy = await get_backend_inflight(r, b.id), None
+        return DashboardBackend(
+            id=b.id,
+            url=b.url,
+            label=b.label,
+            enabled=b.enabled,
+            max_inflight=b.max_inflight,
+            inflight_now=inflight,
+            priority=b.priority,
+            device=b.device,
+            managed=b.managed,
+            healthy=healthy,
+            domains=domains_by_backend.get(b.id, []),
+            can_delete=b.id not in backends_with_jobs,
+        )
 
     try:
-
-        async def probe(b: Backend) -> DashboardBackend:
-            resp = await engine.get(f"{b.url}/healthz", timeout=5.0)
-            healthy = resp.status_code == 200
-
-            if b.enabled:
-                inflight = await get_backend_inflight(r, b.id)
-            else:
-                inflight = None
-
-            return DashboardBackend(
-                id=b.id,
-                url=b.url,
-                label=b.label,
-                enabled=b.enabled,
-                max_inflight=b.max_inflight,
-                inflight_now=inflight or 0,
-                priority=b.priority,
-                device=b.device,
-                managed=b.managed,
-                healthy=healthy,
-                domains=domains_by_backend.get(b.id, []),
-                can_delete=b.id not in backends_with_jobs,
-            )
-
         return await asyncio.gather(*(probe(b) for b in backends))
     finally:
-        await engine.aclose()
+        await http.aclose()
 
 
 # --- Analytics ---

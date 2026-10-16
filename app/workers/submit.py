@@ -121,8 +121,8 @@ async def main() -> None:
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)
     http = httpx.AsyncClient(timeout=60.0)
-    # Per-backend adapter cache keyed by backend id.
-    adapters: dict[int, EngineAdapter] = {}
+    # backend id -> (what it was built from, adapter); rebuilt when any of that changes.
+    adapters: dict[int, tuple[tuple[str, str, str | None], EngineAdapter]] = {}
 
     backends: list[Backend] = []
     backends_refreshed_at = 0.0
@@ -134,20 +134,19 @@ async def main() -> None:
     domains_synced_at: dict[int, float] = {}
     domain_sync_inflight: set[int] = set()
 
-    def adapter_for(backend: Backend) -> "EngineAdapter":
-        """Build or return a cached adapter for the given backend.
-
-        Rebuilds when the backend's url or adapter id changes.
-        """
+    def adapter_for(backend: Backend) -> EngineAdapter:
+        """The backend's adapter, built once and rebuilt when its adapter id, URL or key
+        changes (refresh_backends reloads the rows, e.g. after a Helm re-register)."""
+        source = (backend.adapter, backend.url, backend.api_key_enc)
         cached = adapters.get(backend.id)
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] == source:
+            return cached[1]
         api_key = None
         if backend.api_key_enc:
             api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-        a = make_adapter(backend.adapter, backend.url, api_key, http)
-        adapters[backend.id] = a
-        return a
+        adapter = make_adapter(backend.adapter, backend.url, api_key, http)
+        adapters[backend.id] = (source, adapter)
+        return adapter
 
     async def refresh_backends() -> None:
         nonlocal backends, backends_refreshed_at
@@ -301,7 +300,7 @@ async def main() -> None:
                 image_bytes, filename, domain, fmt_to_outputs(fmt), NoOptions()
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
-            engine_version = adapter.version()
+            engine_version = await adapter.version()
 
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)

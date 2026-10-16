@@ -237,8 +237,8 @@ class TestDescribe:
             # Second describe should use cached version
             await adapter.describe()
             assert calls["n"] == 1
-            # version() is sync and returns cached value
-            assert adapter.version() == "1.7.0"
+            assert await adapter.version() == "1.7.0"
+            assert calls["n"] == 1
         finally:
             await http.aclose()
 

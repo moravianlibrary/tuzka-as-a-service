@@ -52,8 +52,7 @@ class TuzkaOcrAdapter:
 
     async def describe(self) -> EngineInfo:
         """Return the engine's advertised domains and version."""
-        # Fetch version from OpenAPI (caches internally)
-        await self._fetch_version()
+        version = await self.version()
 
         try:
             headers = {}
@@ -70,23 +69,25 @@ class TuzkaOcrAdapter:
             logger.warning("describe failed for %s: %s", self._url, exc)
             domains = {}
 
-        return EngineInfo(domains=domains, version=self._version_cache)
+        return EngineInfo(domains=domains, version=version)
 
-    async def _fetch_version(self) -> None:
-        """Fetch engine version from OpenAPI, cached per instance."""
-        if (
-            self._version_cache is not None
-            and time.time() - self._version_cached_at < _VERSION_CACHE_TTL_SECONDS
-        ):
-            return
+    async def version(self) -> str | None:
+        """The engine's reported version (``info.version`` from its OpenAPI schema),
+        cached for a short TTL so dispatch doesn't fetch it per job. Best-effort: a
+        failed lookup is cached as ``None`` too, so dispatch never fails or stalls on it.
+        """
+        if time.time() - self._version_cached_at < _VERSION_CACHE_TTL_SECONDS:
+            return self._version_cache
         version: str | None = None
         try:
             resp = await self._http.get(f"{self._url}/openapi.json", timeout=5.0)
+            resp.raise_for_status()
             version = resp.json().get("info", {}).get("version")
         except Exception as exc:
             logger.warning("version lookup failed for %s: %s", self._url, exc)
         self._version_cache = version
         self._version_cached_at = time.time()
+        return version
 
     async def submit(
         self,
@@ -161,7 +162,3 @@ class TuzkaOcrAdapter:
 
     def options_schema(self, domain: str) -> type[BaseModel]:
         return NoOptions
-
-    def version(self) -> str | None:
-        """Return the cached engine version, or None if not yet fetched."""
-        return self._version_cache

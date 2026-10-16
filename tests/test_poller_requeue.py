@@ -9,6 +9,7 @@ from app.engines.tuzkaocr import TuzkaOcrAdapter
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
 from app.workers.poller import (
     PollOutcome,
+    _probe_failure_status,
     classify_poll_result,
     poll_attempt,
     poll_failure_message,
@@ -120,17 +121,16 @@ def _make_adapter(handler) -> tuple[TuzkaOcrAdapter, httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_probe_failure_status_reads_result_http_status():
+@pytest.mark.parametrize("code", [422, 500])
+async def test_probe_failure_status_reads_result_http_status(code: int):
     # Older engines raise the failed job's error_status as the result endpoint's status.
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/result/e1"
-        return httpx.Response(422, json={"detail": "Processing failed"})
+        return httpx.Response(code, json={"detail": "Processing failed"})
 
     adapter, http = _make_adapter(handler)
     try:
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            await adapter.fetch("e1", "alto")
-        assert exc_info.value.response.status_code == 422
+        assert await _probe_failure_status(adapter, "e1") == code
     finally:
         await http.aclose()
 
@@ -142,7 +142,6 @@ async def test_probe_failure_status_none_when_unreachable():
 
     adapter, http = _make_adapter(handler)
     try:
-        with pytest.raises(httpx.ConnectError):
-            await adapter.fetch("e1", "alto")
+        assert await _probe_failure_status(adapter, "e1") is None
     finally:
         await http.aclose()

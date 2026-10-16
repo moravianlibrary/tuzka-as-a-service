@@ -178,49 +178,34 @@ async def main() -> None:
     results_public_client = get_results_public_client(settings)
     cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
 
-    # Per-backend adapter cache keyed by backend id.
-    adapters: dict[int, EngineAdapter] = {}
-    # Cached keys for backends we've seen (avoids DB hit on every poll).
-    backend_keys: dict[int, str | None] = {}
+    # backend id -> (adapter id, decrypted key), read from the DB once per backend.
+    backend_info: dict[int, tuple[str, str | None]] = {}
+    # (backend id, url) -> adapter. The URL comes from the job hash, i.e. where the job
+    # was actually dispatched, so a backend re-registered at a new URL gets a new adapter.
+    adapters: dict[tuple[int | None, str], EngineAdapter] = {}
 
-    async def _get_adapter_key(backend_id: int) -> str | None:
-        """Fetch and cache the backend's decrypted API key."""
-        if backend_id not in backend_keys:
+    async def adapter_for(meta: dict[str, str]) -> EngineAdapter:
+        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
+        url = meta["backend_url"]
+        if backend_id is not None and backend_id not in backend_info:
             async with session_factory() as db:
                 backend = await db.get(Backend, backend_id)
-            key = None
-            if backend and backend.api_key_enc:
-                key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-            backend_keys[backend_id] = key
-        return backend_keys[backend_id]
+            adapter_id, key = "tuzkaocr", None
+            if backend:
+                adapter_id = backend.adapter
+                if backend.api_key_enc:
+                    key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
+            backend_info[backend_id] = (adapter_id, key)
+        adapter_id, key = backend_info[backend_id] if backend_id is not None else ("tuzkaocr", None)
+        cache_key = (backend_id, url)
+        if cache_key not in adapters:
+            adapters[cache_key] = make_adapter(adapter_id, url, key, http)
+        return adapters[cache_key]
 
-    def _get_adapter(backend_id: int, backend_url: str) -> EngineAdapter:
-        """Return a cached adapter for the backend, or build one."""
-        cached = adapters.get(backend_id)
-        if cached is not None:
-            return cached
-        api_key = None
-        key = backend_keys.get(backend_id)
-        if key:
-            api_key = key
-        a = make_adapter("tuzkaocr", backend_url, api_key, http)
-        adapters[backend_id] = a
-        return a
-
-    async def check_one(
-        job_id: str,
-        meta: dict[str, str],
-    ) -> PollOutcome:
-        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
-        backend_url = meta.get("backend_url", "")
-        engine_job_id = meta["engine_job_id"]
-
-        # Warm the key cache if we know the backend.
-        if backend_id is not None:
-            await _get_adapter_key(backend_id)
-        adapter = _get_adapter(backend_id or 0, backend_url)
-
+    async def check_one(job_id: str, meta: dict[str, str]) -> PollOutcome:
         try:
+            adapter = await adapter_for(meta)
+            engine_job_id = meta["engine_job_id"]
             status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
@@ -264,10 +249,7 @@ async def main() -> None:
         engine_job_id = meta["engine_job_id"]
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
-        if backend_id is not None:
-            await _get_adapter_key(backend_id)
-        adapter = _get_adapter(backend_id or 0, meta.get("backend_url", ""))
-
+        adapter = await adapter_for(meta)
         outputs = fmt_to_outputs(fmt)
         try:
             results_to_store: list[tuple[str, str, bytes]] = []
