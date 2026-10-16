@@ -16,13 +16,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
+from app.engines import make_adapter
+from app.engines.base import EngineAdapter
+from app.engines.outputs import ext_for, fmt_to_outputs
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
 from app.services import config as config_service
 from app.services.analytics import parse_alto, write_analytics_row
 from app.services.auth import decrypt_backend_key
-from app.services.engine_client import EngineClient
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
@@ -58,7 +60,7 @@ def is_transient_harvest_error(exc: Exception) -> bool:
     The engine has already produced the OCR output by the time we harvest, so a dropped
     DB connection or a transient storage/transport error must NOT permanently fail the
     job: we leave it inflight and let the next poll re-harvest it (the reaper is the
-    backstop if it stays stuck). A pooled connection closed under us surfaces as a
+    backstop if it truly stays stuck). A pooled connection closed under us surfaces as a
     DBAPIError with ``connection_invalidated`` set (e.g. asyncpg's
     ConnectionDoesNotExistError). Pure (no I/O) so it is unit-testable.
     """
@@ -145,6 +147,23 @@ def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
     return min(cap, max(0.0, min(deadlines) - now))
 
 
+async def _probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> int | None:
+    """Probe a failed job's error status by fetching the result endpoint.
+
+    Engines that predate ``error_status`` in the status response still raise the
+    job's error status as the result endpoint's HTTP status (422 for bad input, 500
+    for a crash), which gives the 4xx/5xx split retry classification needs. Returns
+    ``None`` when that tells us nothing (non-error answer, or engine unreachable).
+    """
+    try:
+        await adapter.fetch(engine_job_id, "alto")
+    except httpx.HTTPStatusError as exc:
+        return exc.response.status_code
+    except Exception as exc:
+        logger.warning("probe_failure_status failed for %s: %s", engine_job_id, exc)
+    return None
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     # httpx emits one INFO line per request; at poll volume it floods the log and
@@ -154,14 +173,18 @@ async def main() -> None:
     db_engine = make_engine(settings)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
-    engine_client = EngineClient()
+    http = httpx.AsyncClient(timeout=60.0)
     results_client = get_results_client(settings)
     results_public_client = get_results_public_client(settings)
     cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
 
+    # Per-backend adapter cache keyed by backend id.
+    adapters: dict[int, EngineAdapter] = {}
+    # Cached keys for backends we've seen (avoids DB hit on every poll).
     backend_keys: dict[int, str | None] = {}
 
-    async def get_backend_api_key(backend_id: int) -> str | None:
+    async def _get_adapter_key(backend_id: int) -> str | None:
+        """Fetch and cache the backend's decrypted API key."""
         if backend_id not in backend_keys:
             async with session_factory() as db:
                 backend = await db.get(Backend, backend_id)
@@ -171,21 +194,34 @@ async def main() -> None:
             backend_keys[backend_id] = key
         return backend_keys[backend_id]
 
+    def _get_adapter(backend_id: int, backend_url: str) -> EngineAdapter:
+        """Return a cached adapter for the backend, or build one."""
+        cached = adapters.get(backend_id)
+        if cached is not None:
+            return cached
+        api_key = None
+        key = backend_keys.get(backend_id)
+        if key:
+            api_key = key
+        a = make_adapter("tuzkaocr", backend_url, api_key, http)
+        adapters[backend_id] = a
+        return a
+
     async def check_one(
         job_id: str,
+        meta: dict[str, str],
     ) -> PollOutcome:
-        meta = await get_job(r, job_id)
-        if not meta:
-            return PollOutcome(job_id, "unknown", {}, {}, False, None, None)
+        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
+        backend_url = meta.get("backend_url", "")
+        engine_job_id = meta["engine_job_id"]
 
-        api_key = None
-        if meta.get("backend_id"):
-            api_key = await get_backend_api_key(int(meta["backend_id"]))
+        # Warm the key cache if we know the backend.
+        if backend_id is not None:
+            await _get_adapter_key(backend_id)
+        adapter = _get_adapter(backend_id or 0, backend_url)
 
         try:
-            resp = await engine_client.check_status(
-                meta["backend_url"], api_key, meta["engine_job_id"]
-            )
+            status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))
@@ -201,24 +237,23 @@ async def main() -> None:
                 describe_exception(e),
             )
 
-        status = resp.get("status", "unknown")
-        if status not in ("failed", "error"):
-            return PollOutcome(job_id, status, meta, resp, False, None, None)
-        # Engine-reported failure: its error_status decides retry vs fail. Engines that
-        # predate the field still expose it as the result endpoint's HTTP status (D3).
-        error_status = resp.get("error_status")
-        if error_status is None:
-            error_status = await engine_client.probe_failure_status(
-                meta["backend_url"], api_key, meta["engine_job_id"]
+        if status_resp.state not in ("failed", "error"):
+            return PollOutcome(
+                job_id, status_resp.state, meta, status_resp.metrics, False, None, None
             )
+        # Engine-reported failure: error_status decides retry vs fail. Engines that
+        # predate the field still expose it as the result endpoint's HTTP status (D3).
+        error_status = status_resp.error_status
+        if error_status is None:
+            error_status = await _probe_failure_status(adapter, engine_job_id)
         return PollOutcome(
             job_id,
-            status,
+            status_resp.state,
             meta,
-            resp,
+            status_resp.metrics,
             is_retryable_engine_failure(error_status),
             error_status,
-            resp.get("error"),
+            status_resp.error,
             stage="engine",
         )
 
@@ -226,47 +261,31 @@ async def main() -> None:
         username = meta["username"]
         external_id = meta["external_id"]
         fmt = meta.get("fmt", "multi")
-        backend_url = meta["backend_url"]
         engine_job_id = meta["engine_job_id"]
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
-        api_key = None
-        if backend_id:
-            api_key = await get_backend_api_key(backend_id)
+        if backend_id is not None:
+            await _get_adapter_key(backend_id)
+        adapter = _get_adapter(backend_id or 0, meta.get("backend_url", ""))
 
+        outputs = fmt_to_outputs(fmt)
         try:
-            results_to_store = []
+            results_to_store: list[tuple[str, str, bytes]] = []
             alto_bytes_for_analytics: bytes | None = None
             txt_bytes_for_analytics: bytes | None = None
-            if fmt == "multi":
-                alto_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id, which="alto"
-                )
-                txt_bytes = await engine_client.get_result(
-                    backend_url, api_key, engine_job_id, which="txt"
-                )
-                results_to_store = [
-                    ("alto", f"{username}/{job_id}.xml.zst", alto_bytes),
-                    ("txt", f"{username}/{job_id}.txt.zst", txt_bytes),
-                ]
-                alto_bytes_for_analytics = alto_bytes
-                txt_bytes_for_analytics = txt_bytes
-            elif fmt == "alto":
-                alto_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
-                results_to_store = [
-                    ("alto", f"{username}/{job_id}.xml.zst", alto_bytes),
-                ]
-                alto_bytes_for_analytics = alto_bytes
-            else:
-                txt_bytes = await engine_client.get_result(backend_url, api_key, engine_job_id)
-                results_to_store = [
-                    ("txt", f"{username}/{job_id}.txt.zst", txt_bytes),
-                ]
-                txt_bytes_for_analytics = txt_bytes
+
+            for output in sorted(outputs):
+                res = await adapter.fetch(engine_job_id, output)
+                obj_key = f"{username}/{job_id}.{ext_for(output)}.zst"
+                results_to_store.append((output, obj_key, res.content))
+                if output == "alto":
+                    alto_bytes_for_analytics = res.content
+                elif output == "txt":
+                    txt_bytes_for_analytics = res.content
 
             # Line count comes straight from the engine's status — it reports n_lines for
             # every job (computed during OCR), so lines are populated regardless of fmt.
-            alto_lines = times["n_lines"] if isinstance(times.get("n_lines"), int) else None
+            alto_lines = times.get("n_lines") if isinstance(times.get("n_lines"), int) else None
             # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
             alto_blocks = alto_chars = None
             if alto_bytes_for_analytics:
@@ -484,7 +503,9 @@ async def main() -> None:
 
                 if due:
                     logger.info(f"Checking {len(due)} inflight jobs")
-                    statuses = await asyncio.gather(*[check_one(jid) for jid in due])
+                    statuses = await asyncio.gather(
+                        *[check_one(jid, metas_by_id[jid]) for jid in due]
+                    )
 
                     done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
                     failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any]]] = []
@@ -599,7 +620,7 @@ async def main() -> None:
 
             await wait_for_poll_signal(r, wait_timeout)
     finally:
-        await engine_client.close()
+        await http.aclose()
         await r.aclose()
         await db_engine.dispose()
 
