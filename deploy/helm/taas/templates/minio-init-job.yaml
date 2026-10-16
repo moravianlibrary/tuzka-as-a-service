@@ -25,6 +25,9 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "taas.fullname" . }}-secret
+          env:
+            - name: MC_CONFIG_DIR  # the image runs as uid 1001 with HOME=/ (not writable)
+              value: /tmp/.mc
           command:
             - /bin/sh
             - -c

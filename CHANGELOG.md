@@ -43,6 +43,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- MinIO images: MinIO stopped publishing free images, and `minio/minio` and `minio/mc`
+  can no longer be pulled from Docker Hub or quay.io. Compose and the Helm chart now use
+  the frozen `bitnamilegacy/minio` and `bitnamilegacy/minio-client` builds (pinned, July
+  2025). These get no security fixes, so treat the bundled MinIO as dev/test only and
+  point production at an external S3 store. The image runs as uid 1001 and keeps its data
+  under `/bitnami/minio/data`. **Existing data:** compose uses new volumes
+  (`minio-*-store`; the old `minio-*-data` volumes are left untouched), and existing chart
+  PVCs written by the old root-run image (same PVC, now mounted at the new path) need
+  `minio.podSecurityContext.runAsUser: 0`, or a one-off `chown -R 1001`.
 - The box tunnel now delivers to the `gate` service rather than straight to the engine
   (`FRP_LOCAL_IP`, default `gate`) — a pass-through unless the up-hours scheduler closes
   it. Set `FRP_LOCAL_IP=tuzkaocr` in the box `.env` to keep the old direct path.

@@ -19,11 +19,15 @@ spec:
         {{- include "taas.selectorLabels" $ | nindent 8 }}
         app.kubernetes.io/component: minio-{{ $key }}
     spec:
+      {{- with $.Values.minio.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: minio
           image: "{{ $.Values.minio.image.repository }}:{{ $.Values.minio.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          args: ["server", "/data", "--address", ":{{ $.Values.minio.port }}", "--console-address", ":9090"]
+          command: ["minio", "server", "/bitnami/minio/data", "--address", ":{{ $.Values.minio.port }}", "--console-address", ":9090"]
           env:
             - name: MINIO_ROOT_USER
               valueFrom:
@@ -54,7 +58,7 @@ spec:
             periodSeconds: 10
           volumeMounts:
             - name: data
-              mountPath: /data
+              mountPath: /bitnami/minio/data
           resources:
             {{- toYaml $.Values.minio.resources | nindent 12 }}
   volumeClaimTemplates:

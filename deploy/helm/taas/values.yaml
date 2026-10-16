@@ -93,12 +93,19 @@ cnpg:
 
 # -- MinIO object storage (two instances: incoming uploads + results)
 minio:
+  # MinIO stopped publishing free images (Docker Hub + quay.io gated, Sep 2026); these
+  # frozen Bitnami legacy builds are the last free ones and get no security fixes. Fine
+  # for dev/test; for production point the app at an external S3 store.
   image:
-    repository: minio/minio
-    tag: "latest"
+    repository: bitnamilegacy/minio
+    tag: "2025.7.23-debian-12-r5"
   mcImage:
-    repository: minio/mc
-    tag: "latest"
+    repository: bitnamilegacy/minio-client
+    tag: "2025.7.21-debian-12-r3"
+  # -- The Bitnami image runs as uid 1001 (gid 0); fsGroup makes the data PVC writable.
+  # Volumes written by the old root-run minio/minio image need `runAsUser: 0` here.
+  podSecurityContext:
+    fsGroup: 1001
   port: 9000
   # -- S3 region for MinIO (MINIO_SITE_REGION) and the presigned-URL signatures. The app's
   # signer and the server must agree on this value, so it's set in one place for both.

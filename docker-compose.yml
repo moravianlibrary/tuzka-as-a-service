@@ -31,9 +31,12 @@ services:
     networks:
       - backend
 
+  # MinIO stopped publishing free images (Docker Hub + quay.io gated, Sep 2026); the
+  # frozen Bitnami legacy builds are the last free ones. Fine for local dev only.
   minio-incoming:
-    image: minio/minio
-    command: server /data --console-address ":9001"
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    entrypoint: minio
+    command: server /bitnami/minio/data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_INCOMING_ACCESS_KEY:-minioincoming}
       MINIO_ROOT_PASSWORD: ${MINIO_INCOMING_SECRET_KEY:-minioincoming}
@@ -41,7 +44,7 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - minio-incoming-data:/data
+      - minio-incoming-store:/bitnami/minio/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -51,8 +54,9 @@ services:
       - backend
 
   minio-results:
-    image: minio/minio
-    command: server /data --address ":9010" --console-address ":9011"
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    entrypoint: minio
+    command: server /bitnami/minio/data --address ":9010" --console-address ":9011"
     environment:
       MINIO_ROOT_USER: ${MINIO_RESULTS_ACCESS_KEY:-minioresults}
       MINIO_ROOT_PASSWORD: ${MINIO_RESULTS_SECRET_KEY:-minioresults}
@@ -60,7 +64,7 @@ services:
     ports:
       - "9010:9010"
     volumes:
-      - minio-results-data:/data
+      - minio-results-store:/bitnami/minio/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9010/minio/health/live"]
       interval: 10s
@@ -70,10 +74,11 @@ services:
       - backend
 
   minio-init:
-    image: minio/mc
-    entrypoint: /bin/sh
+    image: bitnamilegacy/minio-client:2025.7.21-debian-12-r3
+    entrypoint: /bin/bash
     command: /scripts/minio-init.sh
     environment:
+      MC_CONFIG_DIR: /tmp/.mc  # the image runs as uid 1001 with HOME=/ (not writable)
       MINIO_INCOMING_ACCESS_KEY: ${MINIO_INCOMING_ACCESS_KEY:-minioincoming}
       MINIO_INCOMING_SECRET_KEY: ${MINIO_INCOMING_SECRET_KEY:-minioincoming}
       MINIO_RESULTS_ACCESS_KEY: ${MINIO_RESULTS_ACCESS_KEY:-minioresults}
@@ -223,8 +228,9 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  minio-incoming-data:
-  minio-results-data:
+  # Bitnami MinIO runs as uid 1001; the old root-owned *-data volumes aren't writable by it.
+  minio-incoming-store:
+  minio-results-store:
   ocr-results:
   ocr-spool:
 
