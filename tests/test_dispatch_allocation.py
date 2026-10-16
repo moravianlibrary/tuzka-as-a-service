@@ -120,3 +120,23 @@ def test_avoided_backend_with_domain_fallback() -> None:
     pj, slot = assignments[0]
     assert pj.job_id == "j1"
     assert slot.backend.id == 2  # non-avoided slot doesn't serve domain, fallback to avoided
+
+
+def test_avoided_job_waits_for_full_alternative() -> None:
+    """D7: the alternative is only full, so the job waits instead of going back."""
+    slots = [_slot("a", 0, id_=1), _slot("b", 4, id_=2)]
+    jobs = [_job("j1", avoid=frozenset({2}))]
+
+    assignments, leftovers = allocate_jobs(slots, jobs)
+
+    assert not assignments
+    assert [j.job_id for j in leftovers] == ["j1"]
+
+
+def test_full_slots_take_nothing() -> None:
+    slots = [_slot("a", 0, id_=1)]
+
+    assignments, leftovers = allocate_jobs(slots, [_job("j1")])
+
+    assert not assignments
+    assert [j.job_id for j in leftovers] == ["j1"]

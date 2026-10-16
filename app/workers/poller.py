@@ -34,9 +34,11 @@ from app.services.redis_jobs import (
     wait_for_poll_signal,
 )
 from app.services.retry_policy import (
+    Stage,
     attempt_entry,
     backoff_seconds,
     describe_exception,
+    http_status_of,
     is_retryable_engine_failure,
     is_retryable_poll_error,
 )
@@ -82,66 +84,51 @@ def _parse_engine_dt(value: str | None) -> datetime | None:
 
 @dataclass(frozen=True, slots=True)
 class PollOutcome:
-    """Return value from ``check_one`` — pure classification of a poll response."""
+    """What one status check of an in-flight job found, plus how to treat a failure."""
 
     job_id: str
     status: str  # "done", "running", "failed", "error", "unreachable", "unknown"
     meta: dict[str, str]
     times: dict[str, Any]
-    retryable: bool  # True when the job should be requeued on another backend
+    retryable: bool  # a failure here may succeed on another backend
     http_status: int | None
     error: str | None
+    # "engine" when the engine reported the failure itself, "poll" when the status
+    # check failed (transport error, HTTP error from the status endpoint).
+    stage: Stage = "poll"
 
 
-def classify_poll_result(
-    status: str,
-    requeues: int,
-    max_requeues: int,
-    *,
-    retryable: bool = False,
-    http_status: int | None = None,
-    error: str | None = None,
-) -> str:
+def classify_poll_result(status: str, retryable: bool, requeues: int, max_requeues: int) -> str:
     """Decide what to do with a polled job. Pure (no I/O) so it's unit-testable.
 
-    Engine-reported 'failed'/'error' with 5xx *or* indeterminate ``error_status``
-    retry (``retryable=True``) until the budget is spent.  Engine 4xx fail fast.
-    Transport-level poll errors (``retryable=True``) requeue until budget is spent.
+    Failures ('failed'/'error' from the engine or the status check, 'unreachable' when
+    the pod couldn't be reached) requeue while they're retryable and the budget lasts,
+    and fail otherwise. Whether a failure is retryable is the retry policy's call.
     """
     if status == "done":
         return "harvest"
-    # Engine-reported failure
-    if status in ("failed", "error"):
-        # Retryable failures (5xx or indeterminate error_status) requeue
-        if retryable and requeues < max_requeues:
-            return "requeue"
-        return "fail"
-    if status == "unreachable":
-        # Transport error — retryable
+    if status in ("failed", "error", "unreachable"):
         return "requeue" if retryable and requeues < max_requeues else "fail"
     return "running"
 
 
-def _job_error(outcome: "PollOutcome", meta: dict[str, str]) -> str:
-    """Build a human-readable error string for a failed job."""
-    if outcome.error:
-        return outcome.error
+def poll_failure_message(outcome: PollOutcome, max_requeues: int) -> str:
+    """The job's ``error`` text when a poll outcome fails it. Pure."""
     if outcome.status == "unreachable":
-        max_rq = meta.get("max_requeues", "5")
-        rq = meta.get("requeues", "0")
-        return f"engine unreachable, exceeded {max_rq} requeue attempts (attempt {rq})"
-    return outcome.status or "Engine error"
+        return f"engine unreachable, exceeded {max_requeues} requeue attempts"
+    return outcome.error or outcome.meta.get("error") or "Engine error"
 
 
-def _build_attempt(outcome: "PollOutcome") -> dict[str, Any]:
-    """Build an attempt entry for the job's attempts JSONB array."""
+def poll_attempt(outcome: PollOutcome, retry: bool, at: str) -> dict[str, Any]:
+    """The ``jobs.attempts`` entry for a failed poll outcome. Pure."""
+    backend_id = outcome.meta.get("backend_id")
     return attempt_entry(
-        stage="poll",
-        backend_id=int(outcome.meta["backend_id"]) if outcome.meta.get("backend_id") else None,
+        stage=outcome.stage,
+        backend_id=int(backend_id) if backend_id else None,
         http_status=outcome.http_status,
         error=outcome.error or outcome.status,
-        retry=False,  # this is the final failure
-        at=utcnow().isoformat(),
+        retry=retry,
+        at=at,
     )
 
 
@@ -199,35 +186,41 @@ async def main() -> None:
             resp = await engine_client.check_status(
                 meta["backend_url"], api_key, meta["engine_job_id"]
             )
-            status = resp.get("status", "unknown")
-            retryable = False
-            http_status: int | None = None
-            err: str | None = None
-            if status in ("failed", "error"):
-                error_status = resp.get("error_status")
-                # Probe for error_status if missing (old engine may not have it)
-                if error_status is None:
-                    probe = await engine_client.probe_failure_status(
-                        meta["backend_url"], api_key, meta["engine_job_id"]
-                    )
-                    error_status = probe.get("error_status")
-                retryable = is_retryable_engine_failure(error_status)
-                err = resp.get("error")
-                http_status = error_status
-            return PollOutcome(job_id, status, meta, resp, retryable, http_status, err)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))
-        except httpx.HTTPStatusError as e:
-            http_status = e.response.status_code
-            retryable = is_retryable_poll_error(e)
-            logger.error(f"HTTP error checking status for job {job_id}: {e}")
-            return PollOutcome(
-                job_id, "error", meta, {}, retryable, http_status, describe_exception(e)
-            )
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
-            return PollOutcome(job_id, "error", meta, {}, False, None, describe_exception(e))
+            return PollOutcome(
+                job_id,
+                "error",
+                meta,
+                {},
+                is_retryable_poll_error(e),
+                http_status_of(e),
+                describe_exception(e),
+            )
+
+        status = resp.get("status", "unknown")
+        if status not in ("failed", "error"):
+            return PollOutcome(job_id, status, meta, resp, False, None, None)
+        # Engine-reported failure: its error_status decides retry vs fail. Engines that
+        # predate the field still expose it as the result endpoint's HTTP status (D3).
+        error_status = resp.get("error_status")
+        if error_status is None:
+            error_status = await engine_client.probe_failure_status(
+                meta["backend_url"], api_key, meta["engine_job_id"]
+            )
+        return PollOutcome(
+            job_id,
+            status,
+            meta,
+            resp,
+            is_retryable_engine_failure(error_status),
+            error_status,
+            resp.get("error"),
+            stage="engine",
+        )
 
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         username = meta["username"]
@@ -404,7 +397,7 @@ async def main() -> None:
             await mark_failed(job_id, meta, str(e))
 
     async def mark_failed(
-        job_id: str, meta: dict[str, str], error: str, *, attempt: dict[str, Any] | None = None
+        job_id: str, meta: dict[str, str], error: str, attempt: dict[str, Any] | None = None
     ) -> None:
         username = meta.get("username", "")
         external_id = meta.get("external_id", "")
@@ -494,8 +487,10 @@ async def main() -> None:
                     statuses = await asyncio.gather(*[check_one(jid) for jid in due])
 
                     done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
-                    failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any] | None]] = []
-                    requeue_jobs: list[tuple[str, dict[str, str], float, int | None]] = []
+                    failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any]]] = []
+                    requeue_jobs: list[
+                        tuple[str, dict[str, str], float, int | None, dict[str, Any]]
+                    ] = []
                     running_jobs: list[tuple[str, dict[str, str]]] = []
 
                     async with session_factory() as db:
@@ -506,24 +501,21 @@ async def main() -> None:
                         meta = outcome.meta
                         requeues = int(meta.get("requeues", 0))
                         action = classify_poll_result(
-                            outcome.status,
-                            requeues,
-                            max_requeues,
-                            retryable=outcome.retryable,
-                            http_status=outcome.http_status,
-                            error=outcome.error,
+                            outcome.status, outcome.retryable, requeues, max_requeues
                         )
                         if action == "harvest":
                             done_jobs.append((outcome.job_id, meta, outcome.times))
                         elif action == "fail":
-                            err = _job_error(outcome, meta)
-                            failed_jobs.append((outcome.job_id, meta, err, _build_attempt(outcome)))
+                            err = poll_failure_message(outcome, max_requeues)
+                            attempt = poll_attempt(outcome, False, utcnow().isoformat())
+                            failed_jobs.append((outcome.job_id, meta, err, attempt))
                         elif action == "requeue":
                             delay = backoff_seconds(requeues)
                             avoid: int | None = (
                                 int(meta["backend_id"]) if meta.get("backend_id") else None
                             )
-                            requeue_jobs.append((outcome.job_id, meta, delay, avoid))
+                            attempt = poll_attempt(outcome, True, utcnow().isoformat())
+                            requeue_jobs.append((outcome.job_id, meta, delay, avoid, attempt))
                         else:
                             running_jobs.append((outcome.job_id, meta))
 
@@ -561,13 +553,13 @@ async def main() -> None:
                     for job_id, meta, error, attempt in failed_jobs:
                         await mark_failed(job_id, meta, error, attempt=attempt)
 
-                    # Re-queue jobs whose engine became unreachable (scaled-down pod) so a
-                    # live backend picks them up. Uses delayed retry with full-jitter
-                    # backoff and avoids the backend that just failed. Redis is updated
-                    # first (release slot + schedule delayed retry); the DB column mirrors
-                    # it for visibility in one batched session.
+                    # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
+                    # another backend picks them up after a jittered backoff. Redis is
+                    # updated first (release slot + schedule the retry + bump the requeue
+                    # counter the budget reads); the DB mirrors it, with the attempt
+                    # recorded, in one batched session.
                     if requeue_jobs:
-                        for job_id, meta, delay, avoid_id in requeue_jobs:
+                        for job_id, meta, delay, avoid_id, _attempt in requeue_jobs:
                             await release_and_requeue(
                                 r,
                                 job_id,
@@ -578,10 +570,10 @@ async def main() -> None:
                             )
                             await r.hincrby(f"job:{job_id}", "requeues", 1)
                             logger.info(
-                                f"Re-queued job {job_id} with {delay:.1f}s backoff (avoid backend {avoid_id})"
+                                f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})"
                             )
                         async with session_factory() as db:
-                            for job_id, _meta, _, _ in requeue_jobs:
+                            for job_id, _meta, _delay, _avoid, attempt in requeue_jobs:
                                 await db.execute(
                                     update(Job)
                                     .where(Job.id == job_id)
@@ -591,6 +583,7 @@ async def main() -> None:
                                         backend_id=None,
                                         dispatched_at=None,
                                         requeues=Job.requeues + 1,
+                                        **append_attempt(attempt),
                                     )
                                 )
                             await db.commit()

@@ -6,16 +6,16 @@ working ``update(Job).values(...)`` payload.
 
 from __future__ import annotations
 
-import json
 import os
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.clock import utcnow
 from app.models.job import Job
+from app.services.job_attempts import append_attempt
 from app.services.retry_policy import attempt_entry
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -116,19 +116,9 @@ async def test_append_attempt_adds_entries(session) -> None:
         at="2026-06-01T12:00:01",
     )
 
-    # First append via append_attempt helper
-    await session.execute(
-        text("UPDATE jobs SET attempts = :attempts WHERE id = :jid"),
-        {"jid": job_id, "attempts": json.dumps([entry1])},
-    )
-    await session.commit()
-
-    # Second append
-    await session.execute(
-        text("UPDATE jobs SET attempts = :attempts WHERE id = :jid"),
-        {"jid": job_id, "attempts": json.dumps([entry2])},
-    )
-    await session.commit()
+    for entry in (entry1, entry2):
+        await session.execute(update(Job).where(Job.id == job_id).values(**append_attempt(entry)))
+        await session.commit()
 
     # Read back and verify
     result = await session.execute(select(Job.attempts).where(Job.id == job_id))
@@ -137,4 +127,4 @@ async def test_append_attempt_adds_entries(session) -> None:
     assert attempts[0]["stage"] == "dispatch"
     assert attempts[0]["http_status"] == 502
     assert attempts[1]["stage"] == "poll"
-    assert attempts[1]["backend_id"] is None
+    assert attempts[1]["error"] == "connection refused"

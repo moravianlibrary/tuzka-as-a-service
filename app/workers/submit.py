@@ -57,7 +57,7 @@ class PendingJob:
 
 @dataclass
 class BackendSlot:
-    """A healthy backend with remaining free capacity and the domains it serves."""
+    """A healthy backend, its remaining free capacity (may be 0) and the domains it serves."""
 
     backend: Backend
     free: int
@@ -72,41 +72,35 @@ def allocate_jobs(
     Spreads jobs evenly rather than filling the first backend to capacity, so results
     come back with more parallelism across comparable backends. Respects each slot's
     free capacity and served domains: a job with a domain only lands on a backend that
-    serves it. Per D7, jobs carrying ``avoid`` ids are first assigned to non-avoided
-    slots; only if no non-avoided slot can serve the job's tier does it fall back to
-    an avoided one (second pass).
+    serves it. A retried job skips the backends in its ``avoid`` set; it falls back to
+    an avoided one only when no other backend in the tier serves its domain at all
+    (D7). If the alternatives are merely full, the job waits for them instead of going
+    back to the backend that just failed it. Pure apart from decrementing the passed
+    slots' ``free`` counters.
 
     Returns ``(assignments, leftovers)``; leftovers are jobs no slot in this tier can
-    take (e.g. their domain is served only by a lower tier) and should be re-queued.
+    take right now (full, or their domain is served only by a lower tier) and should
+    be re-queued.
     """
     assignments: list[tuple[PendingJob, BackendSlot]] = []
     leftovers: list[PendingJob] = []
-    if not slots:
-        return assignments, list(jobs)
-
     count = len(slots)
     start = 0
-
     for job in jobs:
+        serving = [s for s in slots if job.domain is None or job.domain in s.domains]
+        allow_avoided = all(s.backend.id in job.avoid for s in serving)
         placed = False
-        for pass_allowed in (False, True):  # pass 0: non-avoided only; pass 1: any
-            if placed:
-                break
-            for step in range(count):
-                if placed:
-                    break
-                slot = slots[(start + step) % count]
-                if slot.free <= 0:
-                    continue
-                job_domain = job.domain
-                if (job_domain is None or job_domain in slot.domains) and (
-                    pass_allowed or slot.backend.id not in job.avoid
-                ):
-                    slot.free -= 1
-                    assignments.append((job, slot))
-                    start = (start + step + 1) % count  # next job starts after this backend
-                    placed = True
-                    break
+        for step in range(count):
+            slot = slots[(start + step) % count]
+            if slot.free <= 0 or (job.domain is not None and job.domain not in slot.domains):
+                continue
+            if slot.backend.id in job.avoid and not allow_avoided:
+                continue
+            slot.free -= 1
+            assignments.append((job, slot))
+            start = (start + step + 1) % count  # next job starts after this backend
+            placed = True
+            break
         if not placed:
             leftovers.append(job)
     return assignments, leftovers
@@ -341,6 +335,7 @@ async def main() -> None:
                 )
                 health_cache[backend.id] = (False, time.time())
                 await r.hincrby(f"job:{job_id}", "requeues", 1)
+                await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 attempt = attempt_entry(
                     "dispatch", backend.id, http_st, msg, retry=True, at=utcnow().isoformat()
                 )
@@ -354,7 +349,6 @@ async def main() -> None:
                         )
                     )
                     await db.commit()
-                await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -401,22 +395,25 @@ async def main() -> None:
                 if promoted:
                     logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
 
-                # This tick's eligible backends: healthy, with free capacity + their
-                # served domains (each looked up once).
+                # This tick's eligible backends: healthy, with their free capacity + served
+                # domains (each looked up once). Full ones stay in (free=0) so a retry
+                # waits for them rather than falling back to the backend it avoids.
                 eligible: list[BackendSlot] = []
                 for backend in backends:
                     if not await check_health(backend):
                         continue
                     free = backend.max_inflight - await get_backend_inflight(r, backend.id)
-                    if free <= 0:
-                        continue
-                    eligible.append(BackendSlot(backend, free, await served_domains(backend.id)))
+                    domains = await served_domains(backend.id)
+                    eligible.append(BackendSlot(backend, max(free, 0), domains))
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.
                 for priority in sorted({slot.backend.priority for slot in eligible}, reverse=True):
                     tier = [slot for slot in eligible if slot.backend.priority == priority]
-                    entries = await dequeue_jobs(r, sum(slot.free for slot in tier))
+                    capacity = sum(slot.free for slot in tier)
+                    if capacity == 0:
+                        continue  # this tier is full; a lower one may still have room
+                    entries = await dequeue_jobs(r, capacity)
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
@@ -429,9 +426,8 @@ async def main() -> None:
 
                     assignments, leftovers = allocate_jobs(tier, jobs_with_domain)
                     for job in leftovers:
-                        await requeue_job(
-                            r, job.job_id, job.score
-                        )  # a lower tier may serve its domain
+                        # a lower tier may serve its domain, or a full backend frees up
+                        await requeue_job(r, job.job_id, job.score)
 
                     if not assignments:
                         continue

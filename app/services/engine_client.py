@@ -139,26 +139,18 @@ class EngineClient:
 
     async def probe_failure_status(
         self, url: str, api_key: str | None, engine_job_id: str
-    ) -> dict[str, Any]:
-        """Probe the result endpoint for a failed job to get ``error_status`` / ``error``.
+    ) -> int | None:
+        """HTTP status the engine's result endpoint answers for a failed job.
 
-        When the status response doesn't include ``error_status`` (old engine),
-        the result endpoint may carry an ``error_status`` code even for failures,
-        giving us the 4xx/5xx distinction needed for retry classification.
-
-        Returns a dict with ``error_status`` (int | None) and ``error`` (str | None).
-        Returns empty dict if the endpoint is unreachable.
+        Engines that predate ``error_status`` in the status response still raise the
+        job's error status as the result endpoint's HTTP status (422 for bad input, 500
+        for a crash), which gives the 4xx/5xx split retry classification needs. Returns
+        ``None`` when that tells us nothing (non-error answer, or engine unreachable).
         """
-        headers = {}
-        if api_key:
-            headers["X-API-Key"] = api_key
         try:
-            resp = await self._client.get(
-                f"{url}/api/v1/result/{engine_job_id}",
-                headers=headers,
-                timeout=10.0,
-            )
-            return resp.json() if resp.status_code == 200 else {}
+            await self.get_result(url, api_key, engine_job_id)
+        except httpx.HTTPStatusError as exc:
+            return exc.response.status_code
         except Exception as exc:
             logger.warning("probe_failure_status failed for %s: %s", url, exc)
-            return {}
+        return None

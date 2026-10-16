@@ -1,7 +1,5 @@
 """ORM models for OCR jobs and their per-format results, tracking the full lifecycle."""
 
-from __future__ import annotations
-
 import uuid
 from datetime import datetime
 from typing import Any
@@ -49,7 +47,7 @@ class Job(Base):
     # lazy="raise": every access must be an explicit load (selectinload / a join) — an
     # accidental lazy load is a loud error, not a silent N+1 (and would fail anyway on
     # the async session outside a greenlet context).
-    results: Mapped[list[JobResult]] = relationship(back_populates="job", lazy="raise")
+    results: Mapped[list["JobResult"]] = relationship(back_populates="job", lazy="raise")
 
     __table_args__ = (
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
@@ -67,4 +65,4 @@ class JobResult(Base):
     presigned_url: Mapped[str | None] = mapped_column(default=None)
     presigned_until: Mapped[datetime | None] = mapped_column(default=None)
 
-    job: Mapped[Job] = relationship(back_populates="results", lazy="raise")
+    job: Mapped["Job"] = relationship(back_populates="results", lazy="raise")
