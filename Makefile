@@ -82,6 +82,12 @@ test: ## Run the unit/component tests (pytest; DB/redis tests skip if absent)
 coverage-report: ## Unit tests with a coverage summary
 	$(UV) pytest --cov=app --cov=compat --cov-report=term-missing
 
+.PHONY: check-alto-schema
+check-alto-schema: ## Validate TuzkaOCR's ALTO against the vendored ALTO 4.4 XSD (FILES=... to pick files)
+	@# Not part of `make check`: the generated cases need the ./TuzkaOCR clone, which is
+	@# optional (gitignored, see README), so `check` has to stay green without it.
+	$(UV) python scripts/check-alto-schema.py $(FILES)
+
 .PHONY: test-contract
 test-contract: ## Schemathesis contract/property tests vs a running instance (TAAS_URL, MASTER_KEY)
 	@url=$${TAAS_URL:-http://localhost:8080}; \

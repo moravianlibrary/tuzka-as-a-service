@@ -16,6 +16,16 @@ All notable changes to this project are documented here. The format is based on
   and results land in `bench/api/RESULTS_API.md`. Includes a toxiproxy-based latency harness
   so the WAN case is measured rather than extrapolated — every channel (API, compat,
   WebSocket, presigned MinIO downloads) pays the same RTT. See `bench/api/README.md`.
+- `make check-alto-schema` — validates the ALTO TuzkaOCR emits against the real ALTO 4.4
+  XSD, which nothing checked before: `build_alto()` declares 4.4 in `xsi:schemaLocation`,
+  but the claim was never verified. Runs the generator over synthetic pages that hit the
+  branches a normal page misses (role tags/`TAGREFS`, non-ASCII page IDs, out-of-bounds
+  coordinates, empty pages, markup in `CONTENT`) plus any real output under
+  `test-data/out/`; `FILES='…'` validates specific files instead. The schema and the
+  xlink schema it imports are vendored under `schemas/alto/` so the check is offline and
+  deterministic — see `schemas/alto/README.md` for provenance and the two substitution
+  traps. Not wired into `make check`, which has to stay green without the optional
+  `./TuzkaOCR` clone. Current output conforms.
 - `make local-deploy-forward-bench` — port-forwards on shifted ports, so the latency proxy
   can own the published ones and presigned URLs keep working unchanged.
 - Up-hours scheduling for a tunnel box (`deploy/box`): a box that has a day job — a work

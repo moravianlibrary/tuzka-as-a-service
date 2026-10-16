@@ -104,11 +104,18 @@ make test-integration           # full-stack end-to-end, default fmt=multi
 FMT=alto make test-integration  # single-format run
 make test-integration-fast      # against an already-running stack (no rebuild)
 make test-compat                # legacy-compat server end-to-end
+make check-alto-schema          # ALTO output vs the ALTO 4.4 XSD (needs ./TuzkaOCR, or FILES=)
 ```
 
 `scripts/test.sh` saves each decompressed result under `test-data/out/` and
 prints a preview — the ALTO XML and the OCR text extracted from it. Controls:
 `IMAGE=`, `FMT=` (`alto`|`txt`|`multi`), `SHOW_RESULT=0`, `PREVIEW_LINES=`.
+
+`make check-alto-schema` then validates that output — everything under
+`test-data/out/*.alto.xml`, plus synthetic pages run through the engine's
+`build_alto()` when the `./TuzkaOCR` clone is present. Validate specific files with
+`make check-alto-schema FILES='path/to/*.xml'`. The schema is vendored offline under
+`schemas/alto/`.
 
 > `fmt=multi` (alto **and** txt from one request) requires engine-side support;
 > until then use `FMT=alto` / `FMT=txt`.
