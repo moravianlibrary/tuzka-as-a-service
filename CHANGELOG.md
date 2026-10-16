@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
+  flight, a new connection per page, 3 s polling) against the taas client (all pages
+  submitted up front, results pushed over one WebSocket). Same corpus, same stack, so the
+  delta is the client protocol alone. Run it with `make bench` (`make bench-up` for a k3d
+  cold start, `DRY_RUN=1` to price the plan first); sweeps live in `bench/api/scenarios.toml`
+  and results land in `bench/api/RESULTS_API.md`. Includes a toxiproxy-based latency harness
+  so the WAN case is measured rather than extrapolated — every channel (API, compat,
+  WebSocket, presigned MinIO downloads) pays the same RTT. See `bench/api/README.md`.
+- `make local-deploy-forward-bench` — port-forwards on shifted ports, so the latency proxy
+  can own the published ones and presigned URLs keep working unchanged.
 - Up-hours scheduling for a tunnel box (`deploy/box`): a box that has a day job — a work
   PC, a shared workstation — can now serve OCR only inside a weekly window, set with
   `OCR_UP_SCHEDULE` in its `.env` (e.g. `"Mon-Fri 17:30-07:30; Sat,Sun 00:00-24:00"`,

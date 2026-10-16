@@ -55,7 +55,10 @@ up() {
   fi
 
   urls=("http://localhost:${API_PORT}/" "http://localhost:${API_PORT}/docs")
-  if command -v xdg-open >/dev/null 2>&1; then
+  if [ -n "${NO_OPEN:-}" ]; then
+    echo "NO_OPEN set; not opening a browser. UIs:"
+    printf '  %s\n' "${urls[@]}"
+  elif command -v xdg-open >/dev/null 2>&1; then
     echo "Opening UIs in your browser..."
     for u in "${urls[@]}"; do xdg-open "$u" >/dev/null 2>&1 || true; done
   else

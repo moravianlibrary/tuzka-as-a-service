@@ -1,0 +1,194 @@
+# Benchmark scenarios: legacy (ProArc/PERO) vs new (taas client).
+#
+# Driven by `make bench` -> bench/api/run_scenarios.py. Each [[matrix]] block is a
+# cartesian product: list values are swept, scalars are fixed. Anything not set
+# falls back to [defaults], then to the script's own default.
+#
+#   make bench                          # every enabled matrix, target=compose
+#   make bench ONLY=protocol            # just one block
+#   make bench TARGET=k3d N=25
+#   make bench DRY_RUN=1                # print the plan and the cost, run nothing
+
+[defaults]
+images = "test-data"
+# Sweep default. Sweeps read *relative* ordering across many cells, and repeat
+# measurements of one identical config came out at ~2.4% sd whether N was 25 or 50
+# — the variance is run-to-run drift, not sampling error — so more pages buys no
+# precision there, only wall time. The headline matrices override it with n = 200.
+n = 25
+timeout = 1800
+mode = "legacy"
+latency_ms = 0
+jitter_ms = 0
+# Both clients must end each page holding the decompressed ALTO *and* text, so both
+# write the pair here (under a legacy/ and new/ subdir). A page that comes back with
+# only one format fails the case rather than quietly making one side cheaper.
+out_dir = "bench/api/out/artifacts"
+# NOTE: `only_device` is a property of the *deployment*, not of the scenarios, so
+# it lives on each target below — compose ships a CPU engine only, k3d has both.
+
+# --- Where the stack is, and how to put a delay in front of it ---------------
+# Two wirings, because the two deployments constrain the ports differently. In
+# both cases every channel is delayed: API, compat, WebSocket and the presigned
+# MinIO downloads. See README.md for why partial coverage would be dishonest.
+
+[targets.compose]
+taas_url = "http://localhost:8080"
+compat_url = "http://localhost:8001"
+# The compose stack runs a single CPU engine, so there is nothing to pin away from.
+only_device = "cpu"
+
+# compose keeps its published ports; the proxy adds delayed ones beside them.
+# Presigned URLs must be signed for the delayed port, hence the env change.
+[targets.compose.latency]
+listen = { api = 18080, compat = 18001, results = 19010 }
+upstream = { api = "127.0.0.1:8080", compat = "127.0.0.1:8001", results = "127.0.0.1:9010" }
+taas_url = "http://localhost:18080"
+compat_url = "http://localhost:18001"
+requires = """
+set MINIO_RESULTS_PUBLIC_URL=http://localhost:19010 in .env.app, then:
+  docker compose up -d api
+(revert it to http://localhost:9010 when you are done with latency runs)"""
+
+# k3d: the proxy takes over the published ports and the real services shift, so
+# presigned URLs signed for localhost:9100 keep working with no chart change.
+[targets.k3d]
+taas_url = "http://localhost:8080"
+compat_url = "http://localhost:8081"
+# Two engines are tunnelled in. A run spread over a ~1 s GPU and a ~5 s CPU engine
+# has bimodal engine time, which is noise in every derived figure — so disable the
+# CPU one for the duration. With a single enabled backend, priority is moot.
+only_device = "gpu"
+
+[targets.k3d.latency]
+listen = { api = 8080, compat = 8081, results = 9100 }
+upstream = { api = "127.0.0.1:18080", compat = "127.0.0.1:18081", results = "127.0.0.1:19100" }
+taas_url = "http://localhost:8080"
+compat_url = "http://localhost:8081"
+requires = """
+move the port-forwards off the published ports first:
+  make local-deploy-forward-down
+  make local-deploy-forward-bench"""
+
+# --- The sweeps --------------------------------------------------------------
+
+# The headline number: same corpus, same stack, two client protocols. Legacy is
+# serial (as ProArc is), new has everything in flight — this is the throughput a
+# ProArc-style integration leaves on the table.
+[[matrix]]
+name = "protocol"
+n = 200
+mode = ["legacy", "new"]
+
+# Apples-to-apples per-page cost: one page in flight on BOTH sides, so neither run
+# absorbs queue time. This is the only block where `lat mean` is comparable across
+# modes, and the gap there is pure protocol overhead — poll quantisation, the extra
+# round trips, and the per-page connection setup. `serial` is a no-op for legacy,
+# which is already serial by construction.
+[[matrix]]
+name = "serial-per-page"
+n = 200
+mode = ["legacy", "new"]
+serial = true
+
+# What the chatty protocol costs as the client moves away from the service.
+# ~0 same host, 20 same city, 60 cross-country, 200 intercontinental.
+[[matrix]]
+name = "network-distance"
+mode = ["legacy", "new"]
+latency_ms = [0, 20, 60, 200]
+
+# Prices what ProArc gives up by being strictly serial. Not what it does today.
+[[matrix]]
+name = "legacy-parallelism"
+mode = ["legacy"]
+concurrency = [1, 2, 4, 8]
+
+# ProArc hardcodes 3 s (`TimeUnit.SECONDS.sleep(3)`), so a page that finished right
+# after a poll waits ~interval/2 on average. Against a ~1 s GPU page that dominates
+# everything else. This asks how much of legacy's penalty is just that constant.
+#
+# Note 1 s is a one-token change in ProArc; anything below needs
+# TimeUnit.MILLISECONDS, i.e. a real edit. And cutting the interval trades latency
+# for request volume — watch the `requests` and `polls` columns, not just latency.
+[[matrix]]
+name = "legacy-poll-interval"
+mode = ["legacy"]
+poll_seconds = [0.25, 0.5, 1.0, 3.0, 10.0]
+
+# The new client's submit phase is the only serial part left; does widening it help?
+[[matrix]]
+name = "new-submit-concurrency"
+mode = ["new"]
+submit_concurrency = [1, 4, 16]
+
+# Off by default — each is a long run. Enable with `make bench ONLY=<name>`.
+
+# The grid the two 1-D sweeps never covered: poll interval AND distance together.
+# `legacy-poll-interval` varied the poll at RTT=0; `serial-network-distance` varied
+# RTT at poll=3s. They meet at one point, so "does a faster poll still help over a
+# WAN?" was only ever extrapolated. Each extra poll costs a full round trip, so the
+# two knobs are expected to fight — this measures whether they do.
+# Legacy-only on purpose: the poll axis is meaningless for the new client, whose
+# reference rows come from serial-network-distance at the same RTTs.
+[[matrix]]
+name = "poll-vs-distance"
+enabled = false
+mode = ["legacy"]
+serial = true
+poll_seconds = [0.25, 1.0, 3.0]
+latency_ms = [0, 60, 200]
+
+# Per-page protocol cost as the client moves away from the service. Serial on both
+# sides, so this isolates round-trip count from queueing entirely.
+[[matrix]]
+name = "serial-network-distance"
+enabled = false
+mode = ["legacy", "new"]
+serial = true
+latency_ms = [0, 60, 200]
+
+# Does the ratio hold as the run gets longer? Not a precision exercise — it probes
+# soak behaviour (storage accumulation, queue depth, GPU arena growth over hours)
+# that a short run cannot show. Each size draws its own sample from the same seed.
+#
+# Capped at the 200-page corpus. Do not raise a cell above what is in test-data/: `n`
+# beyond the corpus does NOT error, it silently runs everything there, which would
+# collapse the top cells into duplicates of each other.
+[[matrix]]
+name = "corpus-scale"
+enabled = false
+mode = ["legacy", "new"]
+n = [25, 50, 100, 200]
+
+[[matrix]]
+name = "stock-rate-limits"
+enabled = false
+mode = ["legacy", "new"]
+stock_limits = true
+
+# ProArc constructs `HttpClients.createDefault()` *inside* process(), so every page
+# pays a fresh connection setup and nothing is pooled. This prices that one line,
+# crossed with distance because the cost is entirely round-trip-shaped.
+#
+# Read it as a lower bound: the bench speaks plain HTTP, where a new connection is
+# one extra RTT (the TCP handshake). Behind TLS — which any real deployment has —
+# it is roughly three, so the real penalty is ~3x the spread measured here.
+[[matrix]]
+name = "legacy-connection-reuse"
+enabled = false
+mode = ["legacy"]
+serial = true
+reuse_connections = [false, true]
+latency_ms = [0, 60, 200]
+
+# Legacy always fetches two artifacts per page (it polls on txt, then downloads
+# alto). The new client asks for both from one job with fmt=multi. This separates
+# "how many artifacts do you fetch" from "push vs poll" — the headline matrices use
+# multi, so alto/txt here are the single-artifact reference points.
+[[matrix]]
+name = "new-result-formats"
+enabled = false
+mode = ["new"]
+serial = true
+fmt = ["alto", "txt", "multi"]

@@ -32,12 +32,15 @@ clients/java/target/
 .vscode/*
 !.vscode/settings.json
 .ruff_cache/
+# Schemathesis crash/example cache — regenerated per run, not a project artifact
+.schemathesis/
 *.log
 test.jpg
 
 # Benchmark run output (generated; large)
 bench/matrix_out/
 bench/matrix_clean_out/
+bench/api/out/
 
 # Claude Code working memory (not project files)
 memory/

@@ -35,6 +35,8 @@ The Python package / CLI is named `taas`.
 - [`clients/`](clients/README.md) — Python & Java client libraries
 - [`compat/`](compat/README.md) — legacy PERO-compatibility server
 - [`deploy/helm/taas/`](deploy/helm/taas/README.md) — Helm chart ([architecture](deploy/helm/taas/ARCHITECTURE.md))
+- [`bench/api/`](bench/api/README.md) — legacy-vs-new API benchmark ([results](bench/api/RESULTS_API.md))
+- [`bench/`](bench/BENCHMARKS.md) — engine benchmarks: throughput, threading, memory
 
 ## Components
 
@@ -110,6 +112,38 @@ prints a preview — the ALTO XML and the OCR text extracted from it. Controls:
 
 > `fmt=multi` (alto **and** txt from one request) requires engine-side support;
 > until then use `FMT=alto` / `FMT=txt`.
+
+## Benchmarks
+
+Two independent sets of numbers, kept apart on purpose:
+
+- **Engine** — how fast a page is OCR'd (threading, memory, pod shapes).
+  See [`bench/BENCHMARKS.md`](bench/BENCHMARKS.md) and
+  [`bench/PERF_REPORT.md`](bench/PERF_REPORT.md).
+- **API** — how much throughput the *client protocol* costs: the legacy PERO API driven
+  exactly as [ProArc](https://github.com/proarc/proarc) drives it (one page in flight,
+  a fresh connection per page, 3 s polling) versus the taas client (everything submitted
+  up front, results pushed over one WebSocket).
+
+```bash
+make bench                        # every enabled matrix, docker-compose stack
+make bench ONLY=protocol N=25     # one matrix, 25 pages per case
+make bench TARGET=k3d             # against the k3d/k3s deploy
+make bench DRY_RUN=1              # print the plan + its estimated cost, run nothing
+make bench-up                     # cold-start k3d first, then bench
+```
+
+What runs is defined by [`bench/api/scenarios.toml`](bench/api/scenarios.toml) (cartesian
+sweeps; `enabled = false` marks a long block opt-in). Output is
+[`bench/api/RESULTS_API.md`](bench/api/RESULTS_API.md) plus per-case JSON in
+`bench/api/out/`. `make bench DRY_RUN=1` is worth running first — the default sweep is
+~2.5 h on a GPU engine, and it prints the estimate before running anything.
+
+The corpus is **not** in the repo, only the PID list: download the 200 pages in
+`bench/api/mzk.pids.txt` (~118 MB) from Kramerius into `test-data/` as
+`<uuid>_image.jpeg`. The list is size-stratified so the spread is preserved. Method,
+the latency-proxy setup, and which column to read for which question are in
+[`bench/api/README.md`](bench/api/README.md).
 
 ## Local development (without containers)
 

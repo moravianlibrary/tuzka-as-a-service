@@ -18,7 +18,7 @@ GIT_TAG := v$(shell cat VERSION 2>/dev/null)
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: env
 env: ## Create .env and .env.app from templates (generates a Fernet key)
@@ -178,6 +178,44 @@ local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + f
 .PHONY: local-deploy-bench-db
 local-deploy-bench-db: ## Seed ~10M synthetic analytics rows + time the dashboard queries (ROWS=, MODE=seed|query|clean)
 	bash $(LOCAL_DIR)/bench-analytics-db.sh
+
+.PHONY: local-deploy-forward-bench
+local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
+	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up
+
+# --- Legacy (ProArc/PERO) vs new (taas client) API benchmark ---
+# Two entry points, both driven by bench/api/scenarios.toml — which is the file you
+# edit to change what runs. Full method and findings: bench/api/README.md.
+#
+#   make bench                        # every enabled matrix, docker-compose stack
+#   make bench ONLY=protocol N=25     # one matrix, 25 pages per case
+#   make bench TARGET=k3d             # against the k3d/k3s deploy
+#   make bench DRY_RUN=1              # print the plan + its estimated cost, run nothing
+#
+# `bench` assumes a running stack. `bench-up` is the cold-start path for k3d: it
+# builds the engine images, creates the cluster, installs the chart and starts the
+# host engines, then hands off to `bench TARGET=k3d`. Idempotent — safe to re-run.
+#
+#   make bench-up                     # cold start, then the default sweep
+#   SKIP_BENCH=1 make bench-up        # bring the stack up and stop there
+#   WITH_GPU=0 make bench-up          # CPU-only rig (~4.5 GB less to build)
+#
+# Latency cases need the ports rewired first; the runner prints the exact fix if
+# they are not (k3d: make local-deploy-forward-down && make local-deploy-forward-bench).
+BENCH_API_DIR ?= bench/api
+TARGET        ?= compose
+
+.PHONY: bench-up
+bench-up: ## Cold-start k3d (engines, cluster, chart) then bench (SKIP_BENCH=1, WITH_GPU=0)
+	bash $(BENCH_API_DIR)/bench-up.sh $(if $(ONLY),ONLY=$(ONLY)) $(if $(N),N=$(N))
+
+.PHONY: bench
+bench: ## Run the API benchmark scenarios (TARGET=compose|k3d, ONLY=, N=, IMAGES=, DRY_RUN=1)
+	@# Unbuffered: piped to a log or tee, Python block-buffers its own progress output
+	@# while subprocess output streams straight through, so the log reads out of order.
+	PYTHONUNBUFFERED=1 $(UV) python $(BENCH_API_DIR)/run_scenarios.py --target $(TARGET) \
+	  $(if $(ONLY),--only $(ONLY)) $(if $(N),--n $(N)) $(if $(IMAGES),--images $(IMAGES)) \
+	  $(if $(DRY_RUN),--dry-run)
 
 .PHONY: check
 check: lint typecheck version-check test ## Run the full quality gate (lint + types + version + unit tests)
