@@ -44,3 +44,6 @@ bench/api/out/
 
 # Claude Code working memory (not project files)
 memory/
+
+# Local agent implementation plans (not project docs)
+docs/plans/
