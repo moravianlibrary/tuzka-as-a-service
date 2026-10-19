@@ -1,13 +1,22 @@
 """Tests for the round-robin dispatch allocator.
 
 allocate_jobs is pure (no I/O), so these run without redis/DB. They pin the core
-behaviors: even spread within a tier, capacity limits, domain-aware routing, and
-avoid-backend logic (D7).
+behaviors: even spread within a tier, capacity limits, routing on domain + outputs,
+and avoid-backend logic (D7).
 """
 
 from collections import Counter
 
-from app.workers.submit import BackendSlot, PendingJob, allocate_jobs
+from app.workers.submit import (
+    BackendSlot,
+    PendingJob,
+    allocate_jobs,
+    can_serve,
+    job_domain,
+    job_outputs,
+)
+
+ALTO_TXT = frozenset({"alto", "txt"})
 
 
 class _Backend:
@@ -19,15 +28,26 @@ class _Backend:
 
 
 def _slot(
-    name: str, free: int, domains: tuple[str, ...] = (), id_: int | None = None
+    name: str,
+    free: int,
+    domains: tuple[str, ...] = ("default",),
+    id_: int | None = None,
+    outputs: frozenset[str] = ALTO_TXT,
 ) -> BackendSlot:
-    return BackendSlot(backend=_Backend(id_ or 0, name), free=free, domains=set(domains))
+    """A slot serving each of ``domains`` with ``outputs``."""
+    return BackendSlot(
+        backend=_Backend(id_ or 0, name), free=free, domains={d: outputs for d in domains}
+    )
 
 
 def _job(
-    job_id: str, score: float = 0.0, domain: str | None = None, avoid: frozenset[int] | None = None
+    job_id: str,
+    score: float = 0.0,
+    domain: str = "default",
+    avoid: frozenset[int] | None = None,
+    outputs: frozenset[str] = ALTO_TXT,
 ) -> PendingJob:
-    return PendingJob(job_id, score, domain, avoid or frozenset())
+    return PendingJob(job_id, score, domain, outputs, avoid or frozenset())
 
 
 def test_spreads_evenly_across_equal_backends() -> None:
@@ -60,7 +80,7 @@ def test_domain_job_only_lands_on_a_serving_backend() -> None:
     assert not leftovers
     placement = {pj.job_id: slot.backend.name for pj, slot in assignments}
     assert placement["j1"] == "gpu"  # domain-restricted job routed to the serving backend
-    assert placement["j2"] == "cpu"  # domainless job takes the other
+    assert placement["j2"] == "cpu"  # default job takes the other
 
 
 def test_unservable_domain_becomes_leftover() -> None:
@@ -140,3 +160,62 @@ def test_full_slots_take_nothing() -> None:
 
     assert not assignments
     assert [j.job_id for j in leftovers] == ["j1"]
+
+
+# ---- routing on outputs ----
+
+
+def test_job_wanting_an_output_skips_slot_without_it() -> None:
+    slots = [
+        _slot("ocr", 4, domains=("maps",), id_=1),
+        _slot("tuzkam", 4, domains=("maps",), id_=2, outputs=frozenset({"json", "geojson"})),
+    ]
+    jobs = [_job("j1", domain="maps", outputs=frozenset({"geojson"}))]
+
+    assignments, leftovers = allocate_jobs(slots, jobs)
+
+    assert not leftovers
+    assert assignments[0][1].backend.id == 2
+
+
+def test_outputs_no_slot_produces_become_leftover() -> None:
+    slots = [_slot("a", 4)]
+    jobs = [_job("j1", outputs=frozenset({"alto", "geojson"}))]
+
+    assignments, leftovers = allocate_jobs(slots, jobs)
+
+    assert not assignments
+    assert [j.job_id for j in leftovers] == ["j1"]
+
+
+def test_default_job_skips_slot_without_default() -> None:
+    slots = [_slot("kramarky-only", 4, domains=("kramarky",), id_=1)]
+
+    assignments, leftovers = allocate_jobs(slots, [_job("j1")])
+
+    assert not assignments
+    assert [j.job_id for j in leftovers] == ["j1"]
+
+
+def test_can_serve_needs_every_output() -> None:
+    slot = _slot("a", 1)
+    assert can_serve(slot, _job("j1", outputs=frozenset({"alto"})))
+    assert can_serve(slot, _job("j2"))
+    assert not can_serve(slot, _job("j3", outputs=frozenset({"alto", "json"})))
+    assert not can_serve(slot, _job("j4", domain="kramarky"))
+
+
+# ---- job meta from the Redis hash ----
+
+
+def test_legacy_hash_without_domain_routes_as_default() -> None:
+    assert job_domain({"fmt": "multi"}) == "default"
+    assert job_domain({"domain": ""}) == "default"
+    assert job_domain({"domain": "kramarky"}) == "kramarky"
+
+
+def test_outputs_come_from_hash_or_fall_back_to_fmt() -> None:
+    assert job_outputs({"outputs": "alto,geojson", "fmt": "custom"}) == {"alto", "geojson"}
+    assert job_outputs({"fmt": "txt"}) == {"txt"}
+    assert job_outputs({"fmt": "multi"}) == ALTO_TXT
+    assert job_outputs({}) == ALTO_TXT

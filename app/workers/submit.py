@@ -53,17 +53,42 @@ class PendingJob:
 
     job_id: str
     score: float
-    domain: str | None
+    domain: str
+    outputs: frozenset[str]
     avoid: frozenset[int] = field(default_factory=frozenset)
 
 
 @dataclass
 class BackendSlot:
-    """A healthy backend, its remaining free capacity (may be 0) and the domains it serves."""
+    """A healthy backend, its remaining free capacity (may be 0) and what it serves:
+    domain → the outputs it produces for that domain."""
 
     backend: Backend
     free: int
-    domains: set[str]
+    domains: dict[str, frozenset[str]]
+
+
+def job_domain(meta: dict[str, str]) -> str:
+    """The job's domain from its Redis hash; a domain-less job is a ``default`` job."""
+    return meta.get("domain") or "default"
+
+
+def job_outputs(meta: dict[str, str]) -> frozenset[str]:
+    """The job's requested outputs from its Redis hash. A job enqueued before outputs
+    were stored only has ``fmt``, which maps onto the same set."""
+    raw = meta.get("outputs")
+    if raw:
+        return frozenset(o for o in raw.split(",") if o)
+    return fmt_to_outputs(meta.get("fmt") or "multi")
+
+
+def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
+    """Whether a backend serving ``domains`` can run a ``domain`` job wanting ``outputs``."""
+    return domain in domains and outputs <= domains[domain]
+
+
+def can_serve(slot: BackendSlot, job: PendingJob) -> bool:
+    return serves(slot.domains, job.domain, job.outputs)
 
 
 def allocate_jobs(
@@ -73,12 +98,12 @@ def allocate_jobs(
 
     Spreads jobs evenly rather than filling the first backend to capacity, so results
     come back with more parallelism across comparable backends. Respects each slot's
-    free capacity and served domains: a job with a domain only lands on a backend that
-    serves it. A retried job skips the backends in its ``avoid`` set; it falls back to
-    an avoided one only when no other backend in the tier serves its domain at all
-    (D7). If the alternatives are merely full, the job waits for them instead of going
-    back to the backend that just failed it. Pure apart from decrementing the passed
-    slots' ``free`` counters.
+    free capacity and capabilities: a job only lands on a backend that serves its domain
+    with all the outputs it wants (``can_serve``). A retried job skips the backends in
+    its ``avoid`` set; it falls back to an avoided one only when no other backend in the
+    tier can serve it at all (D7). If the alternatives are merely full, the job waits for
+    them instead of going back to the backend that just failed it. Pure apart from
+    decrementing the passed slots' ``free`` counters.
 
     Returns ``(assignments, leftovers)``; leftovers are jobs no slot in this tier can
     take right now (full, or their domain is served only by a lower tier) and should
@@ -89,12 +114,12 @@ def allocate_jobs(
     count = len(slots)
     start = 0
     for job in jobs:
-        serving = [s for s in slots if job.domain is None or job.domain in s.domains]
+        serving = [s for s in slots if can_serve(s, job)]
         allow_avoided = all(s.backend.id in job.avoid for s in serving)
         placed = False
         for step in range(count):
             slot = slots[(start + step) % count]
-            if slot.free <= 0 or (job.domain is not None and job.domain not in slot.domains):
+            if slot.free <= 0 or not can_serve(slot, job):
                 continue
             if slot.backend.id in job.avoid and not allow_avoided:
                 continue
@@ -199,10 +224,10 @@ async def main() -> None:
 
         task.add_done_callback(_done)
 
-    async def served_domains(backend_id: int) -> set[str]:
-        """Domain names ``backend_id`` currently serves (from the synced mapping)."""
+    async def served_domains(backend_id: int) -> dict[str, frozenset[str]]:
+        """Domain → outputs ``backend_id`` currently serves (from the synced mapping)."""
         async with session_factory() as db:
-            return set(await served_capabilities(db, backend_id))
+            return await served_capabilities(db, backend_id)
 
     async def check_health(backend: Backend) -> bool:
         now = time.time()
@@ -221,7 +246,10 @@ async def main() -> None:
         return healthy
 
     async def dispatch(
-        job_id: str, original_score: float, backend: Backend, backend_domains: set[str]
+        job_id: str,
+        original_score: float,
+        backend: Backend,
+        backend_domains: dict[str, frozenset[str]],
     ) -> None:
         meta = await get_job(r, job_id)
         if not meta:
@@ -231,13 +259,13 @@ async def main() -> None:
         username = meta["username"]
         external_id = meta["external_id"]
         ext = meta.get("ext", ".jpg")
-        fmt = meta.get("fmt", "multi")
-        domain = meta.get("domain", "") or None
+        domain = job_domain(meta)
+        outputs = job_outputs(meta)
 
-        # Skip if this backend does not serve the requested domain. Checked against the
-        # set loaded once per tick (no per-job DB round-trip); the job goes back on the
-        # queue for a backend that does serve it.
-        if domain and domain not in backend_domains:
+        # Skip if this backend does not serve the job's domain + outputs. Checked against
+        # the capabilities loaded once per tick (no per-job DB round-trip); the job goes
+        # back on the queue for a backend that does serve it.
+        if not serves(backend_domains, domain, outputs):
             await requeue_job(r, job_id, original_score)
             return
 
@@ -274,9 +302,7 @@ async def main() -> None:
         filename = f"{external_id}{ext}"
         try:
             adapter = adapter_for(backend)
-            engine_job_id = await adapter.submit(
-                image_bytes, filename, domain, fmt_to_outputs(fmt), {}
-            )
+            engine_job_id = await adapter.submit(image_bytes, filename, domain, outputs, {})
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
             engine_version = await adapter.version()
 
@@ -408,14 +434,15 @@ async def main() -> None:
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
-                    jobs_with_domain: list[PendingJob] = []
+                    pending: list[PendingJob] = []
                     for job_id, score in entries:
-                        meta = await get_job(r, job_id)
-                        domain = meta.get("domain") if meta else None
-                        avoid = parse_avoid(meta) if meta else frozenset()
-                        jobs_with_domain.append(PendingJob(job_id, score, domain or None, avoid))
+                        meta = await get_job(r, job_id) or {}
+                        domain, outputs = job_domain(meta), job_outputs(meta)
+                        pending.append(
+                            PendingJob(job_id, score, domain, outputs, parse_avoid(meta))
+                        )
 
-                    assignments, leftovers = allocate_jobs(tier, jobs_with_domain)
+                    assignments, leftovers = allocate_jobs(tier, pending)
                     for job in leftovers:
                         # a lower tier may serve its domain, or a full backend frees up
                         await requeue_job(r, job.job_id, job.score)
