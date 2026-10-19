@@ -124,6 +124,7 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `redis.storage.size` | `1Gi` | Redis PVC size |
 | `cnpg.name` | `taas-db` | CNPG Cluster name (DB host is `<name>-rw`) |
 | `cnpg.instances` | `1` | Postgres instances |
+| `cnpg.pgStatStatements` | `true` | Collect per-query stats in `pg_stat_statements` |
 | `cnpg.storage.size` | `10Gi` | Postgres PVC size |
 | `cnpg.database` / `cnpg.owner` | `taas` / `taas` | DB name / owner |
 | `minio.incoming.bucket` | `incoming` | Upload bucket |
