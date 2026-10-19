@@ -1,11 +1,23 @@
 # `clients/` — taas client libraries
 
-Thin, event-driven clients for the taas API. Both follow the same model:
+Thin, event-driven clients for the taas API. Both do two modes, and you can mix them in
+one client:
 
-- you **submit** images (each gets a UUID),
-- the client holds a **WebSocket** to `/ws` and dispatches your callbacks as results arrive,
-- results are **fetched from the presigned URL and zstd-decompressed** for you, so callbacks
-  receive ready-to-use ALTO/text bytes.
+- **Per page** — you **submit** images one by one (each gets a UUID); the client holds a
+  **WebSocket** to `/ws` and calls your callbacks as each page finishes, with results
+  **fetched from the presigned URL and zstd-decompressed** for you. Best for interactive
+  use and small sets.
+- **Batch** — you submit a whole directory (or an archive) **once**; the client packs it
+  into a `.tar.zst`, reports progress as the pages finish, and downloads **one archive**
+  of all outputs with a `manifest.json`. Best for large sets.
+
+Every submit names a `domain`, the `outputs` it wants (e.g. `alto,txt`; the older `fmt`
+still works) and engine `options`. `domains()` lists what the server offers: each
+domain's outputs and the JSON Schema its options are validated against.
+
+Runnable demos run the same images both ways and time them:
+[`python/examples/demo.py`](python/examples/demo.py) and
+[`Demo.java`](java/src/main/java/cz/osdd/taas/client/examples/Demo.java).
 
 | Language | Path | Package |
 |---|---|---|
@@ -49,8 +61,38 @@ client.stop()
 ```
 
 `JobResult(uuid, alto, txt)` carries decompressed bytes; `JobEvent` carries
-`status`, `error`, `alto_url`/`txt_url`, `ts`. An `AsyncTaasClient` is also exported.
-Deps: `httpx`, `websockets`, `zstandard`.
+`status`, `error`, `alto_url`/`txt_url`, `ts`. An `AsyncTaasClient` is also exported,
+with the same methods as coroutines. Deps: `httpx`, `websockets`, `zstandard`.
+
+Domain, outputs and options — as client defaults, or per submit:
+
+```python
+for d in client.domains():
+    print(d.name, d.outputs, d.options_schema)
+
+client.submit("page-3.jpg", domain="kramarky", outputs=["alto"],
+              options={"alto_profile": "basic"})
+```
+
+Batch mode:
+
+```python
+client = TaasClient(..., on_batch=lambda p: print(f"{p.done + p.failed}/{p.total}"))
+client.start()
+
+batch = client.submit_batch("pages/", domain="kramarky")   # a directory, a list of
+                                                            # images, or an archive
+status = client.wait_batch(batch.batch_id)                  # done / failed counts
+results = client.download_batch_results(batch.batch_id, "out/", extract=True)
+for page in results.manifest:                               # out/<batch_id>/manifest.json
+    print(page["source_name"], page["status"], page.get("outputs"))
+```
+
+`get_batch(batch_id, pages=True)` lists every page's status while it runs.
+
+```bash
+python clients/python/examples/demo.py --api-key KEY test-data/ [--domain kramarky]
+```
 
 ## Java
 
@@ -74,10 +116,35 @@ try (TaasClient client = new TaasClient(
 }
 ```
 
-The 5-arg constructor adds default `fmt` and `domain`. `submit` is overloaded: pass your own
-UUID — `submit(path, uuid)` or `submit(path, uuid, filename, fmt, domain)` — or omit it
-(`submit(path)` / `submit(path, filename, fmt, domain)`) and it generates one. All overloads
-return the job UUID. Deps: OkHttp + Gson (see `pom.xml`).
+`SubmitOptions` carries the domain, outputs and options — as client defaults (last
+constructor argument) or per submit:
+
+```java
+SubmitOptions kramarky = SubmitOptions.defaults()
+    .withDomain("kramarky").withOutputs("alto", "txt")
+    .withOptions(Map.of("alto_profile", "basic"));
+client.submit(Path.of("page-2.jpg"), kramarky);
+client.domains().forEach(d -> System.out.println(d.name() + " " + d.outputs()));
+```
+
+`submit` is overloaded: pass your own UUID (`submit(path, uuid, options)`) or omit it and
+it generates one; the older `fmt`/`domain` overloads still work. All overloads return the
+job UUID.
+
+Batch mode:
+
+```java
+client.onBatchProgress(p -> System.out.println(p.done() + p.failed() + "/" + p.total()));
+BatchSubmit batch = client.submitBatch(Path.of("pages/"), kramarky);  // directory or archive
+BatchStatus status = client.awaitBatch(batch.batchId(), 1, TimeUnit.HOURS);
+BatchResults results = client.downloadBatchResults(batch.batchId(), Path.of("out"), true);
+```
+
+```bash
+cd clients/java && mvn -q compile exec:java -Dexec.args="http://localhost:8080 KEY ../../test-data"
+```
+
+Deps: OkHttp, Gson, zstd-jni, commons-compress (see `pom.xml`).
 
 ## Notes
 
@@ -87,5 +154,8 @@ return the job UUID. Deps: OkHttp + Gson (see `pom.xml`).
   back on every event and `JobResult`/`JobEvent`.
 - `fmt="multi"` returns both ALTO and text and depends on engine-side multi support; until
   then use `alto` or `txt`.
+- **Batch pages** — a batch's pages run as ordinary jobs, but the clients don't download
+  them one by one: the results come as the batch's archive. Map them back with the
+  manifest's `source_name` (the path inside the archive you sent).
 - Both clients auto-reconnect the WebSocket and de-duplicate by UUID, so a brief drop won't
   lose results that arrived during the gap (replayed via the API's catch-up window).
