@@ -15,7 +15,6 @@ from app.config import Settings
 from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineFullError
 from app.engines.outputs import fmt_to_outputs
-from app.engines.tuzkaocr import NoOptions
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.db import make_engine
@@ -299,7 +298,7 @@ async def main() -> None:
         try:
             adapter = adapter_for(backend)
             engine_job_id = await adapter.submit(
-                image_bytes, filename, domain, fmt_to_outputs(fmt), NoOptions()
+                image_bytes, filename, domain, fmt_to_outputs(fmt), {}
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
             engine_version = await adapter.version()

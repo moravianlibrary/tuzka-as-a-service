@@ -1,0 +1,41 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "TuzkaOCR", "version": "1.7.0"},
+  "paths": {
+    "/api/v1/process": {
+      "post": {
+        "summary": "Process Image",
+        "operationId": "process_image_api_v1_process_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {"$ref": "#/components/schemas/Body_process_image_api_v1_process_post"}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {"description": "Successful Response", "content": {"application/json": {"schema": {}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_process_image_api_v1_process_post": {
+        "properties": {
+          "image": {"type": "string", "format": "binary", "title": "Image"},
+          "domain": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Domain"},
+          "fmt": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Fmt"},
+          "role_classifier": {"anyOf": [{"type": "boolean"}, {"type": "null"}], "title": "Role Classifier"},
+          "source_identifier": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Source Identifier"},
+          "alto_profile": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Alto Profile"},
+          "physical_img_nr": {"anyOf": [{"type": "integer"}, {"type": "null"}], "title": "Physical Img Nr"}
+        },
+        "type": "object",
+        "required": ["image"],
+        "title": "Body_process_image_api_v1_process_post"
+      }
+    }
+  }
+}
