@@ -17,7 +17,8 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from sqlalchemy import func, select
+from sqlalchemy import Integer, Text, func, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
@@ -32,6 +33,8 @@ from app.models.domain import Domain
 from app.models.job import Job, JobResult
 from app.models.user import User
 from app.schemas.job import (
+    DomainEntry,
+    DomainListResponse,
     JobListResponse,
     JobResultEntry,
     JobResultResponse,
@@ -370,4 +373,63 @@ async def list_jobs(
             for j in jobs
         ],
         total=total or 0,
+    )
+
+
+# One row per domain served by at least one enabled backend; outputs are unnested so
+# a domain served by several backends reports the union of what they produce.
+_SERVED_DOMAINS_SQL = text(
+    """
+    SELECT d.name, d.label, d.description, d.options_schema, d.legacy_engine_id,
+           array_agg(DISTINCT o.output ORDER BY o.output) AS outputs
+    FROM domains d
+    JOIN backend_domains bd ON bd.domain_id = d.id
+    JOIN backends b ON b.id = bd.backend_id AND b.enabled
+    CROSS JOIN LATERAL unnest(bd.outputs) AS o(output)
+    GROUP BY d.id
+    ORDER BY d.name
+    """
+).columns(
+    name=Text,
+    label=Text,
+    description=Text,
+    options_schema=JSONB,
+    legacy_engine_id=Integer,
+    outputs=ARRAY(Text),
+)
+
+
+@router.get(
+    "/domains",
+    response_model=DomainListResponse,
+    summary="List the domains you can submit to",
+    responses={
+        401: {"description": "Missing or invalid X-API-Key header"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
+async def list_domains(
+    username: str = Depends(rate_limit_query()),
+    db: AsyncSession = Depends(get_db),
+) -> DomainListResponse:
+    """List the domains served by at least one enabled backend.
+
+    Requires a valid API key in the ``X-API-Key`` header. For each domain, ``outputs``
+    is what a job may request in ``outputs`` (the union over the backends serving it),
+    and ``options_schema`` is the JSON Schema the submit ``options`` field is validated
+    against, derived from the engine's own OpenAPI.
+    """
+    rows = (await db.execute(_SERVED_DOMAINS_SQL)).mappings().all()
+    return DomainListResponse(
+        domains=[
+            DomainEntry(
+                name=r["name"],
+                label=r["label"],
+                description=r["description"],
+                outputs=list(r["outputs"]),
+                options_schema=r["options_schema"],
+                legacy_engine_id=r["legacy_engine_id"],
+            )
+            for r in rows
+        ]
     )
