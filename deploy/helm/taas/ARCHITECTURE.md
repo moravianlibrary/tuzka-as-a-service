@@ -61,8 +61,8 @@ flowchart TB
   via `secretKeyRef`.
 - **`<release>-cnpg-auth`** Secret — Postgres owner credentials for CloudNativePG.
 - Compat has its own `<release>-compat-config` (`TAAS_BASE_URL`, `REDIS_URL`,
-  `COMPAT_TTL_SECONDS`, `ENGINES`); it never sees the app secret — it forwards the caller's
-  `api-key`.
+  `COMPAT_TTL_SECONDS`); it never sees the app secret — it forwards the caller's
+  `api-key`. Legacy engine ids come from taas `GET /api/v1/domains`.
 
 ## Install / upgrade hooks
 
