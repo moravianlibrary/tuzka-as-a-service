@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """taas client demo: the same directory of images, OCR'd both ways.
 
-1. Per page — submit every image as its own job; results arrive over the WebSocket
-   as each page finishes. Best for interactive use and small sets.
-2. As one batch — pack the same images into a .tar.zst, submit it once, watch the
-   progress events, then download one archive with every page's output and a
-   manifest. Best for large sets.
+1. Per page — submit every image as its own job, labelled with your own page id
+   (`external_id`, here the file name without extension); results arrive over the
+   WebSocket as each page finishes, carrying that label. Best for interactive use and
+   small sets.
+2. As one batch — pack the same images into a .tar.zst and submit it once, labelled
+   with your id for the whole batch (here the directory name). Watch the progress
+   events, then download one archive with every page's output; its manifest maps each
+   page back by its file name (`source_name`). Best for large sets.
 
     python examples/demo.py --url http://localhost:8080 --api-key KEY test-data/
     python examples/demo.py ... --domain kramarky --outputs alto,txt \\
@@ -39,7 +42,7 @@ def per_page(client: TaasClient, images: list[Path], out: Path) -> float:
     print(f"\n== Per page: {len(images)} job(s)")
     started = time.monotonic()
     for image in images:
-        client.submit(image)
+        client.submit(image, external_id=image.stem)  # your id for this page
     if not client.wait(timeout=3600):
         print("  timed out waiting for results")
     elapsed = time.monotonic() - started
@@ -47,13 +50,13 @@ def per_page(client: TaasClient, images: list[Path], out: Path) -> float:
     return elapsed
 
 
-def as_batch(client: TaasClient, images: list[Path], out: Path) -> float:
+def as_batch(client: TaasClient, images: list[Path], label: str, out: Path) -> float:
     """Submit the same images as one batch and download one results archive. The
     client packs them into a .tar.zst; a directory or a ready archive works too."""
     print("\n== As one batch")
     started = time.monotonic()
-    batch = client.submit_batch(images)
-    print(f"  batch {batch.batch_id}: {batch.total} page(s)", end="")
+    batch = client.submit_batch(images, external_id=label)  # your id for the batch
+    print(f"  batch {batch.batch_id} ({batch.external_id}): {batch.total} page(s)", end="")
     print(f", skipped {', '.join(batch.skipped)}" if batch.skipped else "")
 
     status = client.wait_batch(batch.batch_id, timeout=3600)
@@ -90,16 +93,17 @@ def main() -> None:
     lock = threading.Lock()
 
     def on_result(result: JobResult) -> None:
+        name = result.external_id or str(result.job_id)  # the label we submitted it with
         if result.alto:
-            (page_dir / f"{result.uuid}.xml").write_bytes(result.alto)
+            (page_dir / f"{name}.xml").write_bytes(result.alto)
         if result.txt:
-            (page_dir / f"{result.uuid}.txt").write_bytes(result.txt)
+            (page_dir / f"{name}.txt").write_bytes(result.txt)
         with lock:
-            print(f"  page {result.uuid} done")
+            print(f"  page {name} done")
 
     def on_error(event: JobEvent) -> None:
         with lock:
-            print(f"  page {event.uuid} FAILED: {event.error}")
+            print(f"  page {event.external_id or event.job_id} FAILED: {event.error}")
 
     def on_batch(progress: BatchProgress) -> None:
         with lock:
@@ -119,7 +123,7 @@ def main() -> None:
     try:
         list_domains(client)
         page_s = per_page(client, images, page_dir)
-        batch_s = as_batch(client, images, out / "batch")
+        batch_s = as_batch(client, images, args.images.resolve().name, out / "batch")
     finally:
         client.stop()
 

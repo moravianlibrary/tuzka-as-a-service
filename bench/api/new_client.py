@@ -60,17 +60,19 @@ class Collector:
     def __init__(self, out_dir: Path | None = None) -> None:
         self._out_dir = out_dir
         self._lock = threading.Lock()
-        self._pages: dict[UUID, tuple[str, float]] = {}
+        # keyed by the external_id each page was submitted with
+        self._pages: dict[str, tuple[str, float]] = {}
         self._timings: list[PageTiming] = []
         self.first_result_at: float | None = None
 
-    def submitted(self, job_id: UUID, name: str, at: float) -> None:
+    def submitted(self, key: str, name: str, at: float) -> None:
         with self._lock:
-            self._pages[job_id] = (name, at)
+            self._pages[key] = (name, at)
 
     def on_result(self, result: JobResult) -> None:
         with self._lock:
-            name, started = self._pages.pop(result.uuid, (str(result.uuid), 0.0))
+            key = result.external_id or str(result.job_id)
+            name, started = self._pages.pop(key, (key, 0.0))
 
         alto = result.alto or b""
         txt = result.txt or b""
@@ -108,7 +110,8 @@ class Collector:
         finished = time.monotonic()
 
         with self._lock:
-            name, started = self._pages.pop(event.uuid, (str(event.uuid), finished))
+            key = event.external_id or str(event.job_id)
+            name, started = self._pages.pop(key, (key, finished))
             self._timings.append(
                 PageTiming(
                     name=name,
@@ -144,6 +147,13 @@ class Collector:
             return list(self._timings)
 
 
+def _submit_failed(key: str, exc: Exception) -> JobEvent:
+    """A failure event for a page whose submit was rejected (so it has no job id)."""
+    return JobEvent(
+        job_id=UUID(int=0), status=JobStatus.FAILED, external_id=key, error=f"submit: {exc}"
+    )
+
+
 def submit_all(
     client: TaasClient, collector: Collector, images: list[Path], concurrency: int
 ) -> list[str]:
@@ -152,18 +162,17 @@ def submit_all(
     errors_lock = threading.Lock()
 
     def submit_one(page: Path) -> None:
-        job_id = uuid4()
+        key = str(uuid4())
         started = time.monotonic()
         # Register before the POST returns: a fast job can be pushed back over the
-        # WebSocket while submit() is still unwinding.
-        collector.submitted(job_id, page.name, started)
+        # WebSocket while submit() is still unwinding. The key comes back as the
+        # result's external_id.
+        collector.submitted(key, page.name, started)
 
         try:
-            client.submit(page, uuid=job_id)
+            client.submit(page, external_id=key)
         except Exception as exc:
-            collector.on_error(
-                JobEvent(uuid=job_id, status=JobStatus.FAILED, error=f"submit: {exc}")
-            )
+            collector.on_error(_submit_failed(key, exc))
             with errors_lock:
                 errors.append(f"{page.name}: {exc}")
 
@@ -192,15 +201,13 @@ def submit_serially(
     errors: list[str] = []
 
     for page in images:
-        job_id = uuid4()
-        collector.submitted(job_id, page.name, time.monotonic())
+        key = str(uuid4())
+        collector.submitted(key, page.name, time.monotonic())
 
         try:
-            client.submit(page, uuid=job_id)
+            client.submit(page, external_id=key)
         except Exception as exc:
-            collector.on_error(
-                JobEvent(uuid=job_id, status=JobStatus.FAILED, error=f"submit: {exc}")
-            )
+            collector.on_error(_submit_failed(key, exc))
             errors.append(f"{page.name}: {exc}")
             continue
 

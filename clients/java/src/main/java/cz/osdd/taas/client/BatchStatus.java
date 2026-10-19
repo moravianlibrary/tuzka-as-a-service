@@ -6,6 +6,8 @@ import java.util.UUID;
 /** A batch's progress ({@code GET /api/v1/batches/{id}}). {@code pages} is null unless asked for. */
 public record BatchStatus(
     UUID batchId,
+    /** Your label for the batch; null if none. */
+    String externalId,
     String status,
     String domain,
     List<String> outputs,

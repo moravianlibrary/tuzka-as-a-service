@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 import websockets
@@ -24,6 +24,9 @@ from .models import (
     JobResult,
     JobStatus,
 )
+
+# Job ids remembered from results that arrived before their submit response returned.
+_FINISHED_EARLY_MAX = 10_000
 
 
 class AsyncTaasClient:
@@ -55,6 +58,8 @@ class AsyncTaasClient:
         # Presigned result URLs carry their own auth; this client sends no API key.
         self._fetch_http = httpx.AsyncClient(timeout=60.0)
         self._pending: set[UUID] = set()
+        # Jobs whose result arrived before their submit returned (insertion-ordered, capped).
+        self._finished_early: dict[UUID, None] = {}
         self._lock = asyncio.Lock()
         self._all_done = asyncio.Event()
         self._batch_waiters: dict[UUID, asyncio.Event] = {}
@@ -91,18 +96,15 @@ class AsyncTaasClient:
     async def submit(
         self,
         image: Path | str | bytes,
-        uuid: UUID | None = None,
+        external_id: str | None = None,
         fmt: str | None = None,
         domain: str | None = None,
         outputs: Iterable[str] | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> UUID:
-        ext_id = uuid or uuid4()
-
-        async with self._lock:
-            self._pending.add(ext_id)
-            self._all_done.clear()
-
+        """Submit one page and return its job id. ``external_id`` is your own label for
+        the page (any string up to 255 characters, e.g. its PID); it comes back on the
+        page's ``JobResult``/``JobEvent``."""
         if isinstance(image, (Path, str)):
             path = Path(image)
             image_bytes = path.read_bytes()
@@ -113,7 +115,7 @@ class AsyncTaasClient:
 
         files = {"image": (filename, image_bytes)}
         data = _common.job_form(
-            ext_id,
+            external_id,
             fmt or self._fmt,
             domain or self._domain,
             outputs if outputs is not None else self._outputs,
@@ -121,12 +123,15 @@ class AsyncTaasClient:
         )
 
         resp = await self._http.post(f"{self._url}/api/v1/jobs", files=files, data=data)
-        if resp.status_code >= 400:
-            async with self._lock:
-                self._pending.discard(ext_id)
-            resp.raise_for_status()
+        resp.raise_for_status()
+        job_id = UUID(resp.json()["job_id"])
 
-        return ext_id
+        async with self._lock:
+            # A fast page can finish before its submit response arrives.
+            if self._finished_early.pop(job_id, None) is None:
+                self._pending.add(job_id)
+                self._all_done.clear()
+        return job_id
 
     async def wait(self, timeout: float | None = None) -> bool:
         if not self._pending:
@@ -142,12 +147,14 @@ class AsyncTaasClient:
     async def submit_batch(
         self,
         source: Path | str | bytes | Iterable[Path | str],
+        external_id: str | None = None,
         domain: str | None = None,
         outputs: Iterable[str] | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> BatchSubmit:
         """Submit many pages as one batch; see ``TaasClient.submit_batch``."""
         data = _common.batch_form(
+            external_id,
             self._fmt,
             domain or self._domain,
             outputs if outputs is not None else self._outputs,
@@ -289,21 +296,23 @@ class AsyncTaasClient:
         if not _common.is_page_event(event):
             return  # a batch page, or an event this client doesn't know
 
-        ext_id = UUID(event["uuid"])
+        job_id = UUID(event["job_id"])
+        external_id = event.get("external_id")
 
         if event["status"] == "failed":
             job_event = JobEvent(
-                uuid=ext_id,
+                job_id=job_id,
                 status=JobStatus.FAILED,
+                external_id=external_id,
                 error=event.get("error"),
                 ts=event.get("ts"),
             )
             self._on_error(job_event)
-            await self._resolve(ext_id)
+            await self._resolve(job_id)
             return
 
         if event["status"] == "done":
-            result = JobResult(uuid=ext_id)
+            result = JobResult(job_id=job_id, external_id=external_id)
 
             if event.get("alto_url"):
                 resp = await self._fetch_http.get(event["alto_url"])
@@ -316,10 +325,16 @@ class AsyncTaasClient:
                 result.txt = self._dctx.decompress(resp.content)
 
             self._on_result(result)
-            await self._resolve(ext_id)
+            await self._resolve(job_id)
 
-    async def _resolve(self, uuid: UUID) -> None:
+    async def _resolve(self, job_id: UUID) -> None:
         async with self._lock:
-            self._pending.discard(uuid)
-            if not self._pending:
-                self._all_done.set()
+            if job_id in self._pending:
+                self._pending.discard(job_id)
+                if not self._pending:
+                    self._all_done.set()
+                return
+            # Not (yet) known: remember it in case its submit is still in flight.
+            self._finished_early[job_id] = None
+            if len(self._finished_early) > _FINISHED_EARLY_MAX:
+                del self._finished_early[next(iter(self._finished_early))]

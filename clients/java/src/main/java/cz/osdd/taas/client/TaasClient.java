@@ -17,6 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,7 +53,12 @@ public class TaasClient implements AutoCloseable {
     private final OkHttpClient http;
     private final Gson gson;
 
-    private final Set<UUID> pending = ConcurrentHashMap.newKeySet();
+    // Job ids awaited by awaitAll, and ids whose result arrived before their submit
+    // returned (insertion-ordered, capped); both guarded by `pendingLock`.
+    private final Object pendingLock = new Object();
+    private final Set<UUID> pending = new HashSet<>();
+    private final Map<UUID, Boolean> finishedEarly = new LinkedHashMap<>();
+    private static final int FINISHED_EARLY_MAX = 10_000;
     private final CountDownLatch doneLatch = new CountDownLatch(1);
     // Batches someone waits on (awaitBatch), released by a finished progress event.
     private final Map<UUID, CountDownLatch> batchWaiters = new ConcurrentHashMap<>();
@@ -149,46 +156,43 @@ public class TaasClient implements AutoCloseable {
     // ---- per-page mode ----
 
     public UUID submit(Path imagePath) {
-        return submit(imagePath, UUID.randomUUID());
-    }
-
-    public UUID submit(Path imagePath, UUID uuid) {
-        return submit(imagePath, uuid, defaults);
+        return submit(imagePath, null, defaults);
     }
 
     public UUID submit(Path imagePath, SubmitOptions options) {
-        return submit(imagePath, UUID.randomUUID(), options);
+        return submit(imagePath, null, options);
     }
 
-    public UUID submit(Path imagePath, UUID uuid, SubmitOptions options) {
-        return submit(imagePath, uuid, imagePath.getFileName().toString(), options);
+    /** Submit with your own label for the page (e.g. its PID); it comes back on its result. */
+    public UUID submit(Path imagePath, String externalId) {
+        return submit(imagePath, externalId, defaults);
     }
 
-    public UUID submit(Path imagePath, String filename, String fmt, String domain) {
-        return submit(imagePath, UUID.randomUUID(), filename, fmt, domain);
+    public UUID submit(Path imagePath, String externalId, SubmitOptions options) {
+        return submit(imagePath, externalId, imagePath.getFileName().toString(), options);
     }
 
-    public UUID submit(Path imagePath, UUID uuid, String filename, String fmt, String domain) {
-        return submit(imagePath, uuid, filename, defaults.withFmt(fmt).withDomain(domain));
-    }
-
-    public UUID submit(Path imagePath, UUID uuid, String filename, SubmitOptions options) {
-        pending.add(uuid);
-
+    /**
+     * Submit one page and return its job id. {@code externalId} is your own label for the
+     * page (any string up to 255 characters, or null); it comes back on the page's
+     * {@link JobResult} / {@link JobEvent}.
+     */
+    public UUID submit(Path imagePath, String externalId, String filename, SubmitOptions options) {
         String mediaType = guessMediaType(filename);
         byte[] imageBytes;
         try {
             imageBytes = Files.readAllBytes(imagePath);
         } catch (IOException e) {
-            pending.remove(uuid);
             throw new UncheckedIOException(e);
         }
 
         MultipartBody.Builder bodyBuilder = new MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("image", filename,
-                RequestBody.create(imageBytes, MediaType.parse(mediaType)))
-            .addFormDataPart("uuid", uuid.toString());
+                RequestBody.create(imageBytes, MediaType.parse(mediaType)));
+        if (externalId != null) {
+            bodyBuilder.addFormDataPart("external_id", externalId);
+        }
         // outputs replaces fmt; send fmt only when no outputs were asked for
         if (options.outputs() != null) {
             bodyBuilder.addFormDataPart("outputs", String.join(",", options.outputs()));
@@ -203,18 +207,25 @@ public class TaasClient implements AutoCloseable {
             .post(bodyBuilder.build())
             .build();
 
+        UUID jobId;
         try (Response response = http.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                pending.remove(uuid);
                 throw new IOException("Submit failed: " + response.code()
                     + " " + response.body().string());
             }
+            jobId = UUID.fromString(JsonParser.parseString(response.body().string())
+                .getAsJsonObject().get("job_id").getAsString());
         } catch (IOException e) {
-            pending.remove(uuid);
             throw new UncheckedIOException(e);
         }
 
-        return uuid;
+        synchronized (pendingLock) {
+            // A fast page can finish before its submit response arrives.
+            if (finishedEarly.remove(jobId) == null) {
+                pending.add(jobId);
+            }
+        }
+        return jobId;
     }
 
     public boolean awaitAll() throws InterruptedException {
@@ -222,64 +233,71 @@ public class TaasClient implements AutoCloseable {
     }
 
     public boolean awaitAll(long timeout, TimeUnit unit) throws InterruptedException {
-        if (pending.isEmpty()) return true;
+        synchronized (pendingLock) {
+            if (pending.isEmpty()) return true;
+        }
         return doneLatch.await(timeout, unit);
     }
 
     // ---- batch mode ----
 
     public BatchSubmit submitBatch(Path source) {
-        return submitBatch(source, defaults);
+        return submitBatch(source, null, defaults);
     }
 
     /**
      * Submit many pages as one batch. {@code source} is an archive ({@code .tar.zst},
      * {@code .tar.gz}, {@code .tar}, {@code .zip}), sent as-is, or a directory, packed
-     * into a temporary {@code .tar.zst} first.
+     * into a temporary {@code .tar.zst} first. {@code externalId} is your own label for
+     * the batch (or null); its pages are identified by their path in the archive.
      */
-    public BatchSubmit submitBatch(Path source, SubmitOptions options) {
+    public BatchSubmit submitBatch(Path source, String externalId, SubmitOptions options) {
         try {
             if (Files.isRegularFile(source)) {
                 if (!TarZst.isArchive(source)) {
                     throw new IllegalArgumentException(
                         source + " is not a tar, tar.gz, tar.zst or zip archive");
                 }
-                return postBatch(source, options);
+                return postBatch(source, externalId, options);
             }
-            return packAndPost(TarZst.collect(source), options);
+            return packAndPost(TarZst.collect(source), externalId, options);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
     /** Submit the given image files as one batch (packed into a temporary .tar.zst). */
-    public BatchSubmit submitBatch(List<Path> images, SubmitOptions options) {
+    public BatchSubmit submitBatch(List<Path> images, String externalId, SubmitOptions options) {
         try {
-            return packAndPost(TarZst.of(images), options);
+            return packAndPost(TarZst.of(images), externalId, options);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    private BatchSubmit packAndPost(List<TarZst.Entry> entries, SubmitOptions options)
-            throws IOException {
+    private BatchSubmit packAndPost(List<TarZst.Entry> entries, String externalId,
+                                    SubmitOptions options) throws IOException {
         if (entries.isEmpty()) throw new IllegalArgumentException("no images to submit");
         Path archive = Files.createTempFile("taas-batch-", ".tar.zst");
         try {
             TarZst.pack(entries, archive);
-            return postBatch(archive, options);
+            return postBatch(archive, externalId, options);
         } finally {
             Files.deleteIfExists(archive);
         }
     }
 
-    private BatchSubmit postBatch(Path archive, SubmitOptions options) throws IOException {
+    private BatchSubmit postBatch(Path archive, String externalId, SubmitOptions options)
+            throws IOException {
         MultipartBody.Builder body = new MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             // streamed from disk, not read into memory
             .addFormDataPart("archive", archive.getFileName().toString(),
                 RequestBody.create(archive.toFile(), MediaType.parse("application/octet-stream")))
             .addFormDataPart("outputs", String.join(",", options.effectiveOutputs()));
+        if (externalId != null) {
+            body.addFormDataPart("external_id", externalId);
+        }
         addDomainAndOptions(body, options);
 
         Request request = new Request.Builder()
@@ -297,6 +315,7 @@ public class TaasClient implements AutoCloseable {
             JsonObject obj = JsonParser.parseString(response.body().string()).getAsJsonObject();
             return new BatchSubmit(
                 UUID.fromString(obj.get("batch_id").getAsString()),
+                str(obj, "external_id"),
                 obj.get("total").getAsInt(),
                 obj.has("skipped") ? strings(obj.getAsJsonArray("skipped")) : List.of());
         }
@@ -313,13 +332,13 @@ public class TaasClient implements AutoCloseable {
                 pageList.add(new BatchPage(
                     p.get("source_name").getAsString(),
                     UUID.fromString(p.get("job_id").getAsString()),
-                    UUID.fromString(p.get("external_id").getAsString()),
                     p.get("status").getAsString(),
                     str(p, "error")));
             }
         }
         return new BatchStatus(
             UUID.fromString(b.get("batch_id").getAsString()),
+            str(b, "external_id"),
             b.get("status").getAsString(),
             str(b, "domain"),
             b.has("outputs") && !b.get("outputs").isJsonNull()
@@ -447,10 +466,17 @@ public class TaasClient implements AutoCloseable {
         return out;
     }
 
-    private void resolve(UUID uuid) {
-        pending.remove(uuid);
-        if (pending.isEmpty()) {
-            doneLatch.countDown();
+    private void resolve(UUID jobId) {
+        synchronized (pendingLock) {
+            if (pending.remove(jobId)) {
+                if (pending.isEmpty()) doneLatch.countDown();
+                return;
+            }
+            // Not (yet) known: remember it in case its submit is still in flight.
+            finishedEarly.put(jobId, Boolean.TRUE);
+            if (finishedEarly.size() > FINISHED_EARLY_MAX) {
+                finishedEarly.remove(finishedEarly.keySet().iterator().next());
+            }
         }
     }
 
@@ -490,16 +516,18 @@ public class TaasClient implements AutoCloseable {
             return;
         }
         // Pages of a batch are downloaded as one archive; skip unknown events too.
-        if (!obj.has("uuid") || !obj.has("status") || str(obj, "batch_id") != null) {
+        if (!obj.has("job_id") || !obj.has("status") || str(obj, "batch_id") != null) {
             return;
         }
 
-        UUID uuid = UUID.fromString(obj.get("uuid").getAsString());
+        UUID jobId = UUID.fromString(obj.get("job_id").getAsString());
+        String externalId = str(obj, "external_id");
         String status = obj.get("status").getAsString();
 
         if ("failed".equals(status)) {
-            onError.onError(new JobEvent(uuid, status, null, null, str(obj, "error"), str(obj, "ts")));
-            resolve(uuid);
+            onError.onError(new JobEvent(
+                jobId, externalId, status, null, null, str(obj, "error"), str(obj, "ts")));
+            resolve(jobId);
             return;
         }
 
@@ -514,8 +542,8 @@ public class TaasClient implements AutoCloseable {
                 txt = fetchAndDecompress(obj.get("txt_url").getAsString());
             }
 
-            onResult.onResult(new JobResult(uuid, alto, txt));
-            resolve(uuid);
+            onResult.onResult(new JobResult(jobId, externalId, alto, txt));
+            resolve(jobId);
         }
     }
 

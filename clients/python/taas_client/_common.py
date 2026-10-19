@@ -21,14 +21,16 @@ MANIFEST_NAME = "manifest.json"
 
 
 def job_form(
-    uuid: UUID,
+    external_id: str | None,
     fmt: str,
     domain: str | None,
     outputs: Iterable[str] | None,
     options: Mapping[str, Any] | None,
 ) -> dict[str, str]:
     """Form fields for ``POST /api/v1/jobs``. ``fmt`` is only sent without ``outputs``."""
-    data = {"uuid": str(uuid)}
+    data: dict[str, str] = {}
+    if external_id is not None:
+        data["external_id"] = external_id
     if outputs is not None:
         data["outputs"] = ",".join(outputs)
     else:
@@ -41,6 +43,7 @@ def job_form(
 
 
 def batch_form(
+    external_id: str | None,
     fmt: str,
     domain: str | None,
     outputs: Iterable[str] | None,
@@ -48,6 +51,8 @@ def batch_form(
 ) -> dict[str, str]:
     """Form fields for ``POST /api/v1/batches``, which takes outputs only."""
     data = {"outputs": ",".join(outputs if outputs is not None else FMT_OUTPUTS[fmt])}
+    if external_id is not None:
+        data["external_id"] = external_id
     if domain:
         data["domain"] = domain
     if options:
@@ -75,6 +80,7 @@ def parse_domains(body: dict[str, Any]) -> list[DomainInfo]:
 def parse_batch_submit(body: dict[str, Any]) -> BatchSubmit:
     return BatchSubmit(
         batch_id=UUID(body["batch_id"]),
+        external_id=body.get("external_id"),
         total=int(body["total"]),
         skipped=list(body.get("skipped", [])),
     )
@@ -84,6 +90,7 @@ def parse_batch_status(body: dict[str, Any]) -> BatchStatus:
     pages = body.get("pages")
     return BatchStatus(
         batch_id=UUID(body["batch_id"]),
+        external_id=body.get("external_id"),
         status=body["status"],
         domain=body.get("domain"),
         outputs=list(body.get("outputs") or []),
@@ -101,7 +108,6 @@ def parse_batch_status(body: dict[str, Any]) -> BatchStatus:
             BatchPage(
                 source_name=p["source_name"],
                 job_id=UUID(p["job_id"]),
-                external_id=UUID(p["external_id"]),
                 status=p["status"],
                 error=p.get("error"),
             )
@@ -125,7 +131,7 @@ def parse_batch_event(event: dict[str, Any]) -> BatchProgress | None:
 def is_page_event(event: dict[str, Any]) -> bool:
     """A per-page job event this client fetches results for. Pages of a batch are left
     out: a batch's results are downloaded as one archive."""
-    return "uuid" in event and "status" in event and not event.get("batch_id")
+    return "job_id" in event and "status" in event and not event.get("batch_id")
 
 
 # ---- archives ----

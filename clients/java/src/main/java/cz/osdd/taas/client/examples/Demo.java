@@ -20,11 +20,15 @@ import java.util.stream.Stream;
 /**
  * taas client demo: the same directory of images, OCR'd both ways.
  * <ol>
- *   <li><b>Per page</b> — submit every image as its own job; results arrive over the
- *       WebSocket as each page finishes. Best for interactive use and small sets.</li>
- *   <li><b>As one batch</b> — pack the same images into a .tar.zst, submit it once, watch
- *       the progress events, then download one archive with every page's output and a
- *       manifest. Best for large sets.</li>
+ *   <li><b>Per page</b> — submit every image as its own job, labelled with your own page
+ *       id ({@code externalId}, here the file name without extension); results arrive
+ *       over the WebSocket as each page finishes, carrying that label. Best for
+ *       interactive use and small sets.</li>
+ *   <li><b>As one batch</b> — pack the same images into a .tar.zst and submit it once,
+ *       labelled with your id for the whole batch (here the directory name). Watch the
+ *       progress events, then download one archive with every page's output; its
+ *       manifest maps each page back by its file name ({@code source_name}). Best for
+ *       large sets.</li>
  * </ol>
  *
  * <pre>
@@ -67,19 +71,24 @@ public final class Demo {
         try (TaasClient client = new TaasClient(
                 url, apiKey,
                 result -> {
+                    // the label we submitted the page with
+                    String name = result.externalId() != null
+                        ? result.externalId() : result.jobId().toString();
                     try {
                         if (result.alto() != null) {
-                            Files.write(pageDir.resolve(result.uuid() + ".xml"), result.alto());
+                            Files.write(pageDir.resolve(name + ".xml"), result.alto());
                         }
                         if (result.txt() != null) {
-                            Files.write(pageDir.resolve(result.uuid() + ".txt"), result.txt());
+                            Files.write(pageDir.resolve(name + ".txt"), result.txt());
                         }
                     } catch (IOException e) {
-                        System.err.println("  could not write " + result.uuid() + ": " + e.getMessage());
+                        System.err.println("  could not write " + name + ": " + e.getMessage());
                     }
-                    System.out.println("  page " + result.uuid() + " done");
+                    System.out.println("  page " + name + " done");
                 },
-                event -> System.out.println("  page " + event.uuid() + " FAILED: " + event.error()),
+                event -> System.out.println("  page "
+                    + (event.externalId() != null ? event.externalId() : event.jobId())
+                    + " FAILED: " + event.error()),
                 options)) {
 
             client.onBatchProgress(p ->
@@ -88,7 +97,8 @@ public final class Demo {
 
             listDomains(client);
             double pageSeconds = perPage(client, images, options, pageDir);
-            double batchSeconds = asBatch(client, images, options, out.resolve("batch"));
+            String batchLabel = dir.toAbsolutePath().normalize().getFileName().toString();
+            double batchSeconds = asBatch(client, images, batchLabel, options, out.resolve("batch"));
 
             System.out.printf("%n%d page(s): per page %.1fs, as one batch %.1fs%n",
                 images.size(), pageSeconds, batchSeconds);
@@ -113,7 +123,7 @@ public final class Demo {
         System.out.println("\n== Per page: " + images.size() + " job(s)");
         long started = System.nanoTime();
         for (Path image : images) {
-            client.submit(image, options);
+            client.submit(image, stem(image), options);  // your id for this page
         }
         if (!client.awaitAll(1, TimeUnit.HOURS)) {
             System.out.println("  timed out waiting for results");
@@ -124,12 +134,13 @@ public final class Demo {
     }
 
     /** Submit the same images as one batch and download one results archive. */
-    private static double asBatch(TaasClient client, List<Path> images, SubmitOptions options,
-                                  Path out) throws Exception {
+    private static double asBatch(TaasClient client, List<Path> images, String label,
+                                  SubmitOptions options, Path out) throws Exception {
         System.out.println("\n== As one batch");
         long started = System.nanoTime();
-        BatchSubmit batch = client.submitBatch(images, options);
-        System.out.println("  batch " + batch.batchId() + ": " + batch.total() + " page(s)"
+        BatchSubmit batch = client.submitBatch(images, label, options);  // your id for the batch
+        System.out.println("  batch " + batch.batchId() + " (" + batch.externalId() + "): "
+            + batch.total() + " page(s)"
             + (batch.skipped().isEmpty() ? "" : ", skipped " + String.join(", ", batch.skipped())));
 
         BatchStatus status = client.awaitBatch(batch.batchId(), 1, TimeUnit.HOURS);
@@ -150,6 +161,12 @@ public final class Demo {
             System.out.println("    … " + (manifest.size() - 5) + " more in manifest.json");
         }
         return seconds;
+    }
+
+    private static String stem(Path file) {
+        String name = file.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     private static List<Path> listImages(Path dir) throws IOException {

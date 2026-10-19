@@ -14,8 +14,10 @@ class JobStatus(StrEnum):
 
 @dataclass
 class JobEvent:
-    uuid: UUID
+    job_id: UUID
     status: JobStatus
+    # Your label from submit(external_id=...), echoed back; None if you sent none.
+    external_id: str | None = None
     alto_url: str | None = None
     txt_url: str | None = None
     error: str | None = None
@@ -24,7 +26,8 @@ class JobEvent:
 
 @dataclass
 class JobResult:
-    uuid: UUID
+    job_id: UUID
+    external_id: str | None = None
     alto: bytes | None = None
     txt: bytes | None = None
 
@@ -45,6 +48,7 @@ class DomainInfo:
 @dataclass(frozen=True)
 class BatchSubmit:
     batch_id: UUID
+    external_id: str | None
     total: int
     # Archive members that weren't images and were left out.
     skipped: list[str]
@@ -52,9 +56,8 @@ class BatchSubmit:
 
 @dataclass(frozen=True)
 class BatchPage:
-    source_name: str
+    source_name: str  # the page's path inside the archive you sent
     job_id: UUID
-    external_id: UUID
     status: str
     error: str | None = None
 
@@ -62,6 +65,7 @@ class BatchPage:
 @dataclass(frozen=True)
 class BatchStatus:
     batch_id: UUID
+    external_id: str | None
     status: str  # open | queued | finished
     domain: str | None
     outputs: list[str]
