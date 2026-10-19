@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import httpx
 import redis.asyncio as aioredis
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
@@ -16,12 +16,11 @@ from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineFullError
 from app.engines.outputs import fmt_to_outputs
 from app.models.backend import Backend
-from app.models.backend_domain import BackendDomain
 from app.models.db import make_engine
-from app.models.domain import Domain
 from app.models.job import Job
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
+from app.services.domain_sync import apply_domain_sync, served_capabilities
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
@@ -162,39 +161,22 @@ async def main() -> None:
         logger.info(f"Loaded {len(backends)} backend(s)")
 
     async def sync_domains(backend: Backend) -> None:
-        """Fetch selectable_via_domain from the engine and rebuild backend_domains."""
+        """Fetch the engine's domains, outputs and options schema; rebuild backend_domains."""
         try:
             info = await adapter_for(backend).describe()
-            domain_names = list(info.domains)
         except Exception as exc:
             logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
+        if not info.domains:
+            # describe() reports nothing on a failed /models call; keep the last good
+            # mapping rather than unlink the backend, and retry on the next tick.
+            logger.warning("Domain sync for %s: engine advertised no domains", backend.url)
+            return
         async with session_factory() as db:
-            # Upsert domain names
-            domain_ids: list[int] = []
-            for name in domain_names:
-                await db.execute(
-                    text("INSERT INTO domains (name) VALUES (:n) ON CONFLICT (name) DO NOTHING"),
-                    {"n": name},
-                )
-                row = await db.execute(text("SELECT id FROM domains WHERE name = :n"), {"n": name})
-                domain_ids.append(row.scalar_one())
-
-            # Rebuild backend_domains for this backend (remove stale, add new)
-            await db.execute(delete(BackendDomain).where(BackendDomain.backend_id == backend.id))
-            # outputs: fixed {alto,txt} until domain sync reads engine capabilities
-            for did in domain_ids:
-                await db.execute(
-                    text(
-                        "INSERT INTO backend_domains (backend_id, domain_id, outputs) "
-                        "VALUES (:b, :d, '{alto,txt}') "
-                        "ON CONFLICT DO NOTHING"
-                    ),
-                    {"b": backend.id, "d": did},
-                )
+            await apply_domain_sync(db, backend.id, info)
             await db.commit()
-            domains_synced_at[backend.id] = time.time()
-            logger.debug("Synced %d domain(s) for backend %s", len(domain_ids), backend.url)
+        domains_synced_at[backend.id] = time.time()
+        logger.debug("Synced %d domain(s) for backend %s", len(info.domains), backend.url)
 
     def spawn_domain_sync(backend: Backend) -> None:
         """Kick off a background domain sync at most once per interval per backend.
@@ -220,12 +202,7 @@ async def main() -> None:
     async def served_domains(backend_id: int) -> set[str]:
         """Domain names ``backend_id`` currently serves (from the synced mapping)."""
         async with session_factory() as db:
-            rows = await db.execute(
-                select(Domain.name)
-                .join(BackendDomain, BackendDomain.domain_id == Domain.id)
-                .where(BackendDomain.backend_id == backend_id)
-            )
-        return {name for (name,) in rows.all()}
+            return set(await served_capabilities(db, backend_id))
 
     async def check_health(backend: Backend) -> bool:
         now = time.time()
