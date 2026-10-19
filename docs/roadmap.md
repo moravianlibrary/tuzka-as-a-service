@@ -28,11 +28,10 @@ is behind it.
 
 ```python
 class EngineAdapter(Protocol):
-    async def describe(self) -> EngineInfo: ...  # domains, outputs per domain, version, limits
-    async def submit(self, image: bytes, domain: str, outputs: set[str], options: BaseModel) -> str: ...
+    async def describe(self) -> EngineInfo: ...  # domains, outputs + options JSON Schema per domain, version, limits
+    async def submit(self, image: bytes, domain: str, outputs: set[str], options: dict) -> str: ...
     async def status(self, engine_job_id: str) -> EngineStatus: ...  # state, progress, error_status, metrics
     async def fetch(self, engine_job_id: str, output: str) -> Result: ...  # bytes + content type
-    def options_schema(self, domain: str) -> type[BaseModel]: ...  # typed per-job options
 
 ADAPTERS = {"tuzkaocr": TuzkaOcrAdapter, "tuzkam": TuzkaMAdapter}
 ```
@@ -42,17 +41,47 @@ ADAPTERS = {"tuzkaocr": TuzkaOcrAdapter, "tuzkam": TuzkaMAdapter}
 - **Domain and outputs are loose strings**, checked against what registered
   backends advertise. They're not enums in code, so a new engine needs no taas
   release.
-- **Options are typed:** a pydantic model per (adapter, domain).
-  - The API validates them when the job is submitted: bad options are a 4xx and
-    never reach an engine.
-  - The validated options are stored on the job.
-  - **All backends serving a domain must share its options schema.** A backend
-    that registers with a conflicting one is rejected.
-- **`GET /domains`** lists each domain with its outputs and its options as JSON
-  Schema, generated from the pydantic models. This is how clients discover what
-  they can ask for.
-- **First step is a pure refactor:** today's `app/services/engine_client.py`
-  becomes the `tuzkaocr` adapter, with no behaviour change.
+- **Request shape:** `domain` + `outputs` + `options`. A field is top-level only
+  if **taas itself acts on it** (routing, scopes, storage, scaling, analytics).
+  Everything only the engine reads, e.g. `alto_profile`, `source_identifier`,
+  `physical_img_nr`, TuzkaM's `region` and `georef`, goes in `options`. There
+  is one flat level of options; no "common" vs "adapter" tiers.
+- **Options are derived from the engine's own OpenAPI,** not hand-written in
+  taas:
+  - The adapter reads the engine's `/openapi.json` and takes the request body
+    schema of `POST /api/v1/process`, minus the fields taas owns (`image`, `fmt`,
+    `domain`, …). What's left is the options JSON Schema for that domain, returned
+    by `describe()`.
+  - It's remembered with the capabilities, so it survives the engine being scaled
+    to zero.
+  - The API validates each job's `options` against it when the job is submitted.
+    A field the engine doesn't declare, or a bad value, is a 4xx and never reaches
+    an engine.
+  - The validated options are stored on the job and passed to `submit()` as they
+    are.
+  - **All backends serving a domain must share its options schema.** The derived
+    schemas are compared when a backend registers, and a conflicting one is
+    rejected.
+  - This replaces `options_schema() -> type[BaseModel]` in the current
+    `app/engines/base.py`.
+- **Engines must declare their options precisely.** Today both accept
+  `alto_profile` as a plain string and check `ndk`/`basic` in code
+  (`TuzkaOCR/api/routes.py:105`, TuzkaM `api/routes.py` `process_image`).
+  Derived validation would accept any string. Change these to `Literal[...]`
+  (`alto_profile`) and `bool` (`georef`), so the OpenAPI carries enums and types
+  (see External dependencies).
+- **Documentation:**
+  - **`GET /domains`** lists each domain with its outputs and its options JSON
+    Schema, copied from its engine. It's always current, and it's how clients
+    discover what they can ask for.
+  - taas's own `/openapi.json` is generated from code at startup, so it documents
+    `options` as an object and points to `GET /domains`.
+  - **Optional later:** override FastAPI's `openapi()` to embed the current
+    per-domain schemas, so they show in `/docs`. That needs refreshing whenever
+    backends change. Only do it if clients want everything in `/docs`.
+- **First step is a pure refactor:** the old `app/services/engine_client.py`
+  becomes the `tuzkaocr` adapter, with no behaviour change. This is in progress
+  (`app/engines/`, commits `aeed460`…`29c505e`).
 - **Outputs are an open list** (`alto`, `txt`, `json`, `geojson`, `gcp`, …), each
   stored as `{job}.{ext}.zst`.
 - **A job without a domain goes only to backends serving `default`.** Today it
@@ -398,7 +427,7 @@ the CHANGELOG calls them out.
 |---|---|---|
 | 1 | **G** retries (`error_status`, one retry policy, `attempts` list) | unit tests for the classifier; kill an engine mid-job on k3d |
 | 2 | **A0** adapter interface — `tuzkaocr` as a pure refactor | `make check`, `make test-integration`, `bench/api` unchanged |
-| 3 | **A** domains + capabilities, `GET /domains`, typed options; `pg_stat_statements` on | integration test per domain; ALTO schema check |
+| 3 | **A** domains + capabilities, `GET /domains`, options derived from engine OpenAPI; `pg_stat_statements` on | integration test per domain; ALTO schema check under both `alto_profile`s |
 | 4 | **`/load`** + remembered/declared capabilities + KEDA `metrics-api` (replaces the broken `ocr-jobs` trigger) | scale up and to zero on k3d under `bench/api` load |
 | 5 | **F** ClickStack: deploy, emit job events, `dashboard.json`, backfill `job_analytics` | dashboard numbers match a Postgres count for one day |
 | 6 | **F** admin CLI + **B** scopes — admin API, custom dashboard and `job_analytics` removed, short job TTLs on | CLI covers everything the admin API did; Helm hook uses it |
@@ -411,6 +440,12 @@ the CHANGELOG calls them out.
 - **Step 5 must land before step 6:** history has to be in ClickStack before
   anything deletes it from Postgres.
 
-**External dependencies (TuzkaOCR):** capabilities per domain (A),
-`error_status` in the status response (G, one line). Both have fallbacks.
-TuzkaM (C) works as it is.
+**External dependencies (TuzkaOCR, TuzkaM):**
+
+- TuzkaOCR: capabilities per domain (A), and `error_status` in the status
+  response (G, one line). Both have fallbacks.
+- Both engines: declare `process` options with precise types (`alto_profile:
+  Literal["ndk", "basic"]`, `georef: bool`), so options derived from their
+  OpenAPI validate properly (A0). Until then, taas accepts any string for these
+  fields and the engine rejects bad values.
+- TuzkaM (C) otherwise works as it is.
