@@ -59,9 +59,10 @@ ADAPTERS = {"tuzkaocr": TuzkaOcrAdapter, "tuzkam": TuzkaMAdapter}
     an engine.
   - The validated options are stored on the job and passed to `submit()` as they
     are.
-  - **All backends serving a domain must share its options schema.** The derived
-    schemas are compared when a backend registers, and a conflicting one is
-    rejected.
+  - **One options schema per domain, newest wins.** When a backend's derived
+    schema differs from the stored one, it replaces it and a warning is logged;
+    the backend is still linked. This keeps engine rolling upgrades working.
+    During a rollout, a job using a new option may hit an old pod and get a 4xx.
   - This replaces `options_schema() -> type[BaseModel]` in the current
     `app/engines/base.py`.
 - **Engines must declare their options precisely.** Today both accept
