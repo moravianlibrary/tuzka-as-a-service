@@ -18,7 +18,7 @@ from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
 from app.engines.base import EngineAdapter
-from app.engines.outputs import ext_for, fmt_to_outputs
+from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
@@ -29,6 +29,7 @@ from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
+    job_outputs,
     publish_event,
     release_and_requeue,
     set_done,
@@ -250,7 +251,7 @@ async def main() -> None:
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
         adapter = await adapter_for(meta)
-        outputs = fmt_to_outputs(fmt)
+        outputs = job_outputs(meta)
         try:
             results_to_store: list[tuple[str, str, bytes]] = []
             alto_bytes_for_analytics: bytes | None = None

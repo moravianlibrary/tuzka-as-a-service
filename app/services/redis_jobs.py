@@ -8,6 +8,7 @@ from typing import Any, cast
 import redis.asyncio as aioredis
 
 from app.config import Settings
+from app.engines.outputs import fmt_to_outputs
 
 settings = Settings()
 
@@ -85,6 +86,27 @@ def parse_avoid(meta: dict[str, str]) -> frozenset[int]:
     if not raw:
         return frozenset()
     return frozenset(int(v) for v in raw.split(",") if v.strip())
+
+
+def job_domain(meta: dict[str, str]) -> str:
+    """The job's domain from its hash; a domain-less job is a ``default`` job."""
+    return meta.get("domain") or "default"
+
+
+def job_outputs(meta: dict[str, str]) -> frozenset[str]:
+    """The job's requested outputs from its hash. A job enqueued before outputs were
+    stored only has ``fmt``, which maps onto the same set."""
+    raw = meta.get("outputs")
+    if raw:
+        return frozenset(o for o in raw.split(",") if o)
+    return fmt_to_outputs(meta.get("fmt") or "multi")
+
+
+def job_options(meta: dict[str, str]) -> dict[str, Any]:
+    """The job's engine options from its hash (validated at submit); ``{}`` if none."""
+    raw = meta.get("options")
+    options: dict[str, Any] = json.loads(raw) if raw else {}
+    return options
 
 
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:

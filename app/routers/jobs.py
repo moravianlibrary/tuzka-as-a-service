@@ -1,5 +1,6 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
+import json
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -25,10 +26,7 @@ from app.config import Settings
 from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
 from app.engines.outputs import ext_for
 from app.exceptions import BadRequest, Conflict, NotFound, NotReady, Unprocessable
-from app.models.backend import Backend
-from app.models.backend_domain import BackendDomain
 from app.models.db import get_db
-from app.models.domain import Domain
 from app.models.job import Job, JobResult
 from app.models.user import User
 from app.schemas.job import (
@@ -41,6 +39,7 @@ from app.schemas.job import (
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
+from app.services.job_spec import fmt_label, parse_outputs, resolve_job_spec
 
 router = APIRouter()
 
@@ -53,7 +52,10 @@ router = APIRouter()
     responses={
         400: {"description": "Unsupported extension or file too large"},
         401: {"description": "Missing or invalid X-API-Key header"},
-        422: {"description": "Invalid UUID or unsupported fmt"},
+        422: {
+            "description": "Invalid UUID or fmt; unknown domain; outputs the domain can't "
+            "produce; or options that don't match the domain's options schema"
+        },
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
@@ -63,6 +65,16 @@ async def submit_job(
     uuid: UUID = Form(...),
     fmt: Literal["alto", "txt", "multi"] = Form("multi"),
     domain: str | None = Form(None),
+    outputs: str | None = Form(
+        None,
+        description="Comma-separated outputs, e.g. `alto,txt`. Overrides `fmt`; see "
+        "GET /api/v1/domains for what each domain offers.",
+    ),
+    options: str | None = Form(
+        None,
+        description="Engine options as a JSON object, validated against the domain's "
+        "`options_schema` (GET /api/v1/domains).",
+    ),
     username: str = Depends(rate_limit_submit()),
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
@@ -73,6 +85,10 @@ async def submit_job(
     Requires a valid API key in the ``X-API-Key`` header. The upload is stored and the job
     is queued, returning ``202 Accepted`` with a job id immediately; poll the status and
     result endpoints to retrieve output once processing finishes.
+
+    A job without a ``domain`` runs in the ``default`` domain. ``outputs`` (or, without
+    it, ``fmt``) picks the results to produce, and ``options`` passes engine options; all
+    three are checked against ``GET /api/v1/domains`` before the upload is accepted.
     """
     # uuid and fmt are parsed and validated at the boundary (UUID / Literal), so the
     # body below trusts them.
@@ -95,17 +111,13 @@ async def submit_job(
     if len(image_bytes) > settings.max_upload_bytes:
         raise BadRequest(f"File too large. Max: {settings.max_upload_bytes} bytes")
 
-    # Validate domain: if specified, at least one enabled backend must serve it.
-    if domain:
-        serves_domain = await db.scalar(
-            select(func.count())
-            .select_from(Domain)
-            .join(BackendDomain, Domain.id == BackendDomain.domain_id)
-            .join(Backend, BackendDomain.backend_id == Backend.id)
-            .where(Domain.name == domain, Backend.enabled.is_(True))
-        )
-        if not serves_domain:
-            raise Unprocessable(f"No backend serves domain '{domain}' — check available domains")
+    # Domain, outputs, options: validated against what the enabled backends serve (D7).
+    try:
+        requested = parse_outputs(outputs, fmt)
+    except ValueError as exc:
+        raise Unprocessable(str(exc)) from exc
+    spec = await resolve_job_spec(db, domain, requested, options)
+    job_fmt = fmt_label(spec.outputs)
 
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
@@ -124,8 +136,10 @@ async def submit_job(
         username=username,
         external_id=external_id,
         status="queued",
-        fmt=fmt,
-        domain=domain,
+        fmt=job_fmt,
+        domain=spec.domain,
+        outputs=sorted(spec.outputs),
+        options=spec.options,
         file_size_bytes=len(image_bytes),
     )
     db.add(job)
@@ -142,8 +156,10 @@ async def submit_job(
         {
             "username": username,
             "external_id": str(external_id),
-            "fmt": fmt,
-            "domain": domain or "",
+            "fmt": job_fmt,
+            "domain": spec.domain,
+            "outputs": ",".join(sorted(spec.outputs)),
+            "options": json.dumps(spec.options),
             "ext": ext,
             "submitted_at": str(time.time()),
             "priority": str(user_priority),
@@ -191,6 +207,7 @@ async def get_job_status(
         status=job.status,
         fmt=job.fmt,
         domain=job.domain,
+        outputs=job.outputs,
         submitted_at=job.submitted_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
@@ -361,6 +378,7 @@ async def list_jobs(
                 status=j.status,
                 fmt=j.fmt,
                 domain=j.domain,
+                outputs=j.outputs,
                 submitted_at=j.submitted_at,
                 started_at=j.started_at,
                 finished_at=j.finished_at,

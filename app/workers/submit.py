@@ -14,7 +14,6 @@ from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineFullError
-from app.engines.outputs import fmt_to_outputs
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
@@ -26,6 +25,9 @@ from app.services.redis_jobs import (
     dequeue_jobs,
     get_backend_inflight,
     get_job,
+    job_domain,
+    job_options,
+    job_outputs,
     parse_avoid,
     promote_due_retries,
     publish_event,
@@ -66,20 +68,6 @@ class BackendSlot:
     backend: Backend
     free: int
     domains: dict[str, frozenset[str]]
-
-
-def job_domain(meta: dict[str, str]) -> str:
-    """The job's domain from its Redis hash; a domain-less job is a ``default`` job."""
-    return meta.get("domain") or "default"
-
-
-def job_outputs(meta: dict[str, str]) -> frozenset[str]:
-    """The job's requested outputs from its Redis hash. A job enqueued before outputs
-    were stored only has ``fmt``, which maps onto the same set."""
-    raw = meta.get("outputs")
-    if raw:
-        return frozenset(o for o in raw.split(",") if o)
-    return fmt_to_outputs(meta.get("fmt") or "multi")
 
 
 def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
@@ -302,7 +290,9 @@ async def main() -> None:
         filename = f"{external_id}{ext}"
         try:
             adapter = adapter_for(backend)
-            engine_job_id = await adapter.submit(image_bytes, filename, domain, outputs, {})
+            engine_job_id = await adapter.submit(
+                image_bytes, filename, domain, outputs, job_options(meta)
+            )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
             engine_version = await adapter.version()
 

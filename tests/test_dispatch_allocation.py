@@ -7,14 +7,8 @@ and avoid-backend logic (D7).
 
 from collections import Counter
 
-from app.workers.submit import (
-    BackendSlot,
-    PendingJob,
-    allocate_jobs,
-    can_serve,
-    job_domain,
-    job_outputs,
-)
+from app.services.redis_jobs import job_domain, job_options, job_outputs
+from app.workers.submit import BackendSlot, PendingJob, allocate_jobs, can_serve
 
 ALTO_TXT = frozenset({"alto", "txt"})
 
@@ -219,3 +213,12 @@ def test_outputs_come_from_hash_or_fall_back_to_fmt() -> None:
     assert job_outputs({"fmt": "txt"}) == {"txt"}
     assert job_outputs({"fmt": "multi"}) == ALTO_TXT
     assert job_outputs({}) == ALTO_TXT
+
+
+def test_options_come_from_hash() -> None:
+    assert job_options({"options": '{"alto_profile": "basic", "physical_img_nr": 3}'}) == {
+        "alto_profile": "basic",
+        "physical_img_nr": 3,
+    }
+    assert job_options({"options": ""}) == {}
+    assert job_options({}) == {}

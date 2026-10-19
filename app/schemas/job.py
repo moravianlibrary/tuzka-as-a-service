@@ -33,6 +33,8 @@ class JobStatus(BaseModel):
     status: str
     fmt: str
     domain: str | None
+    # Requested outputs; None for jobs submitted before outputs were stored.
+    outputs: list[str] | None = None
     submitted_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
