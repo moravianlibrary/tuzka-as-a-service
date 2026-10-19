@@ -44,6 +44,27 @@ All notable changes to this project are documented here. The format is based on
   entry records the stage (`dispatch`, `poll`, `engine`, `harvest`), backend, HTTP status,
   error message, retry decision, and timestamp — providing a full audit trail of every
   failure and retry for a job.
+- Domains + capabilities. A job names a `domain` and the `outputs` it wants, and is routed
+  only to a backend whose capabilities for that domain cover those outputs. Engines
+  advertise them per domain (TuzkaOCR: an optional `capabilities` key in
+  `/api/v1/models`; without it every domain is assumed to produce `alto` and `txt`), and
+  domain sync stores them in `backend_domains.outputs`.
+- `POST /api/v1/jobs` takes `outputs` (comma-separated, e.g. `alto,txt`) and `options` (a
+  JSON object) form fields. `fmt` still works: without `outputs`, it decides them; with
+  both, `outputs` wins. Options are validated at submit against a per-domain JSON Schema
+  derived from the engine's own `/openapi.json` (the `POST /api/v1/process` form fields
+  other than `image`, `domain` and `fmt`, closed to unknown keys), so a bad option is a
+  `422` from taas instead of a failed engine job. When an engine upgrade changes that
+  schema, the newest one wins and a warning is logged. An unknown domain, or outputs no
+  backend for the domain can produce, are also a `422` at submit. Job status reports the
+  job's `outputs`.
+- `GET /api/v1/domains` lists the domains you can submit to: label, description, the
+  union of outputs over the enabled backends serving each, its `options_schema`, and the
+  legacy engine id the compat API uses for it.
+- `pg_stat_statements` is on: the Helm chart's CloudNativePG cluster enables it
+  (`cnpg.pgStatStatements`, default `true`; CNPG preloads the library and creates the
+  extension), and the compose Postgres preloads it (`CREATE EXTENSION pg_stat_statements`
+  to read it).
 
 ### Changed
 
@@ -77,6 +98,15 @@ All notable changes to this project are documented here. The format is based on
   an undecodable or oversized image now fails the engine job (status `failed`, 422 on
   result) instead of rejecting the `POST /api/v1/process` — is already handled: the poller
   fails such jobs on the engine's reported status, as the dispatch path did before.
+- A job submitted without a `domain` is now stored and routed as `domain=default`, so it
+  only reaches backends that serve `default`; before, it could go to any backend. Engines
+  see the same request as before (the `default` domain is sent without a `domain` field).
+- The compat API's legacy engine ids now come from the database: each domain with a
+  `legacy_engine_id` is one engine (seeded `1` = `default`, `2` = `kramarky`, with the old
+  labels and descriptions, so `get_engines` returns the same JSON). The shim reads them
+  from `GET /api/v1/domains` with the caller's key, cached for 60 s per key. The
+  `ENGINES` setting (compose, `.env.compat`, Helm `compat.engines`) is gone. A legacy
+  engine is only listed while some enabled backend serves its domain.
 
 ### Fixed
 
