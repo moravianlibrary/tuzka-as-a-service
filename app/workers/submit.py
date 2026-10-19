@@ -183,10 +183,12 @@ async def main() -> None:
 
             # Rebuild backend_domains for this backend (remove stale, add new)
             await db.execute(delete(BackendDomain).where(BackendDomain.backend_id == backend.id))
+            # outputs: fixed {alto,txt} until domain sync reads engine capabilities
             for did in domain_ids:
                 await db.execute(
                     text(
-                        "INSERT INTO backend_domains (backend_id, domain_id) VALUES (:b, :d) "
+                        "INSERT INTO backend_domains (backend_id, domain_id, outputs) "
+                        "VALUES (:b, :d, '{alto,txt}') "
                         "ON CONFLICT DO NOTHING"
                     ),
                     {"b": backend.id, "d": did},

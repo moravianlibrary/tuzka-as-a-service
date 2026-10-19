@@ -4,8 +4,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -25,6 +25,8 @@ class Job(Base):
     status: Mapped[str] = mapped_column(default="queued", nullable=False)
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)
+    outputs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
+    options: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     engine_job_id: Mapped[str | None] = mapped_column(default=None)
     engine_version: Mapped[str | None] = mapped_column(default=None)
     backend_id: Mapped[int | None] = mapped_column(ForeignKey("backends.id"), default=None)
