@@ -2,7 +2,8 @@
 
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import Text, func
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -18,6 +19,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     priority: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
     external_url_template: Mapped[str | None] = mapped_column(default=None)
+    # Scope of the user's key; NULL = every domain / every output.
+    allowed_domains: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
+    allowed_outputs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
 
     # Rate limit overrides; NULL = inherit the default from the config table
     rate_submit_per_minute: Mapped[int | None] = mapped_column(nullable=True)

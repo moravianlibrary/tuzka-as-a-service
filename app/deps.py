@@ -17,6 +17,7 @@ from app.models.user import User
 from app.services import config as config_service
 from app.services import rate_limit
 from app.services.auth import hash_key
+from app.services.scopes import Principal
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
@@ -24,7 +25,7 @@ _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
 # TTL cache for successful user lookups, keyed by hashed API key. Only *valid* users
 # are cached (invalid keys raise before reaching the insert), so it is bounded by the
 # active-user count; the hard cap is belt-and-suspenders against unbounded growth.
-_user_cache: dict[str, tuple[str, float]] = {}
+_user_cache: dict[str, tuple[Principal, float]] = {}
 _USER_CACHE_TTL = 10.0
 _USER_CACHE_MAX = 10_000
 
@@ -41,11 +42,17 @@ async def get_redis(request: Request) -> aioredis.Redis:
 
 
 async def authenticate_api_key(db: AsyncSession, api_key: str) -> str | None:
-    """Return the username for a valid, active API key, or None (no raise).
+    """Return the username for a valid, active API key, or None (no raise)."""
+    principal = await authenticate_principal(db, api_key)
+    return principal.username if principal is not None else None
 
-    The single authn path shared by the HTTP dependency and the WebSocket handler.
-    Cached with a short TTL; ``invalidate_auth_cache`` drops it when a user's key or
-    active state changes so a revoked key stops working at once.
+
+async def authenticate_principal(db: AsyncSession, api_key: str) -> Principal | None:
+    """Return the caller (username + key scope) for a valid, active API key, or None.
+
+    The single authn path shared by the HTTP dependencies and the WebSocket handler.
+    Cached with a short TTL, so a key, scope or active-state change made with
+    taas-admin reaches every API replica within it.
     """
     hashed = hash_key(api_key)
 
@@ -58,10 +65,19 @@ async def authenticate_api_key(db: AsyncSession, api_key: str) -> str | None:
     if user is None:
         return None
 
+    principal = Principal(
+        username=user.username,
+        allowed_domains=_scope(user.allowed_domains),
+        allowed_outputs=_scope(user.allowed_outputs),
+    )
     if len(_user_cache) >= _USER_CACHE_MAX:
         _user_cache.pop(next(iter(_user_cache)))  # evict oldest (insertion order)
-    _user_cache[hashed] = (user.username, now)
-    return user.username
+    _user_cache[hashed] = (principal, now)
+    return principal
+
+
+def _scope(values: list[str] | None) -> frozenset[str] | None:
+    return frozenset(values) if values is not None else None
 
 
 def invalidate_auth_cache() -> None:
@@ -84,6 +100,20 @@ async def require_user(
         raise Unauthorized("Invalid API key")
 
     return username
+
+
+async def require_principal(
+    api_key: str | None = Security(_api_key_header),
+    db: AsyncSession = Depends(get_db),
+) -> Principal:
+    """The caller with their key's scope, for handlers that enforce it (cached, so
+    stacking it with a rate-limit dependency costs no extra query)."""
+    if not api_key:
+        raise Unauthorized("Missing X-API-Key header")
+    principal = await authenticate_principal(db, api_key)
+    if principal is None:
+        raise Unauthorized("Invalid API key")
+    return principal
 
 
 async def require_master(

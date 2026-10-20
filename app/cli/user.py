@@ -19,6 +19,8 @@ COLUMNS = (
     "burst_query",
     "rate_ws_per_minute",
     "burst_ws",
+    "allowed_domains",
+    "allowed_outputs",
 )
 
 
@@ -117,3 +119,25 @@ def set_limits(
         typer.echo("error: nothing to change", err=True)
         raise typer.Exit(2)
     _update(username, **fields)
+
+
+def _names(value: str | None) -> list[str] | None:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+
+@app.command("set-scopes")
+def set_scopes(
+    username: str,
+    domains: str | None = typer.Option(None, help="Comma-separated domains the key may use."),
+    outputs: str | None = typer.Option(None, help="Comma-separated outputs it may request."),
+    all_: bool = typer.Option(False, "--all", help="Lift every limit (the default)."),
+) -> None:
+    """Scope the user's key: an omitted option means "any". Takes effect within ~10 s."""
+    if all_ and (domains or outputs):
+        typer.echo("error: --all can't be combined with --domains/--outputs", err=True)
+        raise typer.Exit(2)
+    if not all_ and not (domains or outputs):
+        typer.echo("error: give --domains and/or --outputs, or --all", err=True)
+        raise typer.Exit(2)
+    user = run(lambda db: admin_ops.set_scopes(db, username, _names(domains), _names(outputs)))
+    output([row(user, COLUMNS)], COLUMNS, as_json=False)

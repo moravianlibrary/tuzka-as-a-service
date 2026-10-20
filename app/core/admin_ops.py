@@ -121,6 +121,21 @@ async def update_user(db: AsyncSession, username: str, body: UserUpdate) -> User
     )
 
 
+async def set_scopes(
+    db: AsyncSession,
+    username: str,
+    domains: list[str] | None,
+    outputs: list[str] | None,
+) -> User:
+    """Limit the user's key to these domains / outputs; None lifts that limit."""
+    user = await _user(db, username)
+    user.allowed_domains = sorted(set(domains)) if domains is not None else None
+    user.allowed_outputs = sorted(set(outputs)) if outputs is not None else None
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 # --- Backends ---
 
 

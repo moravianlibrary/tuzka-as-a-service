@@ -23,9 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.config import Settings
-from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
+from app.deps import (
+    get_redis,
+    get_settings,
+    rate_limit_query,
+    rate_limit_submit,
+    require_principal,
+)
 from app.engines.outputs import ext_for
-from app.exceptions import BadRequest, Conflict, NotFound, NotReady, Unprocessable
+from app.exceptions import BadRequest, Conflict, Forbidden, NotFound, NotReady, Unprocessable
 from app.models.db import get_db
 from app.models.job import Job, JobResult
 from app.models.user import User
@@ -41,7 +47,8 @@ from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
-from app.services.job_spec import fmt_label, parse_outputs, resolve_job_spec
+from app.services.job_spec import DEFAULT_DOMAIN, fmt_label, parse_outputs, resolve_job_spec
+from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
 
 router = APIRouter()
@@ -55,6 +62,7 @@ router = APIRouter()
     responses={
         400: {"description": "Unsupported extension or file too large"},
         401: {"description": "Missing or invalid X-API-Key header"},
+        403: {"description": "The API key isn't allowed this domain or these outputs"},
         422: {
             "description": "Invalid UUID or fmt; unknown domain; outputs the domain can't "
             "produce; or options that don't match the domain's options schema"
@@ -79,6 +87,7 @@ async def submit_job(
         "`options_schema` (GET /api/v1/domains).",
     ),
     username: str = Depends(rate_limit_submit()),
+    principal: Principal = Depends(require_principal),
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
@@ -119,6 +128,10 @@ async def submit_job(
         requested = parse_outputs(outputs, fmt)
     except ValueError as exc:
         raise Unprocessable(str(exc)) from exc
+    # The key's scope first, so an out-of-scope domain isn't probed for existence.
+    denied = check_scope(principal, domain or DEFAULT_DOMAIN, requested)
+    if denied is not None:
+        raise Forbidden(denied)
     spec = await resolve_job_spec(db, domain, requested, options)
     job_fmt = fmt_label(spec.outputs)
 

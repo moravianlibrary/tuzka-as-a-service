@@ -84,3 +84,14 @@ def test_bad_backend_url_exits_2() -> None:
 def test_config_set_then_get() -> None:
     _ok("config", "set", "jobs.max_requeues", "7")
     assert _ok("config", "get", "jobs.max_requeues").strip() == "7"
+
+
+def test_set_scopes_and_lift_them() -> None:
+    _ok("user", "create", "carol")
+    _ok("user", "set-scopes", "carol", "--domains", "default,kramarky", "--outputs", "alto")
+    (user,) = json.loads(_ok("user", "list", "--json"))
+    assert user["allowed_domains"] == ["default", "kramarky"]
+    assert user["allowed_outputs"] == ["alto"]
+    _ok("user", "set-scopes", "carol", "--all")
+    (user,) = json.loads(_ok("user", "list", "--json"))
+    assert user["allowed_domains"] is None
