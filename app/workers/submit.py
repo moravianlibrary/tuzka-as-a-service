@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
+    get_backend_batches,
     get_backend_inflight,
     get_job,
     job_domain,
@@ -65,16 +67,22 @@ class PendingJob:
     domain: str
     outputs: frozenset[str]
     avoid: frozenset[int] = field(default_factory=frozenset)
+    megapixels: float = 1.0
+    batch_id: str | None = None
 
 
 @dataclass
 class BackendSlot:
     """A healthy backend, its remaining free capacity (may be 0) and what it serves:
-    domain → the outputs it produces for that domain."""
+    domain → the outputs it produces for that domain. For scoring: its pages in flight,
+    the batches among them (batch id → pages), and what this tick assigned it."""
 
     backend: Backend
     free: int
     domains: dict[str, frozenset[str]]
+    inflight: int = 0
+    batches: dict[str, int] = field(default_factory=dict)
+    assigned: int = 0
 
 
 def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
@@ -125,6 +133,83 @@ def allocate_jobs(
             break
         if not placed:
             leftovers.append(job)
+    return assignments, leftovers
+
+
+# Seconds per megapixel for a domain nothing has been measured on: step 4's measured
+# seconds per page (load:spp) taken as one megapixel a page, else this.
+DEFAULT_SECONDS_PER_MP = 10.0
+
+
+async def _fallback_spp(r: aioredis.Redis, domains: Iterable[str]) -> dict[str, float]:
+    names = sorted(set(domains))
+    values = await r.hmget("load:spp", names) if names else []
+    return {
+        name: float(value) if value is not None else DEFAULT_SECONDS_PER_MP
+        for name, value in zip(names, values)
+    }
+
+
+def expected_finish(slot: BackendSlot, job: PendingJob, seconds_per_mp: float) -> float:
+    """When the job would finish on the backend, in seconds from now (D4): the pages
+    ahead of it plus itself, at the backend's measured speed for the job's size,
+    spread over its parallel slots."""
+    queue = slot.inflight + slot.assigned + 1
+    return queue * seconds_per_mp * job.megapixels / max(1, slot.backend.max_inflight)
+
+
+def allocate_scored(
+    slots: list[BackendSlot],
+    jobs: list[PendingJob],
+    spp: Callable[[int, str], float],
+    tolerance: float,
+) -> tuple[list[tuple[PendingJob, BackendSlot]], list[PendingJob]]:
+    """Give each job, in queue order, to the backend that would finish it first.
+
+    ``spp(backend_id, domain)`` is the backend's seconds per megapixel (``perf``). A
+    retried job's ``avoid`` set is applied before scoring, so a retry overrides affinity
+    (D8), falling back to an avoided backend only when nothing else serves it. Among the
+    backends within ``tolerance`` of the best, one already running pages of the job's
+    batch wins (D7). Exact ties rotate, so equal backends share a burst evenly. Only
+    backends with a free slot are chosen, so affinity can't overfill one (D9). Pure apart
+    from updating the slots' ``free``, ``assigned`` and ``batches``.
+
+    Returns ``(assignments, leftovers)`` like ``allocate_jobs``.
+    """
+    assignments: list[tuple[PendingJob, BackendSlot]] = []
+    leftovers: list[PendingJob] = []
+    order = {id(slot): i for i, slot in enumerate(slots)}
+    start = 0
+    for job in jobs:
+        serving = [s for s in slots if can_serve(s, job)]
+        allow_avoided = all(s.backend.id in job.avoid for s in serving)
+        candidates = [
+            s
+            for s in serving
+            if s.free > 0 and (allow_avoided or s.backend.id not in job.avoid)
+        ]
+        if not candidates:
+            leftovers.append(job)
+            continue
+        finish = {
+            id(s): expected_finish(s, job, spp(s.backend.id, job.domain)) for s in candidates
+        }
+        best = min(finish.values())
+        near = [s for s in candidates if finish[id(s)] <= best * (1 + tolerance)]
+        affine = [s for s in near if job.batch_id and s.batches.get(job.batch_id, 0) > 0]
+        if affine:
+            pool_best = min(finish[id(s)] for s in affine)
+            pool = [s for s in affine if finish[id(s)] == pool_best]
+        else:
+            pool = [s for s in candidates if finish[id(s)] == best]
+        # Rotate among exact ties, starting after the last backend chosen.
+        slot = min(pool, key=lambda s: (order[id(s)] - start) % len(slots))
+        start = (order[id(slot)] + 1) % len(slots)
+        slot.free -= 1
+        slot.assigned += 1
+        if job.batch_id:
+            slot.batches[job.batch_id] = slot.batches.get(job.batch_id, 0) + 1
+        assignments.append((job, slot))
     return assignments, leftovers
 
 
@@ -469,9 +554,17 @@ async def main() -> None:
                 for backend in backends:
                     if not await check_health(backend):
                         continue
-                    free = backend.max_inflight - await get_backend_inflight(r, backend.id)
+                    inflight = await get_backend_inflight(r, backend.id)
                     domains = await served_domains(backend.id)
-                    eligible.append(BackendSlot(backend, max(free, 0), domains))
+                    eligible.append(
+                        BackendSlot(
+                            backend,
+                            max(backend.max_inflight - inflight, 0),
+                            domains,
+                            inflight=inflight,
+                            batches=await get_backend_batches(r, backend.id),
+                        )
+                    )
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.
@@ -489,10 +582,30 @@ async def main() -> None:
                         meta = await get_job(r, job_id) or {}
                         domain, outputs = job_domain(meta), job_outputs(meta)
                         pending.append(
-                            PendingJob(job_id, score, domain, outputs, parse_avoid(meta))
+                            PendingJob(
+                                job_id,
+                                score,
+                                domain,
+                                outputs,
+                                parse_avoid(meta),
+                                megapixels=float(meta.get("mp") or 1.0),
+                                batch_id=meta.get("batch_id") or None,
+                            )
                         )
 
-                    assignments, leftovers = allocate_jobs(tier, pending)
+                    # Speed scores for this tier's backends and these jobs' domains, once.
+                    job_domains = {job.domain for job in pending}
+                    scores = await perf.load_scores(
+                        r, [slot.backend.id for slot in tier], job_domains
+                    )
+                    fallback = await _fallback_spp(r, job_domains)
+                    async with session_factory() as db:
+                        tolerance = await config_service.get_affinity_tolerance(db)
+
+                    def spp(backend_id: int, domain: str) -> float:
+                        return perf.effective_spp(backend_id, domain, scores, fallback[domain])
+
+                    assignments, leftovers = allocate_scored(tier, pending, spp, tolerance)
                     for job in leftovers:
                         # a lower tier may serve its domain, or a full backend frees up
                         await requeue_job(r, job.job_id, job.score)

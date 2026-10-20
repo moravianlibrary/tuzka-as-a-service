@@ -27,6 +27,9 @@ PRESIGNED_TTL_DEFAULT_MINUTES = 60
 JOB_DONE_TTL_DEFAULT_SECONDS = 86_400
 JOB_FAILED_TTL_DEFAULT_SECONDS = 604_800
 RESULTS_MAX_AGE_DEFAULT_SECONDS = 86_400
+# Dispatch: a backend already running a batch's pages wins its next page when it would
+# finish within this fraction of the fastest one (step 8, D7).
+AFFINITY_TOLERANCE_DEFAULT = 0.15
 STATE_TTL_MARGIN_SECONDS = 60
 
 
@@ -191,6 +194,11 @@ async def get_results_max_bytes(db: AsyncSession) -> int | None:
     """The results storage cap; None (unset) = no cap, results go by age only."""
     value = await get_value(db, "storage.results_max_bytes")
     return int(value) if value is not None else None
+
+
+async def get_affinity_tolerance(db: AsyncSession) -> float:
+    value = await get_value(db, "dispatch.affinity_tolerance")
+    return float(value) if value is not None else AFFINITY_TOLERANCE_DEFAULT
 
 
 async def get_max_requeues(db: AsyncSession) -> int:
