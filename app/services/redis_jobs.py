@@ -3,6 +3,7 @@
 import contextlib
 import json
 import time
+from dataclasses import dataclass
 from typing import Any, cast
 
 import redis.asyncio as aioredis
@@ -258,9 +259,67 @@ async def set_running(
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
-async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
+@dataclass(frozen=True)
+class BatchCounts:
+    """A batch's progress, from its Redis counters."""
+
+    batch_id: str
+    total: int
+    done: int
+    failed: int
+
+
+def _batch_key(batch_id: str) -> str:
+    return f"batch:{batch_id}"
+
+
+async def init_batch(r: aioredis.Redis, batch_id: str, total: int, ttl: int) -> None:
+    """Start a batch's progress counters (D8); the state functions move them."""
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hset(_batch_key(batch_id), mapping={"total": total, "done": 0, "failed": 0})
+        pipe.expire(_batch_key(batch_id), ttl)
+        await pipe.execute()
+
+
+async def _count_batch_page(
+    r: aioredis.Redis, meta: dict[str, str] | None, field: str
+) -> BatchCounts | None:
+    """Count one finished page of a batch, unless the job had already finished (a
+    re-run of a state function mustn't count it twice). None if it isn't a batch page."""
+    if not meta or not meta.get("batch_id") or meta.get("status") in ("done", "failed"):
+        return None
+    key = _batch_key(meta["batch_id"])
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hincrby(key, field, 1)
+        pipe.hgetall(key)
+        _, raw = await pipe.execute()
+    counts = {_s(k): int(v) for k, v in raw.items()}
+    return BatchCounts(
+        meta["batch_id"], counts.get("total", 0), counts.get("done", 0), counts.get("failed", 0)
+    )
+
+
+def batch_event(counts: BatchCounts) -> dict[str, Any]:
+    """The WebSocket progress event of a batch (D8)."""
+    return {
+        "type": "batch",
+        "batch_id": counts.batch_id,
+        "total": counts.total,
+        "done": counts.done,
+        "failed": counts.failed,
+    }
+
+
+def _s(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> BatchCounts | None:
+    """Mark the job done and release its slot. For a page of a batch, returns the
+    batch's new counts, for the caller to publish as a batch event."""
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
+    batch = await _count_batch_page(r, meta, "done")
     backend_id = meta.get("backend_id") if meta else None
     await r.hset(
         key,
@@ -274,11 +333,17 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await signal_submit(r)  # a slot just freed — let the worker refill it now
+    return batch
 
 
-async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int) -> None:
+async def set_failed(
+    r: aioredis.Redis, job_id: str, error: str, state_ttl: int
+) -> BatchCounts | None:
+    """Mark the job failed and release its slot; like ``set_done``, returns a batch
+    page's new batch counts."""
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
+    batch = await _count_batch_page(r, meta, "failed")
     backend_id = meta.get("backend_id") if meta else None
     await r.hset(
         key,
@@ -292,6 +357,7 @@ async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await signal_submit(r)  # a slot just freed — let the worker refill it now
+    return batch
 
 
 async def requeue_job(r: aioredis.Redis, job_id: str, original_score: float) -> None:
@@ -345,11 +411,20 @@ async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:
 
 
 def job_event_payload(
-    job_id: str, external_id: str | None, status: str, **fields: Any
+    job_id: str,
+    external_id: str | None,
+    status: str,
+    *,
+    batch_id: str | None = None,
+    **fields: Any,
 ) -> dict[str, Any]:
     """A job event as clients receive it on the WebSocket. ``job_id`` is what they match
-    on (submit returned it); ``external_id`` is their own label, or null."""
-    return {"job_id": job_id, "external_id": external_id or None, "status": status, **fields}
+    on (submit returned it); ``external_id`` is their own label, or null. A page of a
+    batch also carries ``batch_id`` (D12): clients get its results with the batch."""
+    event = {"job_id": job_id, "external_id": external_id or None, "status": status, **fields}
+    if batch_id:
+        event["batch_id"] = batch_id
+    return event
 
 
 async def publish_event(r: aioredis.Redis, username: str, event: dict[str, Any]) -> None:

@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, durations, failure
-from app.services.redis_jobs import job_event_payload, publish_event, set_failed
+from app.services.redis_jobs import batch_event, job_event_payload, publish_event, set_failed
 
 logger = logging.getLogger("reaper")
 
@@ -78,13 +78,13 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
 
     sem = asyncio.Semaphore(_REAP_CONCURRENCY)
 
-    async def _bounded(coro: Coroutine[Any, Any, Any]) -> None:
+    async def _bounded(coro: Coroutine[Any, Any, Any]) -> Any:
         async with sem:
-            await coro
+            return await coro
 
     # set_failed releases the inflight slot (srem + decr backend counter). These calls are
     # independent per job, so run them concurrently (bounded) before the single DB commit.
-    await asyncio.gather(
+    batches = await asyncio.gather(
         *(_bounded(set_failed(r, str(job.id), reason, state_ttl)) for job, reason in stale)
     )
     for job, reason in stale:
@@ -99,11 +99,22 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     publish_event(
                         r,
                         job.username,
-                        job_event_payload(str(job.id), job.external_id, "failed", error=reason),
+                        job_event_payload(
+                            str(job.id),
+                            job.external_id,
+                            "failed",
+                            batch_id=str(job.batch_id) if job.batch_id else None,
+                            error=reason,
+                        ),
                     )
                 )
                 for job, reason in stale
-            )
+            ),
+            *(
+                _bounded(publish_event(r, job.username, batch_event(batch)))
+                for (job, _), batch in zip(stale, batches)
+                if batch is not None
+            ),
         )
         emitter = get_emitter()
         for job, _reason in stale:

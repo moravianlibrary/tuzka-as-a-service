@@ -32,6 +32,7 @@ from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
     job_domain,
+    batch_event,
     job_event_payload,
     job_outputs,
     publish_event,
@@ -313,7 +314,9 @@ async def main() -> None:
             if isinstance(times.get("mean_conf"), (int, float)):
                 mean_conf = float(times["mean_conf"])
 
-            event_data = job_event_payload(job_id, external_id, "done")
+            event_data = job_event_payload(
+                job_id, external_id, "done", batch_id=meta.get("batch_id")
+            )
 
             async with session_factory() as db:
                 # Read the raw job to pick up submitted_at, engine_version, device, file_size.
@@ -380,7 +383,7 @@ async def main() -> None:
 
                 await db.commit()
 
-            await set_done(r, job_id, state_ttl)
+            batch = await set_done(r, job_id, state_ttl)
             emitter.emit(
                 job_event(
                     "done",
@@ -403,6 +406,8 @@ async def main() -> None:
                 )
             )
             await publish_event(r, username, event_data)
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
             logger.info(f"Published done event for {username}")
 
         except Exception as e:
@@ -428,7 +433,7 @@ async def main() -> None:
         failed_at = utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
-            await set_failed(r, job_id, error, state_ttl)
+            batch = await set_failed(r, job_id, error, state_ttl)
             values: dict[str, Any] = {
                 "status": "failed",
                 "error": error,
@@ -468,8 +473,12 @@ async def main() -> None:
         await publish_event(
             r,
             username,
-            job_event_payload(job_id, external_id, "failed", error=error),
+            job_event_payload(
+                job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=error
+            ),
         )
+        if batch is not None:
+            await publish_event(r, username, batch_event(batch))
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
 

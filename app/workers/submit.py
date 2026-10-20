@@ -29,6 +29,7 @@ from app.services.redis_jobs import (
     get_backend_inflight,
     get_job,
     job_domain,
+    batch_event,
     job_event_payload,
     job_options,
     job_outputs,
@@ -303,7 +304,7 @@ async def main() -> None:
             )
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_failed(r, job_id, msg, state_ttl)
+                batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
@@ -316,8 +317,12 @@ async def main() -> None:
             await publish_event(
                 r,
                 username,
-                job_event_payload(job_id, external_id, "failed", error=msg),
+                job_event_payload(
+                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                ),
             )
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
             return
 
         # Named by job id: the external id is the caller's free text, not a file name.
@@ -417,7 +422,7 @@ async def main() -> None:
                 "dispatch", backend.id, http_st, msg, retry=False, at=utcnow().isoformat()
             )
             async with session_factory() as db:
-                await set_failed(r, job_id, msg, state_ttl)
+                batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
@@ -433,8 +438,12 @@ async def main() -> None:
             await publish_event(
                 r,
                 username,
-                job_event_payload(job_id, external_id, "failed", error=msg),
+                job_event_payload(
+                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                ),
             )
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
 
     logger.info("Submit worker started")
     try:
