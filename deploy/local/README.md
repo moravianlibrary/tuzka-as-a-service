@@ -17,10 +17,10 @@ host                                            k3d cluster (taas)
                                   └─► taas-tunnel-engine-cpu1:8000  (priority 0) ──┴► workers
 ```
 
-Backends are registered by the Helm hook via an idempotent `PUT /admin/backends`
-(`managed=true`), so changing `priority`/`device`/`maxInflight` in `values.local.yaml`
-and re-deploying **updates** them in place. The dashboard shows a **`deploy`** badge on
-managed backends (manual edits to those are reverted on the next deploy).
+Backends are registered by the Helm hook with an idempotent `taas-admin backend upsert`
+(`--managed`), so changing `device`/`maxInflight` in `values.local.yaml` and
+re-deploying **updates** them in place. `taas-admin backend list` shows `managed=True`
+for those (manual edits to them are reverted on the next deploy).
 
 ## Prereqs
 
@@ -73,23 +73,20 @@ make local-deploy-forward-up      # background; stop with: make local-deploy-for
 ```
 
 This starts all three port-forwards detached (PIDs tracked in
-`$TMPDIR/taas-local-forward.pids`), waits for the API, and opens the dashboard and
-Swagger docs via `xdg-open`. (Override ports with `API_PORT`/`COMPAT_PORT`/`RESULTS_PORT`
+`$TMPDIR/taas-local-forward.pids`), waits for the API, and opens the Swagger docs via
+`xdg-open`. (Override ports with `API_PORT`/`COMPAT_PORT`/`RESULTS_PORT`
 env vars.)
 
 | URL | What | Auth |
 |---|---|---|
-| `http://localhost:8080/` | Dashboard UI (redirects to `/dashboard`) | master key |
 | `http://localhost:8080/docs` | Swagger / OpenAPI explorer | none |
 | `http://localhost:8080/api/v1/...` | Job API (submit/status/results) | user API key |
-| `http://localhost:8080/admin/...` | Admin API (users, backends, config) | `X-Master-Key: test-master-key` |
-| `http://localhost:8080/dashboard/...` | Dashboard data endpoints | `X-Master-Key: test-master-key` |
 | `ws://localhost:8080/ws` | Job result push | user API key |
 | `http://localhost:8081` | Legacy PERO/ProArc compat API | per compat config |
 | `http://localhost:9100` | MinIO results bucket (presigned downloads) | presigned URL |
 
-The master key for this local stack is **`test-master-key`** (from `values.local.yaml`);
-the dashboard UI prompts for it. The results forward on **9100** matters: presigned
+Users, backends and config are managed with `taas-admin` in the api pod
+(`kubectl -n taas exec deploy/taas-api -- taas-admin --help`). The results forward on **9100** matters: presigned
 result URLs are SigV4-signed for `http://localhost:9100` (set via
 `minio.results.publicUrl`), so the host client can actually download them.
 
@@ -113,15 +110,13 @@ kubectl run curl --rm -it --image=curlimages/curl --restart=Never -- \
 **Backend registered** (auto-registered by the Helm hook):
 
 ```sh
-curl -s http://localhost:8080/admin/backends -H "X-Master-Key: test-master-key" | python -m json.tool
+kubectl -n taas exec deploy/taas-api -- taas-admin backend list
 ```
 
 **Create a test user** and grab its API key:
 
 ```sh
-curl -s -X POST http://localhost:8080/admin/users \
-  -H "X-Master-Key: test-master-key" -H "Content-Type: application/json" \
-  -d '{"username":"testuser"}' | python -m json.tool
+kubectl -n taas exec deploy/taas-api -- taas-admin user create testuser   # prints the key once
 ```
 
 **Submit a real job** through the public API (uses the bundled Python client +
@@ -142,8 +137,8 @@ make local-deploy-seed         # alice (prio 10), bob (5), carol (0) — fixed A
 make local-deploy-scenarios    # runs the two scenarios below (N=6 jobs/burst; override N=)
 ```
 
-`seed` is idempotent — it sets deterministic keys (`test-key-alice`, …) via
-`PUT /admin/users/{name}/key` and priorities via `PATCH`, writing them to
+`seed` is idempotent — it sets deterministic keys (`test-key-alice`, …) with
+`taas-admin user set-key` and priorities with `set-priority`, writing them to
 `deploy/local/.users.env` (gitignored). The two prioritization axes:
 
 - **Backend priority** — the submit worker orders backends by `priority desc`, so jobs
@@ -153,8 +148,8 @@ make local-deploy-scenarios    # runs the two scenarios below (N=6 jobs/burst; o
   queue drains higher-priority lists first. Scenario B queues a low-priority (carol)
   burst, then a high-priority (alice) burst, and shows alice's jobs start first.
 
-Both engines must be up + healthy for jobs to drain; watch the **Backends** and
-**Analytics** dashboard tabs while the scenarios run.
+Both engines must be up + healthy for jobs to drain; watch the job events in HyperDX
+(with `clickstack.enabled`) or `taas-admin backend list` while the scenarios run.
 
 ## Troubleshooting
 

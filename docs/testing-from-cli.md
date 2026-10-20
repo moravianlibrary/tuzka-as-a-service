@@ -31,14 +31,11 @@ Interactive API docs are also available at <http://localhost:8080/docs> (taas) a
 set -euo pipefail
 
 TAAS=http://localhost:8080
-MASTER=test-master-key                 # from .env.app
 IMG=test.jpg                           # any image; or your own path
-USERNAME=clitest-$RANDOM               # fresh each run; a re-used name returns 409
+USERNAME=clitest-$RANDOM               # fresh each run; a re-used name is refused
 
 # 1) Create a user and capture its API key (shown only once).
-KEY=$(curl -sS -X POST "$TAAS/admin/users" \
-    -H "X-Master-Key: $MASTER" -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\"}" | jq -r .api_key)
+KEY=$(docker compose exec -T api taas-admin user create "$USERNAME")
 echo "key=$KEY"
 
 # 2) Queue the image. uuid must be a real UUID; fmt = alto | txt | multi.
@@ -81,15 +78,12 @@ set -euo pipefail
 
 TAAS=http://localhost:8080
 COMPAT=http://localhost:8001
-MASTER=test-master-key                 # from .env.app
 IMG=test.jpg                           # any image; or your own path
 FNAME=test.jpg                         # logical filename, used as the key throughout
-USERNAME=compat-clitest-$RANDOM        # fresh each run; a re-used name returns 409
+USERNAME=compat-clitest-$RANDOM        # fresh each run; a re-used name is refused
 
 # 1) Create a taas user; its API key doubles as the legacy api-key.
-KEY=$(curl -sS -X POST "$TAAS/admin/users" \
-    -H "X-Master-Key: $MASTER" -H "Content-Type: application/json" \
-    -d "{\"username\":\"$USERNAME\"}" | jq -r .api_key)
+KEY=$(docker compose exec -T api taas-admin user create "$USERNAME")
 echo "key=$KEY"
 
 # 2) (optional) list available engines.

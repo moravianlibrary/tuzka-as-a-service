@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **`taas-admin`**, the admin CLI, replaces the HTTP admin API and the dashboard. It ships
+  in the api image and writes to Postgres directly: `user` (create, rotate-key, set-key,
+  enable/disable, set-priority, set-limits, set-scopes), `backend` (upsert, update,
+  enable/disable, delete), `domain` (set-label, set-legacy-id), `config` (get/set) and
+  `job` (list-failed, show with attempts). Run it with
+  `docker compose exec -T api taas-admin …` or `kubectl exec deploy/<release>-api -- taas-admin …`;
+  `--json` for scripts; secrets come from a named env var, never argv. The Helm register
+  hook and every script use it (`scripts/lib/taas-admin.sh`).
+- **Scoped API keys**: `taas-admin user set-scopes <user> --domains a,b --outputs alto,txt`.
+  A submit outside the key's scope is a `403`. Existing keys keep full access.
 - **ClickStack analytics.** Every job state change (`submitted`, `dispatched`, `retried`,
   `done`, `failed`) is sent to ClickHouse's `taas.job_events`, with durations, OCR
   metrics and an error flag and class, but no error text (that stays in Postgres). The
@@ -62,6 +72,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Retention.** Postgres keeps live state only; job history is in ClickHouse.
+  Finished job rows (with their results) are deleted `jobs.done_ttl_seconds` (1 day) after
+  a `done` job finished and `jobs.failed_ttl_seconds` (7 days) after a `failed` one,
+  instead of after 30 days. Result objects go after `storage.results_max_age_seconds`
+  (1 day), or earlier, oldest first, when `storage.results_max_bytes` is set and
+  exceeded; their endpoints then answer **410 Gone**. **First deploy:** the existing
+  rows past their TTL are deleted gradually, ~20 000 a minute, by the cleanup worker.
 - The retry policy is now uniform across dispatch, poll, and engine-reported failures:
   transport errors, HTTP 5xx, 408, and 429 are retried at all three stages; on poll,
   HTTP 404 (engine lost the job) is also retried. Engine-reported failures with
@@ -92,6 +109,16 @@ All notable changes to this project are documented here. The format is based on
   an undecodable or oversized image now fails the engine job (status `failed`, 422 on
   result) instead of rejecting the `POST /api/v1/process` — is already handled: the poller
   fails such jobs on the engine's reported status, as the dispatch path did before.
+
+### Removed
+
+- **The admin API** (`/admin/*`), **the dashboard** (`/dashboard`, `/static`), the
+  **master key** (`MASTER_KEY`, Helm `secrets.masterKey`, the `X-Master-Key` header) and
+  the `adminDashboard` expose target. Use `taas-admin` instead; job history and
+  dashboards are in ClickStack (HyperDX). `/` now redirects to `/docs`.
+- **`job_analytics`** and `engine_versions` (migration 018). **Run the ClickHouse
+  backfill (`python -m app.ops.backfill_clickstack`) before upgrading**: it reads the
+  table this release drops. `make local-deploy-bench-db` is gone with it.
 
 ### Fixed
 

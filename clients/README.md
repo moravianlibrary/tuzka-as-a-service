@@ -12,7 +12,7 @@ Thin, event-driven clients for the taas API. Both follow the same model:
 | Python | [`python/`](python/) | `taas-client` (PyPI-style), module `taas_client` |
 | Java | [`java/`](java/) | `cz.osdd.taas:taas-client:0.1.0` |
 
-You need a user API key (created via `POST /admin/users`, see the [app README](../app/README.md)).
+You need a user API key (created with `taas-admin user create <name>`, see the [app README](../app/README.md#administration--taas-admin)).
 
 ## Python
 

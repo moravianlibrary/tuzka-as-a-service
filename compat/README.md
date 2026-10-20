@@ -35,7 +35,7 @@ flowchart LR
 ## Authentication
 
 Clients send the legacy `api-key` header. compat forwards it to taas as `X-API-Key`, so
-**the legacy api-key is just a taas user key** (created via `POST /admin/users`).
+**the legacy api-key is just a taas user key** (created with `taas-admin user create`).
 
 ## Endpoints
 

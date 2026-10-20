@@ -35,5 +35,5 @@ No target is exposed yet. Reach the API locally with:
   kubectl port-forward svc/{{ include "taas.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
 {{- end }}
 
-Remember to override the secrets (masterKey, keyEncryptionSecret, postgresPassword,
+Remember to override the secrets (keyEncryptionSecret, postgresPassword,
 minio*SecretKey) for any non-dev deployment.
