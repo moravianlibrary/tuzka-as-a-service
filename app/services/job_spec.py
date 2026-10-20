@@ -8,6 +8,7 @@ adapter is involved: everything is checked against what domain sync recorded.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -23,6 +24,12 @@ from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
 
 DEFAULT_DOMAIN = "default"
+
+# How long a domain's capabilities (outputs per enabled backend + options schema) are
+# reused across submits before the DB is asked again. Short: a backend disabled or
+# re-synced shows up within seconds, and the dispatcher re-checks capabilities anyway.
+CAPABILITIES_TTL_SECONDS = 5.0
+_capabilities: dict[str, tuple[float, list[tuple[list[str], dict[str, Any] | None]]]] = {}
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,32 @@ def options_errors(schema: dict[str, Any] | None, options: dict[str, Any]) -> li
     return sorted(messages)
 
 
+def clear_capabilities_cache() -> None:
+    _capabilities.clear()
+
+
+async def _domain_capabilities(
+    db: AsyncSession, name: str
+) -> list[tuple[list[str], dict[str, Any] | None]]:
+    """``(outputs, options_schema)`` per enabled backend serving ``name``, cached for
+    ``CAPABILITIES_TTL_SECONDS``. Only served domains are cached, so arbitrary names in
+    requests can't grow the cache."""
+    now = time.monotonic()
+    hit = _capabilities.get(name)
+    if hit is not None and now - hit[0] < CAPABILITIES_TTL_SECONDS:
+        return hit[1]
+    result = await db.execute(
+        select(BackendDomain.outputs, Domain.options_schema)
+        .join(Domain, Domain.id == BackendDomain.domain_id)
+        .join(Backend, Backend.id == BackendDomain.backend_id)
+        .where(Domain.name == name, Backend.enabled.is_(True))
+    )
+    rows = [(list(outputs), schema) for outputs, schema in result.all()]
+    if rows:
+        _capabilities[name] = (now, rows)
+    return rows
+
+
 async def resolve_job_spec(
     db: AsyncSession,
     domain: str | None,
@@ -100,14 +133,7 @@ async def resolve_job_spec(
     except ValueError as exc:
         raise Unprocessable(str(exc)) from exc
 
-    rows = (
-        await db.execute(
-            select(BackendDomain.outputs, Domain.options_schema)
-            .join(Domain, Domain.id == BackendDomain.domain_id)
-            .join(Backend, Backend.id == BackendDomain.backend_id)
-            .where(Domain.name == name, Backend.enabled.is_(True))
-        )
-    ).all()
+    rows = await _domain_capabilities(db, name)
     if not rows:
         raise Unprocessable(f"No backend serves domain '{name}' — see GET /api/v1/domains")
 

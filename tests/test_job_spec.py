@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.engines.tuzkaocr import options_schema_from_openapi
 from app.services.job_spec import (
+    clear_capabilities_cache,
     fmt_label,
     options_errors,
     parse_options,
@@ -129,6 +130,7 @@ async def session():
         pytest.skip("TEST_DATABASE_URL not reachable")
 
     factory = async_sessionmaker(engine, expire_on_commit=False)
+    clear_capabilities_cache()  # each test seeds its own rows
     async with factory() as s:
         await s.execute(
             text(
