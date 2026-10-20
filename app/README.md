@@ -93,6 +93,19 @@ A batch's pages run in archive order and are identified by `source_name` (their 
 the archive). A finished batch goes after the done TTL, or the failed TTL if a page
 failed, with its pages and archive.
 
+## Dispatch
+
+The submit worker takes jobs in queue order (user priority first) and, within the
+highest **backend priority** tier that can serve each one, sends it to the backend that
+would **finish it first**: its pages in flight, at its **measured speed** (engine seconds
+per megapixel for the domain, an average of recent pages), for the page's size, over its
+`max_inflight` slots. A backend with under 5 measured pages borrows the others' median.
+Failed attempts that are the backend's fault (transport errors, 5xx) make it look up to
+10× slower, fading again as its pages succeed, so a flaky backend gets less work on its
+own. A page of a batch prefers a backend already running that batch when it's within
+`dispatch.affinity_tolerance` (config, default 0.15) of the fastest. A retry still
+avoids the backend that failed it first.
+
 ## Job lifecycle
 
 ```mermaid

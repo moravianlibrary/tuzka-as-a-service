@@ -82,6 +82,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Dispatch by measured speed.** Each page goes to the backend that would finish it
+  first, from the backend's measured engine seconds per megapixel (the API now reads
+  each image's size at submit; Pillow joins the api image) and its pages in flight,
+  instead of round-robin. Backend priority tiers still come first. Failures that are a
+  backend's fault make it look slower until its pages succeed again. Pages of a batch
+  stick to a backend already running it when that's within `dispatch.affinity_tolerance`
+  (default 0.15) of the fastest.
 - **`external_id` is now an optional string** (≤ 255 characters, e.g. a PID like
   `uuid:…`), your own label, no longer a required UUID. **Breaking:** the submit field
   is `external_id` (`uuid` is gone), and WebSocket events carry `job_id` and
