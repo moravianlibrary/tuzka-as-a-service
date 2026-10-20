@@ -9,7 +9,7 @@ and emits the WS failed event.
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -34,27 +34,26 @@ def select_stale_jobs(
     jobs: Iterable[Job],
     now: datetime,
     queued_timeout: int,
-    running_timeout: int,
+    running_timeout_for: Callable[[str | None], int],
 ) -> list[tuple[Job, str]]:
     """Return [(job, reason), ...] for jobs past their phase deadline.
 
     Pure function (no I/O) so it is unit-testable. `queued` is measured from
     `submitted_at`, `running` from `dispatched_at` (set when the job was handed to
     the engine) — each phase has its own clock. A job dispatched but not yet
-    started has `dispatched_at` set, so it is still covered.
+    started has `dispatched_at` set, so it is still covered. The running timeout is
+    per domain (a map sheet runs far longer than a text page), via
+    `running_timeout_for(job.domain)`.
     """
     queued_cutoff = now - timedelta(seconds=queued_timeout)
-    running_cutoff = now - timedelta(seconds=running_timeout)
     stale: list[tuple[Job, str]] = []
     for job in jobs:
         if job.status == "queued" and job.submitted_at < queued_cutoff:
             stale.append((job, f"timed out in queue after {queued_timeout}s"))
-        elif (
-            job.status == "running"
-            and job.dispatched_at is not None
-            and job.dispatched_at < running_cutoff
-        ):
-            stale.append((job, f"timed out while processing after {running_timeout}s"))
+        elif job.status == "running" and job.dispatched_at is not None:
+            running_timeout = running_timeout_for(job.domain)
+            if job.dispatched_at < now - timedelta(seconds=running_timeout):
+                stale.append((job, f"timed out while processing after {running_timeout}s"))
     return stale
 
 
@@ -65,6 +64,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     """
     queued_timeout = await config_service.get_job_queued_timeout_seconds(db)
     running_timeout = await config_service.get_job_running_timeout_seconds(db)
+    domain_limits = await config_service.get_domain_limits(db)
     state_ttl = await config_service.get_state_ttl_seconds(db)
     now = utcnow()
 
@@ -72,7 +72,13 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         select(Job).where(Job.status.in_(("queued", "running"))).limit(REAP_MAX_PER_TICK)
     )
     candidates = result.scalars().all()
-    stale = select_stale_jobs(candidates, now, queued_timeout, running_timeout)
+    def running_timeout_for(domain: str | None) -> int:
+        limits = domain_limits.get(domain or "default")
+        if limits is None or limits.running_timeout_seconds is None:
+            return running_timeout
+        return limits.running_timeout_seconds
+
+    stale = select_stale_jobs(candidates, now, queued_timeout, running_timeout_for)
 
     sem = asyncio.Semaphore(_REAP_CONCURRENCY)
 

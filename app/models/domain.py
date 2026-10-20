@@ -3,6 +3,7 @@
 # and backend_domains; rows are kept forever so historical analytics resolve names.
 from typing import Any
 
+from sqlalchemy import BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,3 +21,7 @@ class Domain(Base):
     legacy_engine_id: Mapped[int | None] = mapped_column(unique=True, default=None)
     # Per-job options JSON Schema, derived from the engine's OpenAPI; newest wins.
     options_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    # Per-domain limits; None = the global one (Settings.max_upload_bytes,
+    # jobs.running_timeout_seconds).
+    max_upload_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    running_timeout_seconds: Mapped[int | None] = mapped_column(default=None)

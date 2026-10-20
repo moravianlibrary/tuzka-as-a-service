@@ -39,7 +39,8 @@ from app.schemas.job import (
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
-from app.services.job_spec import fmt_label, parse_outputs, resolve_job_spec
+from app.services.job_spec import DEFAULT_DOMAIN, fmt_label, parse_outputs, resolve_job_spec
+from app.services.uploads import UploadTooLarge, read_limited
 
 router = APIRouter()
 
@@ -106,10 +107,17 @@ async def submit_job(
     if ext not in settings.allowed_extensions:
         raise BadRequest(f"Extension {ext} not allowed. Allowed: {settings.allowed_extensions}")
 
-    # Validate file size
-    image_bytes = await image.read()
-    if len(image_bytes) > settings.max_upload_bytes:
-        raise BadRequest(f"File too large. Max: {settings.max_upload_bytes} bytes")
+    # Validate file size: the domain's own limit (maps are big) or the global one.
+    domain_limits = (await config_service.get_domain_limits(db)).get(domain or DEFAULT_DOMAIN)
+    max_bytes = (
+        domain_limits.max_upload_bytes
+        if domain_limits is not None and domain_limits.max_upload_bytes is not None
+        else settings.max_upload_bytes
+    )
+    try:
+        image_bytes = await read_limited(image.read, max_bytes)
+    except UploadTooLarge as exc:
+        raise BadRequest(str(exc)) from exc
 
     # Domain, outputs, options: validated against what the enabled backends serve (D7).
     try:

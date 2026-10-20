@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.config import ConfigEntry
+from app.models.domain import Domain
 from app.models.user import User
 
 # Short in-process cache: hot path must not hit Postgres per request,
@@ -165,6 +166,31 @@ async def get_job_running_timeout_seconds(db: AsyncSession) -> int:
     return int(value) if value is not None else JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS
 
 
+@dataclass(frozen=True)
+class DomainLimits:
+    """A domain's own limits; None = the global value."""
+
+    max_upload_bytes: int | None = None
+    running_timeout_seconds: int | None = None
+
+
+async def get_domain_limits(db: AsyncSession) -> dict[str, DomainLimits]:
+    """Every domain that overrides a limit, cached like the config values (the table is
+    small, and the submit path and the reaper both need it)."""
+    cached, ok = _cache_get("domain_limits")
+    if ok:
+        limits: dict[str, DomainLimits] = cached
+        return limits
+    rows = await db.execute(
+        select(Domain.name, Domain.max_upload_bytes, Domain.running_timeout_seconds).where(
+            (Domain.max_upload_bytes.is_not(None)) | (Domain.running_timeout_seconds.is_not(None))
+        )
+    )
+    limits = {name: DomainLimits(upload, timeout) for name, upload, timeout in rows.all()}
+    _cache_put("domain_limits", limits)
+    return limits
+
+
 async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
     value = await get_value(db, "presigned.ttl_minutes")
     return int(value) if value is not None else PRESIGNED_TTL_DEFAULT_MINUTES
@@ -188,4 +214,8 @@ async def get_state_ttl_seconds(db: AsyncSession) -> int:
     """
     queued = await get_job_queued_timeout_seconds(db)
     running = await get_job_running_timeout_seconds(db)
+    # A domain with a longer running timeout (maps) must not outlive its Redis state.
+    for limits in (await get_domain_limits(db)).values():
+        if limits.running_timeout_seconds is not None:
+            running = max(running, limits.running_timeout_seconds)
     return queued + running + STATE_TTL_MARGIN_SECONDS
