@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Batches.** `POST /api/v1/batches` takes one archive of pages (`.tar`, `.tar.gz`,
+  `.tar.zst` or `.zip`, read one page at a time) with one domain, set of outputs and
+  options; every image becomes a job, other files are skipped and listed. Watch it with
+  `GET /api/v1/batches/{id}` (counts, ETA, `?pages=1`) or the WebSocket's
+  `{"type": "batch", …}` progress events, and download every page's output plus a
+  `manifest.json` as one `.tar.zst` from `GET /api/v1/batches/{id}/results`
+  (`?partial=1` before it's finished). `POST /api/v1/batches/{id}/retry` reruns the
+  failed pages. Limits: `BATCH_MAX_UPLOAD_BYTES` (2 GiB) and `BATCH_MAX_PAGES` (2000).
+  A batch costs one submit from the rate limit. `make test-batch` runs it end to end.
+- `GET /api/v1/jobs?external_id=…` finds your jobs by their label.
 - **`taas-admin`**, the admin CLI, replaces the HTTP admin API and the dashboard. It ships
   in the api image and writes to Postgres directly: `user` (create, rotate-key, set-key,
   enable/disable, set-priority, set-limits, set-scopes), `backend` (upsert, update,
@@ -72,6 +82,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **`external_id` is now an optional string** (≤ 255 characters, e.g. a PID like
+  `uuid:…`), your own label, no longer a required UUID. **Breaking:** the submit field
+  is `external_id` (`uuid` is gone), and WebSocket events carry `job_id` and
+  `external_id` instead of `uuid`: match them on the `job_id` that submit returns. The
+  engine upload is named by job id. The compat API is unaffected.
 - **Retention.** Postgres keeps live state only; job history is in ClickHouse.
   Finished job rows (with their results) are deleted `jobs.done_ttl_seconds` (1 day) after
   a `done` job finished and `jobs.failed_ttl_seconds` (7 days) after a `failed` one,
@@ -112,6 +127,7 @@ All notable changes to this project are documented here. The format is based on
 
 ### Removed
 
+- **External URLs** (`users.external_url_template`, `external_url` in job status).
 - **The admin API** (`/admin/*`), **the dashboard** (`/dashboard`, `/static`), the
   **master key** (`MASTER_KEY`, Helm `secrets.masterKey`, the `X-Master-Key` header) and
   the `adminDashboard` expose target. Use `taas-admin` instead; job history and

@@ -34,7 +34,7 @@ Interactive OpenAPI docs are served at <http://localhost:8080/docs> (Swagger UI)
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/jobs` | multipart: `image` (required), `uuid` (required — caller's `external_id`, must be a valid UUID, unique per user), `fmt` (`alto`\|`txt`\|`multi`, default `multi`), `domain?` → `202 {job_id, external_id, status}` |
+| `POST` | `/jobs` | multipart: `image` (required), `external_id?` (your own label: any string ≤ 255 chars, not unique), `domain?`, `outputs?` (or `fmt`), `options?` → `202 {job_id, external_id, status}` |
 | `GET` | `/jobs/{job_id}` | job status |
 | `GET` | `/jobs/{job_id}/result` | `{results:[{fmt, url}]}` — presigned URLs (public endpoint, regenerated if expired) |
 | `GET` | `/jobs/{job_id}/result/{fmt}/download` | stream the stored artifact through taas (internal endpoint; for callers that can't reach the public presign host, e.g. compat) |
@@ -72,9 +72,26 @@ On connect: replays `done`/`failed` jobs finished within `WS_CATCH_UP_SECONDS`, 
 live events. Event JSON:
 
 ```json
-{"status": "done", "uuid": "<external_id>", "alto_url": "...", "txt_url": "..."}
-{"status": "failed", "uuid": "<external_id>", "error": "..."}
+{"job_id": "...", "external_id": "<your label or null>", "status": "done", "alto_url": "...", "txt_url": "..."}
+{"job_id": "...", "external_id": null, "status": "failed", "error": "..."}
+{"type": "batch", "batch_id": "...", "total": 120, "done": 80, "failed": 2}
 ```
+
+Match events on `job_id` (submit returned it). A page of a batch also carries
+`batch_id`; its results come with the batch archive.
+
+### Batches — `/api/v1/batches` (user key)
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/batches` | multipart: `archive` (`.tar`, `.tar.gz`, `.tar.zst` or `.zip`; ≤ `BATCH_MAX_UPLOAD_BYTES`, 2 GiB), `external_id?`, `domain?`, `outputs?`, `options?` → `202 {batch_id, external_id, total, skipped}`. Each image (≤ `BATCH_MAX_PAGES`, 2000) is a job; other files are skipped. One submit from the rate limit. |
+| `GET` | `/batches/{id}?pages=1` | counts (`queued`, `running`, `done`, `failed`), `eta_s`, and with `pages=1` every page's `source_name`, `job_id`, `status`, `error` |
+| `GET` | `/batches/{id}/results?partial=1` | `202` until finished; then `{url, expires_at}` of a `.tar.zst` with `pages/…` and `manifest.json` (built once). `partial=1`: an archive of what's done so far |
+| `POST` | `/batches/{id}/retry` | resubmits a finished batch's failed pages |
+
+A batch's pages run in archive order and are identified by `source_name` (their path in
+the archive). A finished batch goes after the done TTL, or the failed TTL if a page
+failed, with its pages and archive.
 
 ## Job lifecycle
 
