@@ -254,8 +254,12 @@ async def set_running(
         },
     )
     await r.expire(key, state_ttl)
-    await r.sadd("jobs:inflight", job_id)
+    added = await r.sadd("jobs:inflight", job_id)
     await r.incr(f"backend:{backend_id}:inflight")
+    batch_id = await r.hget(key, "batch_id")
+    if added and batch_id:
+        # Which batches this backend is working on, for dispatch affinity (step 8, D7).
+        await r.hincrby(_backend_batches_key(backend_id), _s(batch_id), 1)
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
@@ -332,6 +336,7 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> BatchCount
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
+        await _release_batch(r, backend_id, meta)
         await signal_submit(r)  # a slot just freed — let the worker refill it now
     return batch
 
@@ -356,6 +361,7 @@ async def set_failed(
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
+        await _release_batch(r, backend_id, meta)
         await signal_submit(r)  # a slot just freed — let the worker refill it now
     return batch
 
@@ -389,6 +395,7 @@ async def release_and_requeue(
     removed = await r.srem("jobs:inflight", job_id)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
+        await _release_batch(r, backend_id, meta)
     await r.hset(key, mapping={"status": "queued"})
     await r.hdel(key, "engine_job_id", "backend_url", "backend_id")
     await r.expire(key, state_ttl)
@@ -403,6 +410,29 @@ async def release_and_requeue(
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:
     members = await r.smembers("jobs:inflight")
     return {m.decode() if isinstance(m, bytes) else m for m in members}
+
+
+def _backend_batches_key(backend_id: int | str) -> str:
+    return f"backend:{backend_id}:batches"
+
+
+async def _release_batch(
+    r: aioredis.Redis, backend_id: int | str, meta: dict[str, str] | None
+) -> None:
+    """One page of a batch left the backend; drop the batch when it was the last. Only
+    called when the job really left the in-flight set, so the count can't go negative."""
+    batch_id = meta.get("batch_id") if meta else None
+    if not batch_id:
+        return
+    left = await r.hincrby(_backend_batches_key(backend_id), batch_id, -1)
+    if left <= 0:
+        await r.hdel(_backend_batches_key(backend_id), batch_id)
+
+
+async def get_backend_batches(r: aioredis.Redis, backend_id: int) -> dict[str, int]:
+    """batch id → pages of it in flight on the backend."""
+    raw = await r.hgetall(_backend_batches_key(backend_id))
+    return {_s(k): int(v) for k, v in raw.items()}
 
 
 async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:

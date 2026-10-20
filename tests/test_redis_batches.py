@@ -10,6 +10,7 @@ from app.services.redis_jobs import (
     BatchCounts,
     batch_event,
     enqueue_job,
+    get_backend_batches,
     init_batch,
     job_event_payload,
     set_done,
@@ -64,3 +65,16 @@ async def test_single_jobs_have_no_batch_counts(redis_client: aioredis.Redis) ->
     meta = _page("")
     await enqueue_job(redis_client, "solo", meta, TTL)
     assert await set_failed(redis_client, "solo", "boom", TTL) is None
+
+
+@pytest.mark.asyncio
+async def test_backend_batch_inflight_tracking(redis_client: aioredis.Redis) -> None:
+    for job_id in ("a1", "a2"):
+        await enqueue_job(redis_client, job_id, _page("b9"), TTL)
+        await set_running(redis_client, job_id, "e", "http://e", 1, TTL)
+    assert await get_backend_batches(redis_client, 1) == {"b9": 2}
+
+    await set_done(redis_client, "a1", TTL)
+    assert await get_backend_batches(redis_client, 1) == {"b9": 1}
+    await set_failed(redis_client, "a2", "boom", TTL)
+    assert await get_backend_batches(redis_client, 1) == {}
