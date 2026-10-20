@@ -1,0 +1,28 @@
+# Fake TuzkaOCR engines for measuring taas without OCR (plan 10). Overlay on the stack:
+#
+#   docker compose -f docker-compose.yml -f bench/fake_engine/compose.yaml up -d --build
+#
+# then register each engine as a backend (bench/fake_engine/README.md). Three engines
+# here; copy a block (new name + alias) for more. Tune them with FAKE_* (see app.py).
+x-fake-engine: &fake-engine
+  build:
+    context: ./bench/fake_engine
+  image: fake-tuzkaocr:local
+  environment: &fake-env
+    TUZKAOCR_API_KEY: ${OCR_ENGINE_API_KEY:-test-engine-key}
+    FAKE_LATENCY_S: ${FAKE_LATENCY_S:-0.05}
+    FAKE_LATENCY_DIST: ${FAKE_LATENCY_DIST:-lognormal}
+    FAKE_FAILURE_RATE: ${FAKE_FAILURE_RATE:-0}
+    FAKE_FAILURE_STATUS: ${FAKE_FAILURE_STATUS:-500}
+    FAKE_CAPACITY: ${FAKE_CAPACITY:-8}
+    FAKE_WORKERS: ${FAKE_WORKERS:-2}
+  networks:
+    - backend
+
+services:
+  fake-engine-1:
+    <<: *fake-engine
+  fake-engine-2:
+    <<: *fake-engine
+  fake-engine-3:
+    <<: *fake-engine
