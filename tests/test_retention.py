@@ -56,8 +56,8 @@ async def session():
     async with factory() as s:
         await s.execute(
             text(
-                "TRUNCATE backend_domains, domains, job_results, jobs, backends, users, config "
-                "RESTART IDENTITY CASCADE"
+                "TRUNCATE batches, backend_domains, domains, job_results, jobs, backends, "
+                "users, config RESTART IDENTITY CASCADE"
             )
         )
         await s.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
@@ -106,3 +106,37 @@ async def test_only_jobs_past_their_ttl_are_deleted(session, monkeypatch) -> Non
     ).scalar()
     assert gone == 0
     assert deleted_objects == [f"alice/{done_old}.xml.zst"]
+
+
+def test_batch_ttl_depends_on_failures() -> None:
+    finished = NOW - timedelta(days=2)
+    assert retention.batch_expired(finished, False, NOW, 86_400, 604_800)
+    assert not retention.batch_expired(finished, True, NOW, 86_400, 604_800)
+    assert retention.batch_expired(NOW - timedelta(days=8), True, NOW, 86_400, 604_800)
+
+
+@pytest.mark.asyncio
+async def test_batch_pages_are_left_to_the_batch_sweep(session, monkeypatch) -> None:
+    monkeypatch.setattr(retention, "utcnow", lambda: NOW)
+
+    async def fake_delete(client, bucket, paths):
+        pass
+
+    monkeypatch.setattr(retention, "delete_objects", fake_delete)
+    batch_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO batches (id, username, domain, outputs, status, total, finished_at) "
+            "VALUES (:id, 'alice', 'default', '{alto}', 'finished', 1, :fin)"
+        ),
+        {"id": batch_id, "fin": NOW - timedelta(days=2)},
+    )
+    page = await _job(session, "done", 2)
+    await session.execute(
+        text("UPDATE jobs SET batch_id = :b WHERE id = :j"), {"b": batch_id, "j": page}
+    )
+    await session.commit()
+
+    assert await retention.delete_finished_jobs(session, None, "results") == 0
+    assert await retention.delete_expired_batches(session, None, "results") == 1
+    assert (await session.execute(text("SELECT count(*) FROM jobs"))).scalar() == 0

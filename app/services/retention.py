@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.engines.outputs import ext_for
+from app.models.batch import Batch
 from app.models.job import Job, JobResult
 from app.services import config as config_service
 from app.services.storage import delete_objects
@@ -63,14 +64,16 @@ def _object(username: str, job_id: uuid.UUID, fmt: str) -> str:
 
 
 async def delete_finished_jobs(db: AsyncSession, results_client: Minio, bucket: str) -> int:
-    """Delete job rows past their TTL, with their result rows and objects. Returns how
+    """Delete single jobs past their TTL, with their result rows and objects. Returns how
     many jobs went."""
     done_ttl = await config_service.get_done_ttl_seconds(db)
     failed_ttl = await config_service.get_failed_ttl_seconds(db)
     done_cutoff, failed_cutoff = expired_job_cutoffs(utcnow(), done_ttl, failed_ttl)
-    expired = ((Job.status == "done") & (Job.finished_at < done_cutoff)) | (
-        (Job.status == "failed") & (Job.finished_at < failed_cutoff)
-    )
+    # Pages of a batch go with their batch (delete_expired_batches), all at once.
+    expired = (
+        ((Job.status == "done") & (Job.finished_at < done_cutoff))
+        | ((Job.status == "failed") & (Job.finished_at < failed_cutoff))
+    ) & Job.batch_id.is_(None)
 
     deleted = 0
     for _ in range(MAX_BATCHES_PER_TICK):
@@ -98,6 +101,69 @@ async def delete_finished_jobs(db: AsyncSession, results_client: Minio, bucket: 
     if deleted:
         logger.info("Deleted %d finished job(s) past their TTL", deleted)
     return deleted
+
+
+def batch_expired(
+    finished_at: datetime, any_failed: bool, now: datetime, done_ttl_s: int, failed_ttl_s: int
+) -> bool:
+    """A finished batch goes after the done TTL, or the failed TTL if any page failed, so
+    its failures stay around as long as a single failed job's would (step 7, D7)."""
+    ttl = failed_ttl_s if any_failed else done_ttl_s
+    return finished_at < now - timedelta(seconds=ttl)
+
+
+async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket: str) -> int:
+    """Delete finished batches past their TTL: their pages' result objects, their results
+    archives, then the batch (its jobs cascade). Returns how many batches went."""
+    done_ttl = await config_service.get_done_ttl_seconds(db)
+    failed_ttl = await config_service.get_failed_ttl_seconds(db)
+    now = utcnow()
+    any_failed = (
+        select(func.count())
+        .select_from(Job)
+        .where(Job.batch_id == Batch.id, Job.status == "failed")
+        .correlate(Batch)
+        .scalar_subquery()
+        > 0
+    )
+    finished = (
+        await db.execute(
+            select(Batch.id, Batch.username, Batch.finished_at, any_failed)
+            .where(
+                Batch.status == "finished",
+                Batch.finished_at < now - timedelta(seconds=min(done_ttl, failed_ttl)),
+            )
+            .order_by(Batch.finished_at)
+            .limit(DELETE_BATCH)
+        )
+    ).all()
+    expired = [
+        (batch_id, username)
+        for batch_id, username, finished_at, failed in finished
+        if batch_expired(finished_at, bool(failed), now, done_ttl, failed_ttl)
+    ]
+    for batch_id, username in expired:
+        results = (
+            await db.execute(
+                select(JobResult.job_id, JobResult.fmt)
+                .join(Job, Job.id == JobResult.job_id)
+                .where(Job.batch_id == batch_id, JobResult.evicted_at.is_(None))
+            )
+        ).all()
+        paths = [_object(username, job_id, fmt) for job_id, fmt in results]
+        paths += [
+            f"{username}/batches/{batch_id}.tar.zst",
+            f"{username}/batches/{batch_id}.partial.tar.zst",
+        ]
+        for i in range(0, len(paths), DELETE_BATCH):
+            await delete_objects(results_client, bucket, paths[i : i + DELETE_BATCH])
+        page_ids = select(Job.id).where(Job.batch_id == batch_id)
+        await db.execute(delete(JobResult).where(JobResult.job_id.in_(page_ids)))
+        await db.execute(delete(Batch).where(Batch.id == batch_id))
+        await db.commit()
+    if expired:
+        logger.info("Deleted %d finished batch(es) past their TTL", len(expired))
+    return len(expired)
 
 
 async def evict_results(db: AsyncSession, results_client: Minio, bucket: str) -> int:
