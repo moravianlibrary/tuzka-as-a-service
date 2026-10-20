@@ -11,15 +11,22 @@ from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
 from miniopy_async import Minio
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.config import Settings
-from app.deps import get_redis, get_settings, rate_limit_submit, require_principal
+from app.deps import (
+    get_redis,
+    get_settings,
+    rate_limit_query,
+    rate_limit_submit,
+    require_principal,
+)
 from app.exceptions import (
     Forbidden,
+    NotFound,
     PayloadTooLarge,
     Unprocessable,
     UnsupportedMediaType,
@@ -28,7 +35,8 @@ from app.models.batch import Batch
 from app.models.db import get_db
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.batch import BatchSubmitResponse
+from app.schemas.batch import BatchPage, BatchStatus, BatchSubmitResponse
+from app.services import batch_store
 from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
@@ -238,3 +246,63 @@ async def _abandon(
         await storage.delete_objects(incoming, bucket, paths)
     await db.execute(delete(Batch).where(Batch.id == batch_id))
     await db.commit()
+
+
+async def _owned_batch(db: AsyncSession, batch_id: UUID, username: str) -> Batch:
+    batch = await db.scalar(select(Batch).where(Batch.id == batch_id, Batch.username == username))
+    if batch is None:
+        raise NotFound("Batch not found")
+    return batch
+
+
+@router.get(
+    "/batches/{batch_id}",
+    response_model=BatchStatus,
+    summary="Get a batch's progress",
+    responses={
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Batch not found for the authenticated user"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
+async def get_batch(
+    batch_id: UUID,
+    pages: bool = Query(False, description="Also list every page with its status."),
+    username: str = Depends(rate_limit_query()),
+    db: AsyncSession = Depends(get_db),
+    r: aioredis.Redis = Depends(get_redis),
+) -> BatchStatus:
+    """A batch's progress: how many pages are queued, running, done and failed, and a
+    rough ETA. ``pages=1`` lists every page (its path in your archive, job id, status,
+    error)."""
+    batch = await _owned_batch(db, batch_id, username)
+    counts = await batch_store.page_counts(db, batch_id)
+    queued, running = counts.get("queued", 0), counts.get("running", 0)
+    spp_raw = await r.hget("load:spp", batch.domain)  # seconds per page, if measured
+    eta = batch_store.estimate_eta(
+        queued + running,
+        float(spp_raw) if spp_raw is not None else None,
+        await batch_store.domain_slots(db, batch.domain),
+    )
+    listed = None
+    if pages:
+        listed = [
+            BatchPage(source_name=name or "", job_id=job_id, status=status, error=error)
+            for job_id, name, status, error in await batch_store.pages(db, batch_id)
+        ]
+    return BatchStatus(
+        batch_id=batch.id,
+        external_id=batch.external_id,
+        status=batch.status,
+        domain=batch.domain,
+        outputs=batch.outputs,
+        total=batch.total,
+        queued=queued,
+        running=running,
+        done=counts.get("done", 0),
+        failed=counts.get("failed", 0),
+        submitted_at=batch.submitted_at,
+        finished_at=batch.finished_at,
+        eta_s=eta if batch.status != "finished" else 0.0,
+        pages=listed,
+    )

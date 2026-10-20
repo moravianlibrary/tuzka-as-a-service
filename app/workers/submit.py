@@ -18,6 +18,7 @@ from app.engines.base import EngineAdapter, EngineFullError
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
+from app.services import batch_store
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import apply_domain_sync, served_capabilities
@@ -312,6 +313,7 @@ async def main() -> None:
                         status="failed", error=msg, finished_at=utcnow(), **append_attempt(attempt)
                     )
                 )
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
             emitter.emit(event("failed", **failure("dispatch", None)))
             await publish_event(
@@ -433,6 +435,7 @@ async def main() -> None:
                         **append_attempt(attempt),
                     )
                 )
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
             emitter.emit(event("failed", **failed_fields))
             await publish_event(

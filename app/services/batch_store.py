@@ -1,0 +1,85 @@
+"""Batch queries and the one batch state change the workers make (step 7)."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.backend import Backend
+from app.models.backend_domain import BackendDomain
+from app.models.domain import Domain
+from app.models.job import Job, JobResult
+
+
+def estimate_eta(
+    remaining_pages: int, seconds_per_page: float | None, slots: int
+) -> float | None:
+    """A rough ETA: the pages left times seconds per page, spread over the slots of the
+    backends serving the domain. None without a seconds-per-page measurement."""
+    if seconds_per_page is None:
+        return None
+    return remaining_pages * seconds_per_page / max(1, slots)
+
+
+async def page_counts(db: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
+    """status → number of the batch's pages in it."""
+    rows = await db.execute(
+        select(Job.status, func.count()).where(Job.batch_id == batch_id).group_by(Job.status)
+    )
+    return {status: count for status, count in rows.all()}
+
+
+async def domain_slots(db: AsyncSession, domain: str) -> int:
+    """How many pages of ``domain`` the enabled backends can run at once."""
+    total = await db.scalar(
+        select(func.coalesce(func.sum(Backend.max_inflight), 0))
+        .join(BackendDomain, BackendDomain.backend_id == Backend.id)
+        .join(Domain, Domain.id == BackendDomain.domain_id)
+        .where(Domain.name == domain, Backend.enabled.is_(True))
+    )
+    return int(total or 0)
+
+
+async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[Any]:
+    """Every page in archive order (by source name), with the result rows of done ones."""
+    rows = await db.execute(
+        select(Job.id, Job.source_name, Job.status, Job.error)
+        .where(Job.batch_id == batch_id)
+        .order_by(Job.source_name)
+    )
+    return list(rows.all())
+
+
+async def stored_results(db: AsyncSession, batch_id: uuid.UUID) -> dict[uuid.UUID, list[str]]:
+    """job id → the outputs stored for it (not evicted)."""
+    rows = await db.execute(
+        select(JobResult.job_id, JobResult.fmt)
+        .join(Job, Job.id == JobResult.job_id)
+        .where(Job.batch_id == batch_id, JobResult.evicted_at.is_(None))
+    )
+    stored: dict[uuid.UUID, list[str]] = {}
+    for job_id, fmt in rows.all():
+        stored.setdefault(job_id, []).append(fmt)
+    return stored
+
+
+_FINISH = text(
+    """
+    UPDATE batches SET status = 'finished', finished_at = now()
+    WHERE id = :batch_id AND status = 'queued'
+      AND NOT EXISTS (
+        SELECT 1 FROM jobs WHERE batch_id = :batch_id AND status IN ('queued', 'running')
+      )
+    """
+)
+
+
+async def finish_if_done(db: AsyncSession, batch_id: str | uuid.UUID | None) -> None:
+    """Mark the batch finished once none of its pages is queued or running. One
+    conditional UPDATE, so the workers finishing its last pages concurrently can't both
+    do it, and it's a no-op for every page but the last. The caller commits."""
+    if batch_id:
+        await db.execute(_FINISH, {"batch_id": str(batch_id)})

@@ -22,6 +22,7 @@ from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
+from app.services import batch_store
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
@@ -380,6 +381,7 @@ async def main() -> None:
                 finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
                 await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
 
                 await db.commit()
 
@@ -450,6 +452,7 @@ async def main() -> None:
                 .where(Job.id == job_id)
             )
             job_rec, backend_device = job_row.first() or (None, None)
+            await batch_store.finish_if_done(db, meta.get("batch_id"))
 
             await db.commit()
         emitter.emit(

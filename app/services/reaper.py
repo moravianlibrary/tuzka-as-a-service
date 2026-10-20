@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.models.job import Job
+from app.services import batch_store
 from app.services import config as config_service
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, durations, failure
@@ -92,6 +93,8 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         job.error = reason
         job.finished_at = now
     if stale:
+        for batch_id in {job.batch_id for job, _ in stale if job.batch_id}:
+            await batch_store.finish_if_done(db, batch_id)
         await db.commit()
         await asyncio.gather(
             *(
