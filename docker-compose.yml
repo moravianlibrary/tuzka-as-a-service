@@ -225,6 +225,37 @@ services:
     networks:
       - backend
 
+  # Map OCR (domain "maps"), only with `--profile maps`. Built from a local TuzkaM
+  # checkout, like ocr-engine from ./TuzkaOCR; `make seed` registers it when it runs.
+  tuzkam:
+    profiles: ["maps"]
+    build:
+      context: ${TUZKAM_DIR:-../../../gitlab.mzk.cz/osdd/tuzkam}
+      dockerfile: Dockerfile
+      args:
+        TUZKAM_COVERAGE: europe-med
+    image: tuzkam:europe-med
+    environment:
+      TUZKAM_DATA_DIR: /data
+      TUZKAM_BUILTIN_GAZETTEER_DIR: /app/builtin
+      TUZKAM_GAZETTEER_AUTO_INSTALL: "false"
+      TUZKAM_API_KEY: ${TUZKAM_API_KEY:-test-tuzkam-key}
+    user: "10001:10001"
+    volumes:
+      - tuzkam-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 120s
+    networks:
+      - backend
+
 volumes:
   postgres-data:
   redis-data:
@@ -233,6 +264,7 @@ volumes:
   minio-results-store:
   ocr-results:
   ocr-spool:
+  tuzkam-data:
 
 networks:
   backend:
