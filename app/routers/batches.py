@@ -6,6 +6,7 @@ import asyncio
 import json
 import mimetypes
 import time
+from datetime import timedelta
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 
@@ -27,6 +28,7 @@ from app.deps import (
 from app.exceptions import (
     Forbidden,
     NotFound,
+    NotReady,
     PayloadTooLarge,
     Unprocessable,
     UnsupportedMediaType,
@@ -35,11 +37,12 @@ from app.models.batch import Batch
 from app.models.db import get_db
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.batch import BatchPage, BatchStatus, BatchSubmitResponse
+from app.schemas.batch import BatchPage, BatchResults, BatchStatus, BatchSubmitResponse
 from app.services import batch_store
 from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
+from app.services.batch_archive import PageRow, build_results_archive
 from app.services.batches import page_score, plan_batch_member
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
@@ -306,3 +309,61 @@ async def get_batch(
         eta_s=eta if batch.status != "finished" else 0.0,
         pages=listed,
     )
+
+
+def batch_archive_path(username: str, batch_id: UUID, partial: bool = False) -> str:
+    suffix = ".partial" if partial else ""
+    return f"{username}/batches/{batch_id}{suffix}.tar.zst"
+
+
+@router.get(
+    "/batches/{batch_id}/results",
+    response_model=BatchResults,
+    summary="Download a batch's results as one archive",
+    responses={
+        202: {"description": "The batch isn't finished yet; retry later (or ?partial=1)"},
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Batch not found for the authenticated user"},
+        429: {"description": "Rate limit exceeded (see Retry-After header)"},
+    },
+)
+async def get_batch_results(
+    request: Request,
+    batch_id: UUID,
+    partial: bool = Query(False, description="Build an archive of the pages done so far."),
+    username: str = Depends(rate_limit_query()),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> BatchResults:
+    """A presigned URL to a ``.tar.zst`` with every page's outputs under ``pages/`` (named
+    after the page's path in your archive) and a ``manifest.json`` listing each page:
+    ``source_name``, ``job_id``, ``status``, ``outputs`` (output → path in the archive)
+    and ``error``.
+
+    The archive is built at the first request after the batch finished, then reused.
+    Before that the answer is ``202``, unless ``partial=1``, which builds a fresh archive
+    of whatever is done (not kept).
+    """
+    batch = await _owned_batch(db, batch_id, username)
+    if batch.status != "finished" and not partial:
+        raise NotReady("The batch isn't finished yet")
+
+    results = request.app.state.results_client
+    bucket = settings.minio_results_bucket
+    final = batch.status == "finished" and not partial
+    path = batch_archive_path(username, batch_id, partial=not final)
+    if not (final and batch.archive_built_at is not None):
+        stored = await batch_store.stored_results(db, batch_id)
+        rows = [
+            PageRow(job_id, name or "", status, error, stored.get(job_id, []))
+            for job_id, name, status, error in await batch_store.pages(db, batch_id)
+        ]
+        size = await build_results_archive(rows, username, results, bucket, path)
+        if final:
+            batch.archive_built_at = utcnow()
+            batch.archive_size_bytes = size
+            await db.commit()
+
+    ttl = await config_service.get_presigned_ttl_minutes(db)
+    url = await storage.presign_get(request.app.state.results_public_client, bucket, path, ttl)
+    return BatchResults(status=batch.status, url=url, expires_at=utcnow() + timedelta(minutes=ttl))

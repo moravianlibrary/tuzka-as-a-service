@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timedelta
 from io import BytesIO
+from typing import BinaryIO
 
 from miniopy_async.api import Minio
 
@@ -63,6 +64,14 @@ def get_results_public_client(settings: Settings) -> Minio:
 async def put_object(client: Minio, bucket: str, path: str, data: bytes, content_type: str) -> None:
     stream = BytesIO(data)
     await client.put_object(bucket, path, stream, len(data), content_type=content_type)
+
+
+async def put_file(
+    client: Minio, bucket: str, path: str, f: BinaryIO, length: int, content_type: str
+) -> None:
+    """Upload from an open file (read in parts by the client), for objects too large to
+    hold in memory, such as a batch's results archive."""
+    await client.put_object(bucket, path, f, length, content_type=content_type)
 
 
 async def get_object(client: Minio, bucket: str, path: str) -> bytes:
