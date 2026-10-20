@@ -81,6 +81,26 @@ class JobEvent:
     extra: dict[str, str] = field(default_factory=dict)
 
 
+def failure(stage: str, http_status: int | None, transport: bool = False) -> dict[str, Any]:
+    """The error columns of a ``retried``/``failed`` event, as ``JobEvent`` kwargs."""
+    return {
+        "error_flag": True,
+        "error_class": error_class(stage, http_status, transport),
+        "http_status": http_status,
+    }
+
+
+def attempt_failure(attempt: dict[str, Any] | None, stage: str = "harvest") -> dict[str, Any]:
+    """``failure()`` from a ``jobs.attempts`` entry. An attempt doesn't record whether
+    the error was a transport one; a poll with no HTTP status is taken as one (the
+    engine was unreachable), which is what it nearly always is."""
+    if attempt is None:
+        return failure(stage, None)
+    status = attempt.get("http_status")
+    stage = attempt.get("stage", stage)
+    return failure(stage, status, transport=status is None and stage == "poll")
+
+
 def durations(
     submitted_at: datetime | None,
     dispatched_at: datetime | None,

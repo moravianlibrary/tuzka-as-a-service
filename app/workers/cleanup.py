@@ -14,6 +14,7 @@ from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
 from app.models.db import make_engine
 from app.services.config import get_storage_ttl_minutes
+from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
 from app.services.storage import (
     delete_objects,
@@ -63,6 +64,8 @@ async def main() -> None:
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
+    emitter = get_emitter(settings)  # the reaper's failed events
+    await emitter.start()
 
     bucket_clients = {
         settings.minio_incoming_bucket: incoming_client,
@@ -104,6 +107,7 @@ async def main() -> None:
             tick += 1
             await asyncio.sleep(REAP_TICK_SECONDS)
     finally:
+        await emitter.aclose()
         await r.aclose()
         await db_engine.dispose()
 

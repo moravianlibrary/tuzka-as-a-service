@@ -5,7 +5,13 @@ from datetime import datetime
 
 import pytest
 
-from app.services.events import JobEvent, durations, error_class, job_event_row
+from app.services.events import (
+    JobEvent,
+    attempt_failure,
+    durations,
+    error_class,
+    job_event_row,
+)
 
 
 @pytest.mark.parametrize(
@@ -68,3 +74,15 @@ def test_job_event_row_round_trips_through_json() -> None:
     assert row["batch_id"] is None
     assert row["extra"] == {}
     assert "error" not in row  # error text stays in Postgres
+
+
+def test_attempt_failure_reads_the_attempt() -> None:
+    poll_unreachable = {"stage": "poll", "http_status": None}
+    assert attempt_failure(poll_unreachable)["error_class"] == "transport"
+    engine_bad_input = {"stage": "engine", "http_status": 422}
+    assert attempt_failure(engine_bad_input) == {
+        "error_flag": True,
+        "error_class": "engine_input",
+        "http_status": 422,
+    }
+    assert attempt_failure(None)["error_class"] == ""  # a harvest error

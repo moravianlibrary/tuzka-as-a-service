@@ -39,6 +39,8 @@ from app.schemas.job import (
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
+from app.services.event_emitter import get_emitter
+from app.services.events import JobEvent
 from app.services.job_spec import fmt_label, parse_outputs, resolve_job_spec
 from app.telemetry import inject_trace_context
 
@@ -170,6 +172,17 @@ async def submit_job(
         state_ttl,
     )
 
+    get_emitter().emit(
+        JobEvent(
+            ts=utcnow(),
+            event="submitted",
+            job_id=str(job.id),
+            username=username,
+            domain=spec.domain,
+            outputs=sorted(spec.outputs),
+            file_size_bytes=len(image_bytes),
+        )
+    )
     return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
 
 

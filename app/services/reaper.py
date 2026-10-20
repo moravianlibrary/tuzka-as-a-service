@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clock import utcnow
 from app.models.job import Job
 from app.services import config as config_service
+from app.services.event_emitter import get_emitter
+from app.services.events import JobEvent, durations, failure
 from app.services.redis_jobs import publish_event, set_failed
 
 logger = logging.getLogger("reaper")
@@ -103,5 +105,29 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                 for job, reason in stale
             )
         )
+        emitter = get_emitter()
+        for job, _reason in stale:
+            emitter.emit(
+                JobEvent(
+                    ts=now,
+                    event="failed",
+                    job_id=str(job.id),
+                    username=job.username,
+                    domain=job.domain or "default",
+                    outputs=sorted(job.outputs or []),
+                    backend_id=job.backend_id,
+                    engine_version=job.engine_version or "",
+                    file_size_bytes=job.file_size_bytes,
+                    **failure("timeout", None),
+                    **durations(
+                        job.submitted_at,
+                        job.dispatched_at,
+                        job.engine_received_at,
+                        job.started_at,
+                        now,
+                        None,
+                    ),
+                )
+            )
         logger.info(f"Reaped {len(stale)} stale job(s)")
     return len(stale)

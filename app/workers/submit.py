@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
@@ -20,6 +21,8 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import apply_domain_sync, served_capabilities
+from app.services.event_emitter import get_emitter
+from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
@@ -134,6 +137,8 @@ async def main() -> None:
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)
     http = httpx.AsyncClient(timeout=60.0)
+    emitter = get_emitter(settings)
+    await emitter.start()
     # backend id -> (what it was built from, adapter); rebuilt when any of that changes.
     adapters: dict[int, tuple[tuple[str, str, str | None], EngineAdapter]] = {}
 
@@ -262,6 +267,20 @@ async def main() -> None:
         domain = job_domain(meta)
         outputs = job_outputs(meta)
 
+        def event(name: EventName, **fields: Any) -> JobEvent:
+            return JobEvent(
+                ts=utcnow(),
+                event=name,
+                job_id=job_id,
+                username=username,
+                domain=domain,
+                outputs=sorted(outputs),
+                backend_id=backend.id,
+                adapter=backend.adapter,
+                device=backend.device,
+                **fields,
+            )
+
         # Skip if this backend does not serve the job's domain + outputs. Checked against
         # the capabilities loaded once per tick (no per-job DB round-trip); the job goes
         # back on the queue for a backend that does serve it.
@@ -292,6 +311,7 @@ async def main() -> None:
                     )
                 )
                 await db.commit()
+            emitter.emit(event("failed", **failure("dispatch", None)))
             await publish_event(
                 r,
                 username,
@@ -323,6 +343,14 @@ async def main() -> None:
                     )
                 )
                 await db.commit()
+            submitted_at = float(meta.get("submitted_at") or time.time())
+            emitter.emit(
+                event(
+                    "dispatched",
+                    engine_version=engine_version or "",
+                    queue_s=max(time.time() - submitted_at, 0.0),
+                )
+            )
 
         except EngineFullError:
             logger.info(f"Engine {backend.url} full, requeuing job {job_id}")
@@ -332,6 +360,7 @@ async def main() -> None:
             msg = describe_exception(e)
             transient = is_retryable_dispatch_error(e)
             http_st = http_status_of(e)
+            failed_fields = failure("dispatch", http_st, isinstance(e, httpx.TransportError))
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -368,6 +397,7 @@ async def main() -> None:
                         )
                     )
                     await db.commit()
+                emitter.emit(event("retried", **failed_fields))
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -397,6 +427,7 @@ async def main() -> None:
                     )
                 )
                 await db.commit()
+            emitter.emit(event("failed", **failed_fields))
             await publish_event(
                 r,
                 username,
@@ -475,6 +506,7 @@ async def main() -> None:
             # and slow jobs don't busy-poll.
             await wait_for_submit_signal(r, settings.submit_tick_seconds)
     finally:
+        await emitter.aclose()
         await http.aclose()
         await r.aclose()
         await engine.dispose()

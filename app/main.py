@@ -17,6 +17,7 @@ from app.exceptions import Unauthorized
 from app.models import db
 from app.routers import admin, dashboard, jobs, ws
 from app.services import dash_session, storage
+from app.services.event_emitter import get_emitter
 from app.telemetry import instrument_app, setup_telemetry
 
 
@@ -43,9 +44,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.incoming_client = storage.get_incoming_client(settings)
     app.state.results_client = storage.get_results_client(settings)
     app.state.results_public_client = storage.get_results_public_client(settings)
+    emitter = get_emitter(settings)
+    await emitter.start()
     try:
         yield
     finally:
+        await emitter.aclose()
         await app.state.redis.aclose()
 
 

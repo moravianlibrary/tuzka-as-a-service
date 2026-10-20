@@ -25,10 +25,13 @@ from app.models.job import Job, JobResult
 from app.services import config as config_service
 from app.services.analytics import parse_alto, write_analytics_row
 from app.services.auth import decrypt_backend_key
+from app.services.event_emitter import get_emitter
+from app.services.events import EventName, JobEvent, attempt_failure, durations
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
+    job_domain,
     job_outputs,
     publish_event,
     release_and_requeue,
@@ -180,6 +183,8 @@ async def main() -> None:
     results_client = get_results_client(settings)
     results_public_client = get_results_public_client(settings)
     cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
+    emitter = get_emitter(settings)
+    await emitter.start()
 
     # backend id -> (adapter id, decrypted key), read from the DB once per backend.
     backend_info: dict[int, tuple[str, str | None]] = {}
@@ -204,6 +209,26 @@ async def main() -> None:
         if cache_key not in adapters:
             adapters[cache_key] = make_adapter(adapter_id, url, key, http)
         return adapters[cache_key]
+
+    def job_event(
+        name: EventName, job_id: str, meta: dict[str, str], job_rec: Job | None, **fields: Any
+    ) -> JobEvent:
+        """An event for a job the poller is finishing, from its hash and DB row."""
+        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
+        adapter = backend_info[backend_id][0] if backend_id in backend_info else ""
+        return JobEvent(
+            ts=utcnow(),
+            event=name,
+            job_id=job_id,
+            username=meta.get("username", ""),
+            domain=job_domain(meta),
+            outputs=sorted(job_outputs(meta)),
+            backend_id=backend_id,
+            adapter=adapter,
+            engine_version=(job_rec.engine_version if job_rec else None) or "",
+            file_size_bytes=job_rec.file_size_bytes if job_rec else None,
+            **fields,
+        )
 
     async def check_one(job_id: str, meta: dict[str, str]) -> PollOutcome:
         try:
@@ -384,6 +409,27 @@ async def main() -> None:
                 await db.commit()
 
             await set_done(r, job_id, state_ttl)
+            emitter.emit(
+                job_event(
+                    "done",
+                    job_id,
+                    meta,
+                    job_rec,
+                    device=backend_device or "",
+                    lines=alto_lines,
+                    blocks=alto_blocks,
+                    chars=alto_chars,
+                    mean_conf=mean_conf,
+                    **durations(
+                        job_rec.submitted_at if job_rec else None,
+                        job_rec.dispatched_at if job_rec else None,
+                        engine_created,
+                        engine_started,
+                        finished_at,
+                        stored_at,
+                    ),
+                )
+            )
             await publish_event(r, username, event_data)
             logger.info(f"Published done event for {username}")
 
@@ -449,6 +495,24 @@ async def main() -> None:
                 )
 
             await db.commit()
+        emitter.emit(
+            job_event(
+                "failed",
+                job_id,
+                meta,
+                job_rec,
+                device=backend_device or "",
+                **attempt_failure(attempt),
+                **durations(
+                    job_rec.submitted_at if job_rec else None,
+                    job_rec.dispatched_at if job_rec else None,
+                    job_rec.engine_received_at if job_rec else None,
+                    job_rec.started_at if job_rec else None,
+                    failed_at,
+                    None,
+                ),
+            )
+        )
         await publish_event(
             r,
             username,
@@ -597,6 +661,10 @@ async def main() -> None:
                                     )
                                 )
                             await db.commit()
+                        for job_id, meta, _delay, _avoid, attempt in requeue_jobs:
+                            emitter.emit(
+                                job_event("retried", job_id, meta, None, **attempt_failure(attempt))
+                            )
 
                 # Wake at the soonest scheduled poll, capped by the idle ceiling.
                 wait_timeout = next_poll_timeout(
@@ -609,6 +677,7 @@ async def main() -> None:
 
             await wait_for_poll_signal(r, wait_timeout)
     finally:
+        await emitter.aclose()
         await http.aclose()
         await r.aclose()
         await db_engine.dispose()
