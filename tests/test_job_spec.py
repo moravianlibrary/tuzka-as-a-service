@@ -13,8 +13,9 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.engines.tuzkaocr import options_schema_from_openapi
+from app.engines.openapi import options_schema_from_openapi
 from app.services.job_spec import (
+    adapter_rejection,
     fmt_label,
     options_errors,
     parse_options,
@@ -212,3 +213,17 @@ async def test_domain_without_schema_accepts_only_empty_options(session) -> None
     assert "alto_profile" in await _rejects(
         session, "kramarky", ALTO_TXT, '{"alto_profile": "basic"}'
     )
+
+
+# ---- adapter_rejection (D3 hook) ----
+
+
+def test_adapter_rejection_when_every_adapter_refuses() -> None:
+    reason = adapter_rejection({"tuzkam"}, "maps", frozenset({"geojson"}), {"georef": False})
+    assert reason == "geojson needs georef=true"
+
+
+def test_adapter_rejection_none_when_one_adapter_accepts() -> None:
+    adapters = {"tuzkam", "tuzkaocr"}
+    assert adapter_rejection(adapters, "maps", frozenset({"geojson"}), {"georef": False}) is None
+    assert adapter_rejection(set(), "maps", frozenset({"geojson"}), {}) is None

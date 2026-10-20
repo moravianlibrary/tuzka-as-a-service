@@ -27,7 +27,8 @@ class EngineStatus:
     created_at: str | None = None  # engine ISO strings, parsed by the poller
     started_at: str | None = None
     finished_at: str | None = None
-    metrics: dict[str, int | float] = field(default_factory=dict)  # n_lines, mean_conf, ...
+    # n_lines, mean_conf, ...; adapter-specific ones too (TuzkaM: georef.status, ...)
+    metrics: dict[str, int | float | str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,17 @@ class Result:
 
 class EngineFullError(Exception):
     pass
+
+
+class OutputUnavailable(Exception):
+    """The engine finished the job but can't produce this output for it (e.g. a map
+    whose georeferencing failed has no ground control points). Not retryable: another
+    attempt gives the same answer."""
+
+    def __init__(self, output: str, reason: str) -> None:
+        super().__init__(f"{output} unavailable: {reason}")
+        self.output = output
+        self.reason = reason
 
 
 class EngineAdapter(Protocol):
@@ -54,3 +66,11 @@ class EngineAdapter(Protocol):
     async def status(self, engine_job_id: str) -> EngineStatus: ...
     async def fetch(self, engine_job_id: str, output: str) -> Result: ...
     async def version(self) -> str | None: ...
+    @classmethod
+    def validate_request(
+        cls, domain: str, outputs: frozenset[str], options: dict[str, Any]
+    ) -> str | None:
+        """A reason to reject the request at submit, for checks across fields that a
+        JSON Schema can't express; None if it's fine. Called without an instance (the
+        API holds no adapters), so it can't ask the engine."""
+        ...

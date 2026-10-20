@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     # Auth
     master_key: str = ""
+    # Domains a TuzkaM (map OCR) engine serves; it doesn't advertise any itself.
+    tuzkam_domains: list[str] = ["maps"]
     # Bearer token for GET /load (the autoscaler's metric). Empty = /load answers 404.
     load_token: str = ""
     key_encryption_secret: str = ""
