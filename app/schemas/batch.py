@@ -47,3 +47,10 @@ class BatchResults(BaseModel):
     status: str = "finished"
     url: str
     expires_at: datetime
+
+
+class BatchRetryResponse(BaseModel):
+    batch_id: UUID
+    retried: int  # failed pages resubmitted as new jobs
+    # Failed pages that couldn't be retried: their uploaded image has expired.
+    expired: list[str] = []

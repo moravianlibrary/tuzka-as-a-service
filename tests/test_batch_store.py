@@ -91,3 +91,21 @@ async def test_finishes_only_when_no_page_is_left(session) -> None:
     await batch_store.finish_if_done(session, batch_id)
     await session.commit()
     assert await _status(session, batch_id) == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_retried_page_counts_once_with_its_newest_job(session) -> None:
+    batch_id = await _batch(session, ["done"])
+    for status, submitted in (("failed", "2026-10-21 10:00"), ("queued", "2026-10-21 11:00")):
+        await session.execute(
+            text(
+                "INSERT INTO jobs (id, username, status, batch_id, source_name, submitted_at) "
+                "VALUES (:id, 'alice', :st, :b, 'retry.jpg', :at)"
+            ),
+            {"id": uuid.uuid4(), "st": status, "b": batch_id, "at": submitted},
+        )
+    await session.commit()
+
+    assert await batch_store.page_counts(session, batch_id) == {"done": 1, "queued": 1}
+    listed = {name: status for _, name, status, _ in await batch_store.pages(session, batch_id)}
+    assert listed == {"p0.jpg": "done", "retry.jpg": "queued"}

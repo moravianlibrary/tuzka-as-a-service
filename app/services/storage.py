@@ -74,6 +74,20 @@ async def put_file(
     await client.put_object(bucket, path, f, length, content_type=content_type)
 
 
+async def copy_object(client: Minio, bucket: str, src: str, dst: str) -> bool:
+    """Server-side copy within a bucket. False if ``src`` doesn't exist (e.g. expired)."""
+    from miniopy_async.commonconfig import CopySource
+    from miniopy_async.error import S3Error
+
+    try:
+        await client.copy_object(bucket, dst, CopySource(bucket, src))
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            return False
+        raise
+    return True
+
+
 async def get_object(client: Minio, bucket: str, path: str) -> bytes:
     response = await client.get_object(bucket, path)
     try:

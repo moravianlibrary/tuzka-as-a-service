@@ -24,11 +24,22 @@ def estimate_eta(
     return remaining_pages * seconds_per_page / max(1, slots)
 
 
+def _latest_pages(batch_id: uuid.UUID) -> Any:
+    """The batch's current job per page: a retried page has several jobs, the newest
+    one counts (step 7, D10)."""
+    return (
+        select(Job)
+        .where(Job.batch_id == batch_id)
+        .order_by(Job.source_name, Job.submitted_at.desc())
+        .distinct(Job.source_name)
+        .subquery()
+    )
+
+
 async def page_counts(db: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
     """status → number of the batch's pages in it."""
-    rows = await db.execute(
-        select(Job.status, func.count()).where(Job.batch_id == batch_id).group_by(Job.status)
-    )
+    latest = _latest_pages(batch_id)
+    rows = await db.execute(select(latest.c.status, func.count()).group_by(latest.c.status))
     return {status: count for status, count in rows.all()}
 
 
@@ -44,11 +55,12 @@ async def domain_slots(db: AsyncSession, domain: str) -> int:
 
 
 async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[Any]:
-    """Every page in archive order (by source name), with the result rows of done ones."""
+    """Every page (its current job), ordered by source name."""
+    latest = _latest_pages(batch_id)
     rows = await db.execute(
-        select(Job.id, Job.source_name, Job.status, Job.error)
-        .where(Job.batch_id == batch_id)
-        .order_by(Job.source_name)
+        select(latest.c.id, latest.c.source_name, latest.c.status, latest.c.error).order_by(
+            latest.c.source_name
+        )
     )
     return list(rows.all())
 

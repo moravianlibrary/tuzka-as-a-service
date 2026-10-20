@@ -26,6 +26,7 @@ from app.deps import (
     require_principal,
 )
 from app.exceptions import (
+    Conflict,
     Forbidden,
     NotFound,
     NotReady,
@@ -37,7 +38,13 @@ from app.models.batch import Batch
 from app.models.db import get_db
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.batch import BatchPage, BatchResults, BatchStatus, BatchSubmitResponse
+from app.schemas.batch import (
+    BatchPage,
+    BatchResults,
+    BatchRetryResponse,
+    BatchStatus,
+    BatchSubmitResponse,
+)
 from app.services import batch_store
 from app.services import config as config_service
 from app.services import redis_jobs, storage
@@ -367,3 +374,101 @@ async def get_batch_results(
     ttl = await config_service.get_presigned_ttl_minutes(db)
     url = await storage.presign_get(request.app.state.results_public_client, bucket, path, ttl)
     return BatchResults(status=batch.status, url=url, expires_at=utcnow() + timedelta(minutes=ttl))
+
+
+@router.post(
+    "/batches/{batch_id}/retry",
+    response_model=BatchRetryResponse,
+    summary="Run a finished batch's failed pages again",
+    responses={
+        401: {"description": "Missing or invalid X-API-Key header"},
+        404: {"description": "Batch not found for the authenticated user"},
+        409: {"description": "The batch isn't finished yet"},
+        429: {"description": "Rate limit exceeded (one submit per retry)"},
+    },
+)
+async def retry_batch(
+    request: Request,
+    batch_id: UUID,
+    username: str = Depends(rate_limit_submit()),
+    db: AsyncSession = Depends(get_db),
+    r: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
+) -> BatchRetryResponse:
+    """Resubmit every failed page of a finished batch as a new job (same
+    ``source_name``, new job id), and reopen the batch. The failed jobs stay until their
+    TTL; the batch's counts, page list and results archive use each page's newest job.
+    A page whose uploaded image has already expired from storage can't be retried; it's
+    listed in ``expired``.
+    """
+    batch = await _owned_batch(db, batch_id, username)
+    if batch.status != "finished":
+        raise Conflict("Only a finished batch can be retried")
+
+    failed = [
+        (job_id, name or "")
+        for job_id, name, status, _ in await batch_store.pages(db, batch_id)
+        if status == "failed"
+    ]
+    incoming = request.app.state.incoming_client
+    bucket = settings.minio_incoming_bucket
+    retried: list[tuple[UUID, str]] = []  # (new job id, extension)
+    expired: list[str] = []
+    for old_id, name in failed:
+        ext = PurePosixPath(name).suffix.lower()
+        new_id = uuid4()
+        src, dst = f"{username}/{old_id}{ext}", f"{username}/{new_id}{ext}"
+        if not await storage.copy_object(incoming, bucket, src, dst):
+            expired.append(name)
+            continue
+        db.add(
+            Job(
+                id=new_id,
+                username=username,
+                batch_id=batch_id,
+                source_name=name,
+                status="queued",
+                fmt=fmt_label(frozenset(batch.outputs)),
+                domain=batch.domain,
+                outputs=batch.outputs,
+                options=batch.options,
+            )
+        )
+        retried.append((new_id, ext))
+    if not retried:
+        return BatchRetryResponse(batch_id=batch_id, retried=0, expired=expired)
+
+    batch.status = "queued"
+    batch.finished_at = None
+    batch.archive_built_at = None  # rebuilt with the new results
+    await db.commit()
+
+    # The counters restart from what the pages are now (the retried ones are queued).
+    counts = await batch_store.page_counts(db, batch_id)
+    state_ttl = await config_service.get_state_ttl_seconds(db)
+    priority = await _user_priority(db, username)
+    await redis_jobs.init_batch(r, str(batch_id), batch.total, state_ttl)
+    await r.hset(
+        f"batch:{batch_id}",
+        mapping={"done": counts.get("done", 0), "failed": counts.get("failed", 0)},
+    )
+    submitted = time.time()
+    for index, (job_id, ext) in enumerate(retried):
+        await redis_jobs.enqueue_job(
+            r,
+            str(job_id),
+            {
+                "username": username,
+                "external_id": "",
+                "batch_id": str(batch_id),
+                "fmt": fmt_label(frozenset(batch.outputs)),
+                "domain": batch.domain,
+                "outputs": ",".join(batch.outputs),
+                "options": json.dumps(batch.options),
+                "ext": ext,
+                "submitted_at": str(page_score(submitted, index)),
+                "priority": str(priority),
+            },
+            state_ttl,
+        )
+    return BatchRetryResponse(batch_id=batch_id, retried=len(retried), expired=expired)
