@@ -116,6 +116,10 @@ load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= 
 test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
 
+.PHONY: test-batch
+test-batch: ## E2E batch run against a running stack: archive in, results archive out (PAGES=, IMAGE=)
+	PAGES=$(or $(PAGES),5) bash scripts/test-batch.sh
+
 .PHONY: test-integration-fast
 test-integration-fast: ## E2E against an already-running stack (no build/up)
 	NO_UP=1 IMAGE=$(IMAGE) bash scripts/test.sh
