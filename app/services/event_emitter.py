@@ -47,6 +47,9 @@ class EventEmitter:
         self._owns_http = http is None
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_max)
         self._task: asyncio.Task[None] | None = None
+        # Rows the background task has taken off the queue but not posted yet; kept
+        # here so a cancel mid-batch (aclose) doesn't lose them.
+        self._batch: list[dict[str, Any]] = []
         self._dropped = 0
         self._last_warned = 0.0
 
@@ -68,6 +71,9 @@ class EventEmitter:
 
     async def flush(self) -> None:
         """Post everything queued now, in batches."""
+        if self._batch:
+            batch, self._batch = self._batch, []
+            await self._post(batch)
         while not self._queue.empty():
             await self._post(self._take(BATCH_ROWS))
 
@@ -90,17 +96,17 @@ class EventEmitter:
     async def _run(self) -> None:
         while True:
             # Wait for the first row, then give the batch up to FLUSH_SECONDS to fill.
-            first = await self._queue.get()
+            self._batch.append(await self._queue.get())
             deadline = time.monotonic() + FLUSH_SECONDS
-            batch = [first]
-            while len(batch) < BATCH_ROWS:
+            while len(self._batch) < BATCH_ROWS:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 try:
-                    batch.append(await asyncio.wait_for(self._queue.get(), remaining))
+                    self._batch.append(await asyncio.wait_for(self._queue.get(), remaining))
                 except TimeoutError:
                     break
+            batch, self._batch = self._batch, []
             await self._post(batch)
 
     def _take(self, n: int) -> list[dict[str, Any]]:
