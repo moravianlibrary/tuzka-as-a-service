@@ -1,4 +1,3 @@
-import hmac
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -20,7 +19,6 @@ from app.services.auth import hash_key
 from app.services.scopes import Principal
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-_master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
 
 # TTL cache for successful user lookups, keyed by hashed API key. Only *valid* users
 # are cached (invalid keys raise before reaching the insert), so it is bounded by the
@@ -114,21 +112,6 @@ async def require_principal(
     if principal is None:
         raise Unauthorized("Invalid API key")
     return principal
-
-
-async def require_master(
-    request: Request,
-    key: str | None = Security(_master_key_header),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    from app.services import dash_session
-
-    if key and hmac.compare_digest(key, settings.master_key):
-        return
-    cookie = request.cookies.get(dash_session.COOKIE_NAME)
-    if cookie and dash_session.verify(settings.master_key, cookie):
-        return
-    raise Unauthorized("Invalid master key")
 
 
 def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:

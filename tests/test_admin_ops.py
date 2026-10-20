@@ -1,4 +1,4 @@
-"""Integration tests for the guarded hard-delete endpoints.
+"""Integration tests for the guarded hard deletes in app/core/admin_ops.
 
 Like the other DB-backed tests, these need a throwaway migrated Postgres via
 ``TEST_DATABASE_URL`` and skip otherwise.
@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.routers.admin import delete_backend, delete_user
+from app.core import admin_ops
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -75,15 +75,14 @@ async def test_delete_user_blocked_while_jobs_exist(session):
     await _job_for(session, "alice", 1)
 
     with pytest.raises(HTTPException) as exc:
-        await delete_user("alice", session)
+        await admin_ops.delete_user(session, "alice")
     assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_delete_user_succeeds_without_jobs(session):
     await _user(session, "carol")
-    res = await delete_user("carol", session)
-    assert res["status"] == "deleted"
+    await admin_ops.delete_user(session, "carol")
     left = await session.execute(text("SELECT count(*) FROM users WHERE username='carol'"))
     assert left.scalar() == 0
 
@@ -94,9 +93,8 @@ async def test_delete_backend_blocked_then_allowed(session):
     await _backend(session, 1)
     await _job_for(session, "alice", 1)
     with pytest.raises(HTTPException) as exc:
-        await delete_backend(1, session)
+        await admin_ops.delete_backend(session, 1)
     assert exc.value.status_code == 409
 
     await _backend(session, 2)  # no jobs reference backend 2
-    res = await delete_backend(2, session)
-    assert res["status"] == "deleted"
+    await admin_ops.delete_backend(session, 2)

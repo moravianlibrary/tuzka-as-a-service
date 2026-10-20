@@ -6,7 +6,7 @@ image:
 
 imagePullSecrets: []
 
-# -- API (FastAPI: jobs, admin, dashboard, websocket)
+# -- API (FastAPI: jobs, websocket; the image also carries the taas-admin CLI)
 api:
   replicaCount: 1
   image:
@@ -232,8 +232,8 @@ tunnelBoxesDefaults:
   maxInflight: 8
   # Engine hardware class registered for this backend: "cpu" or "gpu".
   device: cpu
-  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only (set it in
-  # the dashboard Backends tab / PATCH /admin/backends); the deploy never writes it, so an
+  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only
+  # (`taas-admin backend update <id> --priority N`); the deploy never writes it, so an
   # admin-set priority survives redeploys. Newly registered backends start at priority 0.
 
 # -- Off-cluster boxes reached via the tunnel above. Empty = none. One box can run N
@@ -261,7 +261,7 @@ tunnelBoxes: []
 #     engines:
 #       - name: gpu0
 #         remotePort: 8000
-#         device: gpu       # set priority afterwards in the dashboard Backends tab
+#         device: gpu       # set priority afterwards: taas-admin backend update
 #       - name: gpu1
 #         remotePort: 8001
 #         device: gpu
@@ -370,11 +370,10 @@ config:
   wsCatchUpSeconds: "120"
   logLevel: "INFO"
   # NOTE: rate limits are runtime config in the DB `config` table (rate_limit.*),
-  # editable via the dashboard / PUT /admin/config — not env/Helm values.
+  # editable with `taas-admin config set` — not env/Helm values.
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:
-  masterKey: "replaceMe"
   # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   keyEncryptionSecret: "replace-with-a-fernet-key"
   postgresPassword: "replaceMe"
@@ -395,7 +394,6 @@ secrets:
 #    or not at all  (kind: ingress | gateway | none):
 #      api            -> API service          (job API at /api/v1, WebSocket at /ws)
 #      legacy         -> compat service       (path prefix stripped before forwarding)
-#      adminDashboard -> API service          (/admin, /dashboard, /static)
 #      minioResults   -> minio-results service (so external clients can fetch presigned
 #                        result URLs; use a dedicated host served at root — the bucket is
 #                        in the path, so nothing is stripped)
@@ -416,14 +414,6 @@ expose:
     kind: none
     host: ""
     pathPrefix: "/legacy"
-    ingressClassName: ""
-    annotations: {}
-    tls: []
-    gateway: { name: "", namespace: "", sectionName: "" }
-  adminDashboard:
-    kind: none
-    host: ""
-    paths: ["/admin", "/dashboard", "/static"]
     ingressClassName: ""
     annotations: {}
     tls: []

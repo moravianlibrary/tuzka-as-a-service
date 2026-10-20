@@ -35,7 +35,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Build the list of exposure targets (api, admin-dashboard, minio-results, and legacy
+Build the list of exposure targets (api, minio-results, and legacy
 when compat is enabled). Each entry: name, cfg, service, port, strip.
 minio-results is exposed so external download clients can reach presigned result URLs
 (served at root — S3 path-style puts the bucket in the path, so it must NOT be stripped).
@@ -45,7 +45,6 @@ Usage: {{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
 {{- $full := include "taas.fullname" . -}}
 {{- $targets := list
   (dict "name" "api" "cfg" .Values.expose.api "service" (printf "%s-api" $full) "port" (.Values.api.port | int) "strip" false)
-  (dict "name" "admin-dashboard" "cfg" .Values.expose.adminDashboard "service" (printf "%s-api" $full) "port" (.Values.api.port | int) "strip" false)
   (dict "name" "minio-results" "cfg" .Values.expose.minioResults "service" (printf "%s-minio-results" $full) "port" (.Values.minio.port | int) "strip" false)
 -}}
 {{- if .Values.compat.enabled -}}

@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     minio_region: str = "eu-central-1"
 
     # Auth
-    master_key: str = ""
     key_encryption_secret: str = ""
 
     # Upload constraints

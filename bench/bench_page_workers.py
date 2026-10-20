@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# NOTE: a pre-0.9 one-off benchmark; it drives the HTTP admin API, which 0.9 removed.
 """Bench TUZKAOCR_PAGE_WORKERS ∈ {1,2,3} through the live docker-compose stack.
 
 Engine env is held to deploy/helm/taas/values.yaml (OCR_THREADS=1, LINE_WORKERS=1,

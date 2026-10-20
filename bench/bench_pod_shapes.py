@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# NOTE: a pre-0.9 one-off benchmark; it drives the HTTP admin API, which 0.9 removed.
 """Pod-shape bench: best throughput-per-core for the in-cluster TuzkaOCR CPU engine.
 
 Sweeps engine pod shape × BLAS thread policy, holding PAGE_WORKERS = allocated cores
