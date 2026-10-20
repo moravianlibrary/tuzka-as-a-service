@@ -8,6 +8,21 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **ClickStack analytics.** Every job state change (`submitted`, `dispatched`, `retried`,
+  `done`, `failed`) is sent to ClickHouse's `taas.job_events`, with durations, OCR
+  metrics and an error flag and class, but no error text (that stays in Postgres). The
+  emitter is fire-and-forget: a job never fails or waits because analytics did, and
+  with `CLICKHOUSE_URL` unset it's off. The Helm chart deploys ClickHouse, HyperDX and
+  MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword` and
+  `secrets.hyperdxApiKey`), applies the schema on every install/upgrade, and imports
+  the HyperDX dashboards from `files/clickstack/dashboard.json`. docker-compose has a
+  `clickstack` profile (`make up-clickstack`). `python -m app.ops.backfill_clickstack`
+  copies the history in `job_analytics` into ClickHouse once.
+- **Traces and logs (OpenTelemetry).** With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the api
+  and workers export traces and logs over OTLP; each job is one trace from submit
+  through dispatch, engine polls and harvest, across processes. Workers trace nothing
+  outside a job; the API skips `/healthz` and `/load`. The chart runs an OTel collector
+  into ClickHouse for HyperDX (`clickstack.otel.*`) and sets the endpoint on the pods.
 - API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
   flight, a new connection per page, 3 s polling) against the taas client (all pages
   submitted up front, results pushed over one WebSocket). Same corpus, same stack, so the
