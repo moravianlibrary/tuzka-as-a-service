@@ -19,7 +19,7 @@ from app.models.db import make_engine
 from app.models.job import Job
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
-from app.services.domain_sync import apply_domain_sync, served_capabilities
+from app.services.domain_sync import all_served_capabilities, apply_domain_sync
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
@@ -144,6 +144,9 @@ async def main() -> None:
     sync_tasks: set[asyncio.Task[None]] = set()
     domains_synced_at: dict[int, float] = {}
     domain_sync_inflight: set[int] = set()
+    # Every backend's capabilities, loaded in one query; 0.0 = reload on next use.
+    capabilities: dict[int, dict[str, frozenset[str]]] = {}
+    capabilities_loaded_at = 0.0
 
     def adapter_for(backend: Backend) -> EngineAdapter:
         """The backend's adapter, built once and rebuilt when its adapter id, URL or key
@@ -185,9 +188,11 @@ async def main() -> None:
             # mapping rather than unlink the backend, and retry on the next tick.
             logger.warning("Domain sync for %s: engine advertised no domains", backend.url)
             return
+        nonlocal capabilities_loaded_at
         async with session_factory() as db:
             await apply_domain_sync(db, backend.id, info)
             await db.commit()
+        capabilities_loaded_at = 0.0  # this sync changed them: reload on the next tick
         domains_synced_at[backend.id] = time.time()
         logger.debug("Synced %d domain(s) for backend %s", len(info.domains), backend.url)
 
@@ -213,9 +218,19 @@ async def main() -> None:
         task.add_done_callback(_done)
 
     async def served_domains(backend_id: int) -> dict[str, frozenset[str]]:
-        """Domain → outputs ``backend_id`` currently serves (from the synced mapping)."""
-        async with session_factory() as db:
-            return await served_capabilities(db, backend_id)
+        """Domain → outputs ``backend_id`` currently serves (from the synced mapping).
+
+        Read from one query for all backends, reloaded right after this worker's own
+        domain syncs and otherwise every ``backend_refresh_seconds``, which bounds how
+        stale a change made elsewhere (another replica's sync, a declared registration)
+        can be. The dispatch re-check reads the same snapshot.
+        """
+        nonlocal capabilities, capabilities_loaded_at
+        if time.time() - capabilities_loaded_at >= settings.backend_refresh_seconds:
+            async with session_factory() as db:
+                capabilities = await all_served_capabilities(db)
+            capabilities_loaded_at = time.time()
+        return capabilities.get(backend_id, {})
 
     async def check_health(backend: Backend) -> bool:
         now = time.time()

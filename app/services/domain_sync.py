@@ -138,6 +138,20 @@ async def served_capabilities(db: AsyncSession, backend_id: int) -> dict[str, fr
     return {name: frozenset(outputs) for name, outputs in rows.all()}
 
 
+async def all_served_capabilities(db: AsyncSession) -> dict[int, dict[str, frozenset[str]]]:
+    """Backend id → domain → outputs for every backend, in one query (the submit worker
+    reads this once per refresh instead of once per backend per tick)."""
+    rows = await db.execute(
+        select(BackendDomain.backend_id, Domain.name, BackendDomain.outputs).join(
+            Domain, Domain.id == BackendDomain.domain_id
+        )
+    )
+    caps: dict[int, dict[str, frozenset[str]]] = {}
+    for backend_id, name, outputs in rows.all():
+        caps.setdefault(backend_id, {})[name] = frozenset(outputs)
+    return caps
+
+
 async def adapter_capabilities(
     db: AsyncSession, adapter: str | None = None
 ) -> dict[str, dict[str, frozenset[str]]]:
