@@ -344,6 +344,14 @@ async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:
     return int(val) if val else 0
 
 
-async def publish_event(r: aioredis.Redis, username: str, event: dict[str, str]) -> None:
+def job_event_payload(
+    job_id: str, external_id: str | None, status: str, **fields: Any
+) -> dict[str, Any]:
+    """A job event as clients receive it on the WebSocket. ``job_id`` is what they match
+    on (submit returned it); ``external_id`` is their own label, or null."""
+    return {"job_id": job_id, "external_id": external_id or None, "status": status, **fields}
+
+
+async def publish_event(r: aioredis.Redis, username: str, event: dict[str, Any]) -> None:
     channel = f"job:{username}:events"
     await r.publish(channel, json.dumps(event))

@@ -43,9 +43,7 @@ class UserUpdate(UserLimitOverrides):
 
     active: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=INT32_MAX)
-    external_url_template: str | None = Field(default=None, max_length=2048)
 
-    _no_nul = field_validator("external_url_template")(_reject_nul)
 
     @model_validator(mode="before")
     @classmethod
@@ -64,7 +62,6 @@ class UserList(UserLimitOverrides):
     active: bool
     created_at: datetime
     priority: int = 0
-    external_url_template: str | None = None
 
 
 class EffectiveLimits(BaseModel):

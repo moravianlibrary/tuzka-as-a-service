@@ -21,7 +21,8 @@ class Job(Base):
     # Caller-chosen correlation label, echoed back in status/events/external URLs. NOT unique:
     # a caller may reuse it (e.g. re-running OCR on the same document). The unique per-job
     # identity and storage key is `id` (the server PK).
-    external_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    # The caller's own label for the job (any string, not unique); None = none given.
+    external_id: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="queued", nullable=False)
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)

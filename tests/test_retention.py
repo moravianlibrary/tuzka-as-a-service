@@ -74,7 +74,7 @@ async def _job(session, status: str, finished_days_ago: float | None) -> uuid.UU
             "INSERT INTO jobs (id, username, external_id, status, finished_at) "
             "VALUES (:id, 'alice', :ext, :st, :fin)"
         ),
-        {"id": job_id, "ext": uuid.uuid4(), "st": status, "fin": finished},
+        {"id": job_id, "ext": f"ext-{uuid.uuid4()}", "st": status, "fin": finished},
     )
     await session.execute(
         text("INSERT INTO job_results (job_id, fmt) VALUES (:id, 'alto')"), {"id": job_id}

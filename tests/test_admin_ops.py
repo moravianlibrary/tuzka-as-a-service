@@ -63,7 +63,7 @@ async def _job_for(session, username, backend_id):
             "INSERT INTO jobs (id, username, external_id, status, backend_id, finished_at) "
             "VALUES (:id, :u, :ext, 'done', :b, now())"
         ),
-        {"id": uuid.uuid4(), "u": username, "ext": uuid.uuid4(), "b": backend_id},
+        {"id": uuid.uuid4(), "u": username, "ext": f"ext-{uuid.uuid4()}", "b": backend_id},
     )
     await session.commit()
 

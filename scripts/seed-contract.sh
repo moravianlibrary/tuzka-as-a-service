@@ -47,9 +47,8 @@ taas_admin backend upsert --url http://ocr-engine:8000 --label contract-fixture 
 # One queued job (no domain → no backend needed) so the job collection endpoints exercise a
 # populated response body, not just the empty case.
 if [ -n "$IMAGE" ] && [ -f "$IMAGE" ]; then
-  job_uuid=$("$PY" -c 'import uuid;print(uuid.uuid4())')
   curl -sf -X POST "$TAAS_URL/api/v1/jobs" -H "X-API-Key: $key" \
-    -F "image=@$IMAGE" -F "uuid=$job_uuid" -F "fmt=multi" >/dev/null 2>&1 || true
+    -F "image=@$IMAGE" -F "external_id=contract-fixture" -F "fmt=multi" >/dev/null 2>&1 || true
 fi
 
 echo "API_KEY=$key"

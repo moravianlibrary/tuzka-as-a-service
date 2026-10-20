@@ -95,7 +95,7 @@ async def test_append_attempt_adds_entries(session) -> None:
             "INSERT INTO jobs (id, username, external_id, status, submitted_at) "
             "VALUES (:jid, 'alice', :eid, 'failed', :now)"
         ),
-        {"jid": job_id, "eid": uuid.uuid4(), "now": utcnow()},
+        {"jid": job_id, "eid": f"ext-{uuid.uuid4()}", "now": utcnow()},
     )
     await session.commit()
 

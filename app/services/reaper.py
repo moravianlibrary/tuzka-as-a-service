@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, durations, failure
-from app.services.redis_jobs import publish_event, set_failed
+from app.services.redis_jobs import job_event_payload, publish_event, set_failed
 
 logger = logging.getLogger("reaper")
 
@@ -99,7 +99,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     publish_event(
                         r,
                         job.username,
-                        {"status": "failed", "uuid": str(job.external_id), "error": reason},
+                        job_event_payload(str(job.id), job.external_id, "failed", error=reason),
                     )
                 )
                 for job, reason in stale

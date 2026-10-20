@@ -29,6 +29,7 @@ from app.services.redis_jobs import (
     get_backend_inflight,
     get_job,
     job_domain,
+    job_event_payload,
     job_options,
     job_outputs,
     parse_avoid,
@@ -262,7 +263,7 @@ async def main() -> None:
         meta: dict[str, str],
     ) -> None:
         username = meta["username"]
-        external_id = meta["external_id"]
+        external_id = meta.get("external_id") or None
         ext = meta.get("ext", ".jpg")
         domain = job_domain(meta)
         outputs = job_outputs(meta)
@@ -315,11 +316,12 @@ async def main() -> None:
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": msg},
+                job_event_payload(job_id, external_id, "failed", error=msg),
             )
             return
 
-        filename = f"{external_id}{ext}"
+        # Named by job id: the external id is the caller's free text, not a file name.
+        filename = f"{job_id}{ext}"
         try:
             adapter = adapter_for(backend)
             engine_job_id = await adapter.submit(
@@ -431,7 +433,7 @@ async def main() -> None:
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": msg},
+                job_event_payload(job_id, external_id, "failed", error=msg),
             )
 
     logger.info("Submit worker started")

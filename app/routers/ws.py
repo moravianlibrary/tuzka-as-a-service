@@ -12,6 +12,7 @@ from app.models.db import async_session
 from app.models.job import Job
 from app.services import config as config_service
 from app.services import rate_limit
+from app.services.redis_jobs import job_event_payload
 
 router = APIRouter()
 
@@ -50,7 +51,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     shape::
 
         {
-            "uuid": "<job external id>",   // string
+            "job_id": "<job id>",          // what submit returned
+            "external_id": "<your label>",  // or null
             "status": "done" | "failed",
             "ts": "<ISO-8601 timestamp>",  // finished_at, may be null
             "error": "<message>"           // present only when status == failed
@@ -62,7 +64,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     the shape::
 
         {
-            "uuid": "<job external id>",   // string
+            "job_id": "<job id>",
+            "external_id": "<your label>",  // or null
             "status": "done" | "failed",
             "alto_url": "<presigned URL>", // on "done", only for ALTO results
             "txt_url": "<presigned URL>",  // on "done", only for text results
@@ -118,11 +121,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 )
             )
             for job in catchup.scalars().all():
-                event = {
-                    "uuid": str(job.external_id),
-                    "status": job.status,
-                    "ts": job.finished_at.isoformat() if job.finished_at else None,
-                }
+                event = job_event_payload(
+                    str(job.id),
+                    job.external_id,
+                    job.status,
+                    ts=job.finished_at.isoformat() if job.finished_at else None,
+                )
                 if job.error:
                     event["error"] = job.error
                 await ws.send_json(event)

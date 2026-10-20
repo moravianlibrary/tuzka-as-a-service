@@ -49,13 +49,18 @@ from app.schemas.job import (
     JobResultResponse,
     JobStatus,
     JobSubmitResponse,
-    render_external_url,
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
-from app.services.job_spec import DEFAULT_DOMAIN, fmt_label, parse_outputs, resolve_job_spec
+from app.services.job_spec import (
+    DEFAULT_DOMAIN,
+    fmt_label,
+    parse_external_id,
+    parse_outputs,
+    resolve_job_spec,
+)
 from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
 
@@ -72,7 +77,7 @@ router = APIRouter()
         401: {"description": "Missing or invalid X-API-Key header"},
         403: {"description": "The API key isn't allowed this domain or these outputs"},
         422: {
-            "description": "Invalid UUID or fmt; unknown domain; outputs the domain can't "
+            "description": "Invalid external_id or fmt; unknown domain; outputs the domain can't "
             "produce; or options that don't match the domain's options schema"
         },
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
@@ -81,7 +86,11 @@ router = APIRouter()
 async def submit_job(
     request: Request,
     image: UploadFile = File(...),
-    uuid: UUID = Form(...),
+    external_id: str | None = Form(
+        None,
+        description="Your own label for this page (any string up to 255 characters, e.g. "
+        "its PID); echoed back on its status and events. Optional, not unique.",
+    ),
     fmt: Literal["alto", "txt", "multi"] = Form("multi"),
     domain: str | None = Form(None),
     outputs: str | None = Form(
@@ -110,14 +119,13 @@ async def submit_job(
     it, ``fmt``) picks the results to produce, and ``options`` passes engine options; all
     three are checked against ``GET /api/v1/domains`` before the upload is accepted.
     """
-    # uuid and fmt are parsed and validated at the boundary (UUID / Literal), so the
-    # body below trusts them.
-    #
-    # external_id is a caller-chosen label, echoed back in status/events/external URLs so the
-    # client can correlate — it is NOT unique and may repeat (e.g. re-running OCR on the same
-    # document). The storage key is job.id (the server-generated PK, globally unique); we mint
-    # it here so the upload can use it before the row is inserted.
-    external_id = uuid
+    # external_id is the caller's label, echoed back in status and events — not unique,
+    # never parsed. The storage key is job.id (the server-generated PK); we mint it here
+    # so the upload can use it before the row is inserted.
+    try:
+        label = parse_external_id(external_id)
+    except ValueError as exc:
+        raise Unprocessable(str(exc)) from exc
     job_id = uuid4()
 
     # Validate extension
@@ -158,7 +166,7 @@ async def submit_job(
     job = Job(
         id=job_id,
         username=username,
-        external_id=external_id,
+        external_id=label,
         status="queued",
         fmt=job_fmt,
         domain=spec.domain,
@@ -179,7 +187,7 @@ async def submit_job(
         str(job.id),
         {
             "username": username,
-            "external_id": str(external_id),
+            "external_id": label or "",
             "fmt": job_fmt,
             "domain": spec.domain,
             "outputs": ",".join(sorted(spec.outputs)),
@@ -204,7 +212,7 @@ async def submit_job(
             file_size_bytes=len(image_bytes),
         )
     )
-    return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
+    return JobSubmitResponse(job_id=job.id, external_id=label, status="queued")
 
 
 @router.get(
@@ -228,15 +236,9 @@ async def get_job_status(
     authenticated user. The status reflects the asynchronous lifecycle (``queued``,
     ``running``, ``done``, ``failed``); fetch the result endpoint once it is ``done``.
     """
-    result = await db.execute(
-        select(Job, User.external_url_template)
-        .outerjoin(User, Job.username == User.username)
-        .where(Job.id == job_id, Job.username == username)
-    )
-    row = result.first()
-    if not row:
+    job = await db.scalar(select(Job).where(Job.id == job_id, Job.username == username))
+    if job is None:
         raise NotFound("Job not found")
-    job, url_template = row
 
     return JobStatus(
         job_id=job.id,
@@ -249,7 +251,6 @@ async def get_job_status(
         started_at=job.started_at,
         finished_at=job.finished_at,
         error=job.error,
-        external_url=render_external_url(url_template, job.external_id),
     )
 
 
@@ -383,6 +384,9 @@ async def download_job_result(
 )
 async def list_jobs(
     status: Literal["queued", "running", "done", "failed"] | None = None,
+    external_id: str | None = Query(
+        None, max_length=255, description="Only jobs submitted with this external_id."
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     username: str = Depends(rate_limit_query()),
@@ -391,8 +395,8 @@ async def list_jobs(
     """List the authenticated user's jobs, newest first.
 
     Requires a valid API key in the ``X-API-Key`` header and returns only jobs owned by that
-    user. Results can be filtered by ``status`` and are paginated with ``limit`` and
-    ``offset``; ``total`` reports the full count matching the filter.
+    user. Results can be filtered by ``status`` and ``external_id`` and are paginated with
+    ``limit`` and ``offset``; ``total`` reports the full count matching the filter.
     """
     query = select(Job).where(Job.username == username)
     count_query = select(func.count()).select_from(Job).where(Job.username == username)
@@ -400,6 +404,9 @@ async def list_jobs(
     if status:
         query = query.where(Job.status == status)
         count_query = count_query.where(Job.status == status)
+    if external_id is not None:
+        query = query.where(Job.external_id == external_id)
+        count_query = count_query.where(Job.external_id == external_id)
 
     query = query.order_by(Job.submitted_at.desc()).limit(limit).offset(offset)
 
@@ -408,11 +415,6 @@ async def list_jobs(
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
-
-    # All jobs belong to the authenticated user, so resolve their URL template once.
-    url_template = await db.scalar(
-        select(User.external_url_template).where(User.username == username)
-    )
 
     return JobListResponse(
         jobs=[
@@ -427,7 +429,6 @@ async def list_jobs(
                 started_at=j.started_at,
                 finished_at=j.finished_at,
                 error=j.error,
-                external_url=render_external_url(url_template, j.external_id),
             )
             for j in jobs
         ],

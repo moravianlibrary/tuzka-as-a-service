@@ -18,7 +18,6 @@ class User(Base):
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     priority: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
-    external_url_template: Mapped[str | None] = mapped_column(default=None)
     # Scope of the user's key; NULL = every domain / every output.
     allowed_domains: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
     allowed_outputs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)

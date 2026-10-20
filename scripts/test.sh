@@ -80,11 +80,11 @@ API_KEY="$(taas_admin user create "$USERNAME")"
 ok "user=$USERNAME"
 
 # ---------------------------------------------------------------------------
-EXT_UUID="$("$PY" -c 'import uuid; print(uuid.uuid4())')"
-say "Submitting job (image=$IMAGE uuid=$EXT_UUID fmt=$FMT)"
+EXT_ID="test-$(basename "$IMAGE")"
+say "Submitting job (image=$IMAGE external_id=$EXT_ID fmt=$FMT)"
 JOB_ID="$(curl -sf -X POST "$TAAS_URL/api/v1/jobs" \
   -H "X-API-Key: $API_KEY" \
-  -F "image=@$IMAGE" -F "uuid=$EXT_UUID" -F "fmt=$FMT" | jget '["job_id"]')"
+  -F "image=@$IMAGE" -F "external_id=$EXT_ID" -F "fmt=$FMT" | jget '["job_id"]')"
 [ -n "$JOB_ID" ] || die "submit failed"
 ok "job_id=$JOB_ID"
 

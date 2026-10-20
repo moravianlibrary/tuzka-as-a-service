@@ -34,7 +34,7 @@ class TaasUser(HttpUser):
         with self.client.post(
             "/api/v1/jobs",
             files={"image": ("load.jpg", _IMAGE, "image/jpeg")},
-            data={"uuid": str(uuid.uuid4()), "fmt": "multi"},
+            data={"external_id": f"load-{uuid.uuid4()}", "fmt": "multi"},
             name="POST /api/v1/jobs",
             catch_response=True,
         ) as r:

@@ -13,6 +13,7 @@ import redis.asyncio as aioredis
 from app.services.redis_jobs import (
     _DELAYED_KEY,
     _PENDING_KEY,
+    job_event_payload,
     parse_avoid,
     promote_due_retries,
     schedule_retry,
@@ -134,3 +135,13 @@ async def test_avoid_backends_accumulates_without_duplicates(
     avoid_str = avoid.decode() if isinstance(avoid, bytes) else avoid
     ids = sorted(int(v) for v in avoid_str.split(",") if v.strip())
     assert ids == [1, 2]  # backend 1 deduplicated
+
+
+def test_job_event_payload_shape() -> None:
+    assert job_event_payload("j1", "uuid:abc", "failed", error="boom") == {
+        "job_id": "j1",
+        "external_id": "uuid:abc",
+        "status": "failed",
+        "error": "boom",
+    }
+    assert job_event_payload("j2", "", "done")["external_id"] is None

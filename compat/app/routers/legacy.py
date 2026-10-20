@@ -148,7 +148,6 @@ async def upload_image(
 
     engine_cfg = settings.engines[req["engine"]]
     file_bytes = await file.read()
-    external_id = str(uuid4())
 
     # Forward to taas
     http = request.app.state.http
@@ -156,7 +155,8 @@ async def upload_image(
     files_data = {
         "image": (upload_filename, file_bytes, file.content_type or "application/octet-stream")
     }
-    form_data = {"uuid": external_id, "fmt": "multi"}
+    # No external_id: the shim tracks its jobs by the job id taas returns.
+    form_data = {"fmt": "multi"}
     if engine_cfg.domain:
         form_data["domain"] = engine_cfg.domain
 

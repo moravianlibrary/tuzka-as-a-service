@@ -42,6 +42,21 @@ def parse_outputs(raw: str | None, fmt: str) -> frozenset[str]:
     return frozenset(items)
 
 
+EXTERNAL_ID_MAX = 255
+
+
+def parse_external_id(raw: str | None) -> str | None:
+    """The caller's ``external_id`` label: optional, 1–255 printable characters, never
+    parsed (a PID like ``uuid:…``, a signature, a file name). Raises ``ValueError``."""
+    if raw is None or raw == "":
+        return None
+    if len(raw) > EXTERNAL_ID_MAX:
+        raise ValueError(f"external_id is longer than {EXTERNAL_ID_MAX} characters")
+    if not raw.isprintable():
+        raise ValueError("external_id must be printable text")
+    return raw
+
+
 def parse_options(raw: str | None) -> dict[str, Any]:
     """The ``options`` form field: a JSON object, ``{}`` when absent. Raises ``ValueError``."""
     if raw is None or not raw.strip():

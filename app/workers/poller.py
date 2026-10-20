@@ -32,6 +32,7 @@ from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
     job_domain,
+    job_event_payload,
     job_outputs,
     publish_event,
     release_and_requeue,
@@ -274,7 +275,7 @@ async def main() -> None:
 
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         username = meta["username"]
-        external_id = meta["external_id"]
+        external_id = meta.get("external_id") or None
         engine_job_id = meta["engine_job_id"]
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
@@ -312,10 +313,7 @@ async def main() -> None:
             if isinstance(times.get("mean_conf"), (int, float)):
                 mean_conf = float(times["mean_conf"])
 
-            event_data: dict[str, str] = {
-                "status": "done",
-                "uuid": external_id,
-            }
+            event_data = job_event_payload(job_id, external_id, "done")
 
             async with session_factory() as db:
                 # Read the raw job to pick up submitted_at, engine_version, device, file_size.
@@ -426,7 +424,7 @@ async def main() -> None:
         job_id: str, meta: dict[str, str], error: str, attempt: dict[str, Any] | None = None
     ) -> None:
         username = meta.get("username", "")
-        external_id = meta.get("external_id", "")
+        external_id = meta.get("external_id") or None
         failed_at = utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -470,7 +468,7 @@ async def main() -> None:
         await publish_event(
             r,
             username,
-            {"status": "failed", "uuid": external_id, "error": error},
+            job_event_payload(job_id, external_id, "failed", error=error),
         )
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)

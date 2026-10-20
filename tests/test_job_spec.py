@@ -17,6 +17,7 @@ from app.engines.tuzkaocr import options_schema_from_openapi
 from app.services.job_spec import (
     fmt_label,
     options_errors,
+    parse_external_id,
     parse_options,
     parse_outputs,
     resolve_job_spec,
@@ -212,3 +213,26 @@ async def test_domain_without_schema_accepts_only_empty_options(session) -> None
     assert "alto_profile" in await _rejects(
         session, "kramarky", ALTO_TXT, '{"alto_profile": "basic"}'
     )
+
+
+# ---- parse_external_id ----
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("uuid:0109e8c2-d262-11e1-b9d7-0050569d679d", "uuid:0109e8c2-d262-11e1-b9d7-0050569d679d"),
+        ("ABA001 p. 12", "ABA001 p. 12"),
+        ("x" * 255, "x" * 255),
+    ],
+)
+def test_parse_external_id(raw, expected) -> None:
+    assert parse_external_id(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["x" * 256, "line\nbreak", "nul\x00"])
+def test_parse_external_id_rejects(raw) -> None:
+    with pytest.raises(ValueError):
+        parse_external_id(raw)
