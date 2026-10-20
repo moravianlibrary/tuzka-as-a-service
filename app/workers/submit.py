@@ -101,13 +101,23 @@ def allocate_jobs(
     leftovers: list[PendingJob] = []
     count = len(slots)
     start = 0
+    # Which slots can serve a (domain, outputs) pair is the same for every job asking for
+    # it, so it's worked out once per pair, not once per job and slot.
+    serves_by_key: dict[tuple[str, frozenset[str]], list[bool]] = {}
     for job in jobs:
-        serving = [s for s in slots if can_serve(s, job)]
-        allow_avoided = all(s.backend.id in job.avoid for s in serving)
+        key = (job.domain, job.outputs)
+        mask = serves_by_key.get(key)
+        if mask is None:
+            mask = serves_by_key[key] = [can_serve(s, job) for s in slots]
+        # Only a retried job has backends to avoid; the rest skip this check entirely.
+        allow_avoided = bool(job.avoid) and all(
+            s.backend.id in job.avoid for s, ok in zip(slots, mask, strict=True) if ok
+        )
         placed = False
         for step in range(count):
-            slot = slots[(start + step) % count]
-            if slot.free <= 0 or not can_serve(slot, job):
+            index = (start + step) % count
+            slot = slots[index]
+            if slot.free <= 0 or not mask[index]:
                 continue
             if slot.backend.id in job.avoid and not allow_avoided:
                 continue
