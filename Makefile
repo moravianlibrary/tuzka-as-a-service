@@ -50,6 +50,10 @@ build-push: ## Build + push api/worker/compat images (REGISTRY=... [TAG=$(TAG)])
 up: env ## Build + start the full stack (detached)
 	$(COMPOSE) up -d --build
 
+.PHONY: up-clickstack
+up-clickstack: env ## Full stack plus ClickHouse; the api and workers emit job events to it
+	CLICKHOUSE_URL=http://clickhouse:8123 $(COMPOSE) --profile clickstack up -d --build
+
 .PHONY: infra
 infra: env ## Start only infra (postgres, redis, minio) for local uvicorn dev
 	$(COMPOSE) up -d postgres redis minio-incoming minio-results minio-init
