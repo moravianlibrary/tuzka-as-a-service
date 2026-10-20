@@ -8,6 +8,8 @@ from xml.etree import ElementTree
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.events import _dur_s  # moved there; this module goes in step 6
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,13 +33,6 @@ def parse_alto(alto_bytes: bytes) -> tuple[int, int]:
     except Exception as exc:
         logger.warning("ALTO parse failed: %s", exc)
         return 0, 0
-
-
-def _dur_s(a: datetime | None, b: datetime | None) -> float | None:
-    if a is None or b is None:
-        return None
-    delta = (b - a).total_seconds()
-    return delta if delta >= 0 else None
 
 
 # Lookup tables _get_or_create_id may target. SQL can't bind an identifier, so the
