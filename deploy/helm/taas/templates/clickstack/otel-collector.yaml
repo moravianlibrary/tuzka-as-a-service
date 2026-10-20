@@ -1,0 +1,124 @@
+{{- if and .Values.clickstack.enabled .Values.clickstack.otel.enabled }}
+{{- $o := .Values.clickstack.otel }}
+{{- $full := include "taas.fullname" . }}
+{{- $name := printf "%s-otel-collector" $full }}
+# Receives the api's and workers' OTLP traces and logs (app/telemetry.py) and writes
+# them to ClickHouse (otel_traces / otel_logs, created by the exporter), where HyperDX
+# reads them. No sampling here: the app already traces only jobs and API requests.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      batch:
+        send_batch_size: 1000
+        timeout: 1s
+    exporters:
+      clickhouse:
+        endpoint: {{ printf "tcp://%s-clickhouse:9000" $full }}
+        database: default
+        traces_table_name: otel_traces
+        logs_table_name: otel_logs
+        ttl: {{ mul (int $o.retentionDays) 24 }}h
+        create_schema: true
+        username: {{ .Values.clickstack.clickhouse.user | quote }}
+        password: ${env:CLICKHOUSE_PASSWORD}
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [clickhouse]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [clickhouse]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: otel-collector
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: "{{ $o.image.repository }}:{{ $o.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config=/etc/otel/collector.yaml"]
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $full }}-secret
+                  key: CLICKHOUSE_PASSWORD
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+          resources:
+            {{- toYaml $o.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+{{- end }}

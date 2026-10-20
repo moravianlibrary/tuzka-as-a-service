@@ -143,6 +143,9 @@ dashboards, traces and logs, and MongoDB for HyperDX's own state. Off by default
 | `clickstack.clickhouse.storage.size` | `50Gi` | ClickHouse PVC size |
 | `clickstack.hyperdx.image.tag` | `latest` | Pin a release for production |
 | `clickstack.mongodb.storage.size` | `1Gi` | MongoDB PVC size |
+| `clickstack.otel.enabled` | `true` | OTel collector for the app's traces and logs; sets `OTEL_EXPORTER_OTLP_ENDPOINT` on the app pods |
+| `clickstack.otel.retentionDays` | `30` | TTL of `otel_traces` / `otel_logs` |
+| `clickstack.otel.resourceAttributes` | `""` | Extra `OTEL_RESOURCE_ATTRIBUTES` for the app |
 | `expose.hyperdx.*` | `kind: none` | The HyperDX UI, on its own host |
 
 ### OCR engine

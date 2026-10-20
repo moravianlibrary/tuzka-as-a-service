@@ -322,6 +322,23 @@ clickstack:
       limits:
         cpu: "1"
         memory: 1Gi
+  # OTel collector: the api's and workers' traces and logs (app/telemetry.py) into
+  # ClickHouse for HyperDX. When on, the app pods get OTEL_EXPORTER_OTLP_ENDPOINT.
+  otel:
+    enabled: true
+    image:
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.104.0"
+    retentionDays: 30   # TTL of otel_traces / otel_logs
+    # Extra OTEL_RESOURCE_ATTRIBUTES for the app, e.g. "deployment.environment=prod".
+    resourceAttributes: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
   mongodb:
     image:
       repository: mongo

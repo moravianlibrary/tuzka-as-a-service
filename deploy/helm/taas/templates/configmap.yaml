@@ -27,4 +27,11 @@ data:
   CLICKHOUSE_URL: {{ printf "http://%s-clickhouse:8123" (include "taas.fullname" .) | quote }}
   CLICKHOUSE_USER: {{ .Values.clickstack.clickhouse.user | quote }}
   CLICKHOUSE_DATABASE: "taas"
+  {{- if .Values.clickstack.otel.enabled }}
+  # Traces and logs (app/telemetry.py); service names default per process (taas-api, …).
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s-otel-collector:4318" (include "taas.fullname" .) | quote }}
+  {{- with .Values.clickstack.otel.resourceAttributes }}
+  OTEL_RESOURCE_ATTRIBUTES: {{ . | quote }}
+  {{- end }}
+  {{- end }}
   {{- end }}
