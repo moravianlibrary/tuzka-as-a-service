@@ -1,4 +1,4 @@
-{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes }}
+{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes .Values.tuzkam.enabled }}
 {{- $e := .Values.ocrEngine }}
 {{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: batch/v1
@@ -60,6 +60,19 @@ spec:
                 -H "Content-Type: application/json" \
                 -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
                 || echo "upsert {{ $tname }} failed"
+              {{- end }}
+              {{- end }}
+              {{- if $.Values.tuzkam.enabled }}
+              {{- $m := $.Values.tuzkam }}
+              {{- $mname := printf "%s-tuzkam" (include "taas.fullname" $) }}
+              {{- range $i := until (int $m.maxReplicas) }}
+              URL="http://{{ $mname }}-{{ $i }}.{{ $mname }}:{{ $m.port }}"
+              echo "registering tuzkam-{{ $i }} -> $URL"
+              curl -sf -X PUT "$API/admin/backends" \
+                -H "X-Master-Key: $MASTER_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{\"url\":\"$URL\",\"label\":\"tuzkam-{{ $i }}\",\"api_key\":\"$TUZKAM_API_KEY\",\"max_inflight\":{{ $m.maxInflight }},\"managed\":true,\"adapter\":\"tuzkam\",\"declared\":{\"maps\":[\"json\",\"geojson\",\"gcp\",\"alto\",\"txt\"]}}" \
+                || echo "upsert tuzkam-{{ $i }} failed"
               {{- end }}
               {{- end }}
               echo "done"

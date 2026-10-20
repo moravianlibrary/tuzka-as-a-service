@@ -1,0 +1,93 @@
+{{- if .Values.tuzkam.enabled }}
+{{- $m := .Values.tuzkam }}
+{{- $name := printf "%s-tuzkam" (include "taas.fullname" .) }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tuzkam
+spec:
+  serviceName: {{ $name }}
+  {{- /*
+    No spec.replicas: KEDA owns scaling (tuzkam-keda.yaml), down to zero. Declaring it
+    would make a GitOps sync or `helm upgrade` fight the autoscaler (AUTOSCALING.md).
+  */}}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tuzkam
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tuzkam
+    spec:
+      # A map sheet can take minutes; give the one in flight time to finish.
+      terminationGracePeriodSeconds: {{ $m.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tuzkam
+          image: "{{ $m.image.repository }}:{{ $m.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $m.port }}
+          env:
+            {{- range $k, $v := $m.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: TUZKAM_DATA_DIR
+              value: /data
+            - name: TUZKAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" . }}-secret
+                  key: TUZKAM_API_KEY
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+      volumes:
+        # Uploads spooled during a job and its results until taas harvests them.
+        - name: data
+          emptyDir:
+            sizeLimit: {{ $m.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tuzkam
+spec:
+  clusterIP: None
+  ports:
+    - { port: {{ $m.port }}, targetPort: http, name: http }
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: tuzkam
+{{- end }}

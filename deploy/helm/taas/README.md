@@ -146,6 +146,25 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `ocrEngine.autoscaling.keda.*` | — | KEDA `metrics-api` trigger (`loadFilter`, `targetBacklogSeconds`, `activationBacklogSeconds`, `pollingInterval`, `cooldownPeriod`) when `mode: keda` |
 | `ocrEngine.declaredDomains` | the four TuzkaOCR domains | Capabilities registered for each engine before it has run (scale from zero) |
 
+### Map OCR (`tuzkam.*`)
+
+TuzkaM serves the `maps` domain (outputs `json`, `geojson`, `gcp`, `alto`, `txt`). It runs
+as its own StatefulSet that KEDA scales **from zero** on `GET /load?adapter=tuzkam`, so it
+needs the KEDA operator and `secrets.loadToken`. Every ordinal up to `maxReplicas` is
+registered with the maps capabilities declared, so map jobs queue while no pod runs.
+
+| Key | Default | Description |
+|---|---|---|
+| `tuzkam.enabled` | `false` | Deploy the map engine |
+| `tuzkam.image.*` | `tuzkam:europe-med` | Built from the TuzkaM repo's `Dockerfile` |
+| `tuzkam.minReplicas` / `maxReplicas` | `0` / `4` | KEDA bounds; `maxReplicas` is also how many backends get registered |
+| `tuzkam.maxInflight` | `1` | Map sheets per pod at a time |
+| `tuzkam.keda.*` | — | `targetBacklogSeconds`, `activationBacklogSeconds`, `pollingInterval`, `cooldownPeriod` |
+| `tuzkam.resources` | 2 CPU, 4Gi | Per pod |
+
+Set `jobs.queued_timeout_seconds` above TuzkaM's cold start (image pull + model load),
+or map jobs submitted at zero replicas time out before the first pod is ready.
+
 ### Off-cluster boxes via reverse tunnel (`tunnel.*`, `tunnelBoxes`)
 
 For a GPU box that can dial out but accepts no inbound, run the engine(s) off-cluster and
@@ -195,7 +214,7 @@ worker — it is neither a Helm value nor a DB config key.
 
 ### Secrets (`secrets.*`)
 
-`masterKey`, `loadToken` (for `GET /load`; required by `mode: keda`), `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
+`masterKey`, `loadToken` (for `GET /load`; required by `mode: keda` and `tuzkam`), `tuzkamApiKey` (`tuzkam.enabled`), `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
 `ocrEngineApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
 
 ### Exposure (`expose.<api|legacy|adminDashboard>.*`)

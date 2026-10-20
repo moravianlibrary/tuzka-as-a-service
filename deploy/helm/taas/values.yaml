@@ -204,6 +204,45 @@ ocrEngine:
     handwritten: [alto, txt]
     kurrent: [alto, txt]
 
+# -- TuzkaM: OCR of historical map sheets (domain "maps": json, geojson, gcp, alto, txt).
+#    A StatefulSet scaled by KEDA on the API's /load?adapter=tuzkam, from zero: needs the
+#    KEDA operator and secrets.loadToken. Each pod is registered as a backend with the
+#    maps capabilities declared, so jobs queue (and count in /load) while it's at zero.
+#    Set jobs.queued_timeout_seconds above the TuzkaM cold start (image pull + models).
+tuzkam:
+  enabled: false
+  image:
+    # Built from the TuzkaM repo's Dockerfile (TUZKAM_COVERAGE=europe-med gazetteer).
+    repository: tuzkam
+    tag: "europe-med"
+  port: 8000
+  # One map sheet at a time per pod: a sheet keeps every core busy for minutes.
+  maxInflight: 1
+  minReplicas: 0
+  # Upper bound on replicas AND on the number of backend rows taas pre-registers.
+  maxReplicas: 4
+  keda:
+    targetBacklogSeconds: 600    # ~1 replica per this many seconds of queued sheets
+    activationBacklogSeconds: 0  # scale up from zero as soon as a sheet is queued
+    pollingInterval: 15
+    cooldownPeriod: 600          # seconds without backlog before going back to zero
+  terminationGracePeriodSeconds: 600
+  env:
+    TUZKAM_THREADS: "2"
+    TUZKAM_WORKERS: "1"
+    TUZKAM_MAX_JOBS: "2"
+    TUZKAM_GAZETTEER_AUTO_INSTALL: "false"
+    TUZKAM_BUILTIN_GAZETTEER_DIR: /app/builtin
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
 #    engine + an `frpc` client that dials this in-cluster `frps` server; frps re-exposes
@@ -320,6 +359,8 @@ secrets:
   # Bearer token for GET /load, the metric KEDA scales on. Required for
   # ocrEngine.autoscaling.mode=keda; empty => /load answers 404.
   loadToken: ""
+  # API key between taas and its TuzkaM pods (tuzkam.enabled).
+  tuzkamApiKey: "replaceMe"
   # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   keyEncryptionSecret: "replace-with-a-fernet-key"
   postgresPassword: "replaceMe"
