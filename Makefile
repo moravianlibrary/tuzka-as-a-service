@@ -115,6 +115,11 @@ load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= 
 	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
 	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
 
+.PHONY: bench-micro
+bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make check`)
+	$(UV) pytest tests/perf --benchmark-only --benchmark-sort=name \
+	  --benchmark-columns=min,median,mean,stddev,ops
+
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
