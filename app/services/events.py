@@ -130,6 +130,21 @@ def _ch_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
+# Engine metrics that have columns of their own (or are timestamps); the rest go to
+# ``extra``.
+_COLUMN_METRICS = frozenset({"n_lines", "mean_conf", "created_at", "started_at", "finished_at"})
+
+
+def extra_metrics(metrics: dict[str, Any]) -> dict[str, str]:
+    """Adapter-specific metrics for the event's ``extra`` map, as strings (TuzkaM's
+    words, georef status, residual, …; step 9 D7)."""
+    return {
+        key: str(value)
+        for key, value in sorted(metrics.items())
+        if key not in _COLUMN_METRICS and value is not None
+    }
+
+
 def job_event_row(e: JobEvent) -> dict[str, Any]:
     """The event as a ``JSONEachRow`` object: timestamps in ClickHouse's format, the
     flag as 0/1, ``None`` kept (Nullable columns)."""
