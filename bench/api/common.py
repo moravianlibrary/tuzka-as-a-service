@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import statistics
+import subprocess
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -29,7 +31,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DEFAULT_TAAS_URL = "http://localhost:8080"
 DEFAULT_COMPAT_URL = "http://localhost:8001"
-DEFAULT_MASTER_KEY = "test-master-key"
 DEFAULT_IMAGE_DIR = REPO_ROOT / "test-data"
 
 # Effectively "no limit" for a bench user. See provision_user() for why this is a big
@@ -125,13 +126,31 @@ def store_artifacts(out_dir: Path | None, page_name: str, alto: bytes, txt: byte
 # --- User provisioning ------------------------------------------------------
 
 
-def provision_user(
-    taas_url: str,
-    master_key: str,
-    prefix: str,
-    *,
-    lift_rate_limits: bool = True,
-) -> str:
+_TAAS_ADMIN_SH = Path(__file__).resolve().parents[2] / "scripts" / "lib" / "taas-admin.sh"
+
+
+def taas_admin(*args: str, env: dict[str, str] | None = None) -> str:
+    """Run ``taas-admin`` in the api container and return its stdout.
+
+    Goes through ``scripts/lib/taas-admin.sh``, so ``TAAS_ADMIN_MODE=compose|k3d`` picks
+    the stack (run_scenarios.py sets it from ``--target``). Secrets go in ``env`` and are
+    named in ``TAAS_ADMIN_ENV``, never in argv.
+    """
+    full_env = {**os.environ, **(env or {})}
+    if env:
+        full_env["TAAS_ADMIN_ENV"] = " ".join(env)
+    result = subprocess.run(
+        ["bash", "-c", f'source "{_TAAS_ADMIN_SH}" && taas_admin "$@"', "taas_admin", *args],
+        env=full_env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"taas-admin {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def provision_user(prefix: str, *, lift_rate_limits: bool = True) -> str:
     """Create a throwaway taas user and return its raw API key.
 
     The key doubles as the legacy `api-key`, since compat just forwards it as
@@ -141,30 +160,22 @@ def provision_user(
     a user's query budget).
     """
     username = f"{prefix}-{int(time.time())}"
-    admin = {"X-Master-Key": master_key}
+    api_key = taas_admin("user", "create", username).strip()
 
-    with httpx.Client(base_url=taas_url, timeout=30.0) as http:
-        resp = http.post("/admin/users", headers=admin, json={"username": username})
-        if resp.status_code >= 400:
-            raise SystemExit(f"could not create user: HTTP {resp.status_code} {resp.text}")
-        api_key: str = resp.json()["api_key"]
-
-        if lift_rate_limits:
-            # NOT zero: app.services.rate_limit.check() treats per_minute <= 0 as
-            # "deny everything" (a misconfigured limit must fail closed), so zero
-            # would 429 the whole run. A large finite rate is the way to opt out,
-            # and burst has to follow it or GCRA still gates the initial spike.
-            limits = {
-                "rate_submit_per_minute": UNTHROTTLED_PER_MINUTE,
-                "burst_submit": UNTHROTTLED_PER_MINUTE,
-                "rate_query_per_minute": UNTHROTTLED_PER_MINUTE,
-                "burst_query": UNTHROTTLED_PER_MINUTE,
-                "rate_ws_per_minute": UNTHROTTLED_PER_MINUTE,
-                "burst_ws": UNTHROTTLED_PER_MINUTE,
-            }
-            resp = http.patch(f"/admin/users/{username}", headers=admin, json=limits)
-            if resp.status_code >= 400:
-                raise SystemExit(f"could not lift rate limits: HTTP {resp.status_code} {resp.text}")
+    if lift_rate_limits:
+        # NOT zero: app.services.rate_limit.check() treats per_minute <= 0 as
+        # "deny everything" (a misconfigured limit must fail closed), so zero
+        # would 429 the whole run. A large finite rate is the way to opt out,
+        # and burst has to follow it or GCRA still gates the initial spike.
+        limit = str(UNTHROTTLED_PER_MINUTE)
+        taas_admin(
+            "user",
+            "set-limits",
+            username,
+            *("--submit-per-minute", limit, "--submit-burst", limit),
+            *("--query-per-minute", limit, "--query-burst", limit),
+            *("--ws-per-minute", limit, "--ws-burst", limit),
+        )
 
     print(f"  user={username} (rate limits {'lifted' if lift_rate_limits else 'stock'})")
     return api_key
@@ -395,7 +406,6 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="draw the N pages at random from the corpus (same seed -> same pages)",
     )
     parser.add_argument("--taas-url", default=DEFAULT_TAAS_URL)
-    parser.add_argument("--master-key", default=DEFAULT_MASTER_KEY)
     parser.add_argument("--api-key", default=None, help="reuse a user key instead of creating one")
     parser.add_argument(
         "--stock-limits",
@@ -417,12 +427,7 @@ def resolve_api_key(args: argparse.Namespace, prefix: str) -> str:
     if args.api_key:
         return str(args.api_key)
 
-    return provision_user(
-        args.taas_url,
-        args.master_key,
-        prefix,
-        lift_rate_limits=not args.stock_limits,
-    )
+    return provision_user(prefix, lift_rate_limits=not args.stock_limits)
 
 
 def banner(title: str, images: Iterable[Path], **fields: object) -> None:

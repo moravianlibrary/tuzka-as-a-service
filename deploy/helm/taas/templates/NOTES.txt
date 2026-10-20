@@ -13,8 +13,9 @@ Components:
   - OCR engine: {{ include "taas.fullname" . }}-ocr-engine (StatefulSet, autoscaling: {{ .Values.ocrEngine.autoscaling.mode }}, {{ .Values.ocrEngine.autoscaling.minReplicas }}-{{ .Values.ocrEngine.autoscaling.maxReplicas }} replicas; {{ .Values.ocrEngine.autoscaling.maxReplicas }} backends auto-registered)
 {{- else }}
 
-NOTE: no in-cluster OCR engine. Register backends via the admin API:
-  POST /admin/backends  (header X-Master-Key)
+NOTE: no in-cluster OCR engine. Register backends with the admin CLI:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "taas.fullname" . }}-api -- \
+    taas-admin backend upsert --url http://<engine>:8000 --api-key-env OCR_ENGINE_API_KEY
 {{- end }}
 
 Exposure (expose.<target>.kind = ingress | gateway | none):

@@ -93,29 +93,22 @@ check-alto-schema: ## Validate TuzkaOCR's ALTO against the vendored ALTO 4.4 XSD
 	$(UV) python scripts/check-alto-schema.py $(FILES)
 
 .PHONY: test-contract
-test-contract: ## Schemathesis contract/property tests vs a running instance (TAAS_URL, MASTER_KEY)
+test-contract: ## Schemathesis contract/property tests vs a running compose stack (TAAS_URL)
 	@url=$${TAAS_URL:-http://localhost:8080}; \
-	key=$$(TAAS_URL=$$url MASTER_KEY=$$MASTER_KEY bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
+	key=$$(TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	args="run $$url/openapi.json -c all"; \
-	[ -n "$$MASTER_KEY" ] && args="$$args -H X-Master-Key:$$MASTER_KEY"; \
 	[ -n "$$key" ] && args="$$args -H X-API-Key:$$key"; \
-	: "Only the two ops that rotate the fixture user's key are excluded — otherwise the"; \
-	: "fuzzer reuses the username from GET /admin/users and rotates the key mid-run,"; \
-	: "invalidating the X-API-Key for every later request. Everything else (incl. DELETE,"; \
-	: "which is harmlessly 409-guarded by the seeded job) stays in scope."; \
-	args="$$args --exclude-path /admin/users/{username}/rotate-key --exclude-path /admin/users/{username}/key"; \
 	$(UV) schemathesis $$args
 
 .PHONY: test-contract-local
 test-contract-local: env ## One command: bring up the API (migrated, no workers/engine), seed, run Schemathesis
 	$(COMPOSE) up -d --build --wait api
-	@MASTER_KEY="$$(grep -E '^MASTER_KEY=' .env.app | cut -d= -f2-)" TAAS_URL=http://localhost:8080 \
-	  $(MAKE) --no-print-directory test-contract
+	@TAAS_URL=http://localhost:8080 $(MAKE) --no-print-directory test-contract
 
 .PHONY: load-test
 load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= to tune)
 	@url=$${TAAS_URL:-http://localhost:8080}; \
-	key=$$(TAAS_URL=$$url MASTER_KEY=$${MASTER_KEY:-test-master-key} bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
+	key=$$(TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
 	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
 

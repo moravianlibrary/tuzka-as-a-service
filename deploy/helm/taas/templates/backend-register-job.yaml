@@ -23,9 +23,12 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: register
-          image: curlimages/curl:latest
+          # The api image carries taas-admin, which writes the backends straight to the DB.
+          image: {{ include "taas.image" (dict "image" .Values.api.image "global" .Values.image) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:
+            - configMapRef:
+                name: {{ include "taas.fullname" . }}-config
             - secretRef:
                 name: {{ include "taas.fullname" . }}-secret
           command:
@@ -33,18 +36,17 @@ spec:
             - -c
             - |
               set -e
-              API={{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port }}
-              echo "waiting for API..."
-              until curl -sf "$API/healthz" >/dev/null; do sleep 3; done
+              # Wait for the DB (and the migrations) rather than the API.
+              echo "waiting for the database..."
+              until taas-admin config list >/dev/null 2>&1; do sleep 3; done
               {{- if $.Values.ocrEngine.enabled }}
               {{- $max := int $e.autoscaling.maxReplicas }}
               {{- range $i := until $max }}
               URL="http://{{ $name }}-{{ $i }}.{{ $name }}:{{ $e.port }}"
               echo "registering ocr-engine-{{ $i }} -> $URL"
-              curl -sf -X PUT "$API/admin/backends" \
-                -H "X-Master-Key: $MASTER_KEY" \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }},\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
+              taas-admin backend upsert --url "$URL" --label "ocr-engine-{{ $i }}" \
+                --api-key-env OCR_ENGINE_API_KEY --max-inflight {{ $e.maxInflight }} \
+                --adapter tuzkaocr --managed >/dev/null \
                 || echo "upsert ocr-engine-{{ $i }} failed"
               {{- end }}
               {{- end }}
@@ -55,10 +57,9 @@ spec:
               {{- $tsvc := include "taas.tunnelEngineService" (dict "root" $ "box" $box.name "engine" $te.name) }}
               {{- $turl := printf "http://%s:%v" $tsvc $tcfg.port }}
               echo "registering tunnel engine {{ $tname }} -> {{ $turl }}"
-              curl -sf -X PUT "$API/admin/backends" \
-                -H "X-Master-Key: $MASTER_KEY" \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
+              taas-admin backend upsert --url "{{ $turl }}" --label "{{ $tname }}" \
+                --api-key-env OCR_ENGINE_API_KEY --max-inflight {{ $tcfg.maxInflight }} \
+                --device "{{ $tcfg.device }}" --adapter tuzkaocr --managed >/dev/null \
                 || echo "upsert {{ $tname }} failed"
               {{- end }}
               {{- end }}
