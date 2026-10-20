@@ -209,7 +209,9 @@ async def main() -> None:
         try:
             adapter = await adapter_for(meta)
             engine_job_id = meta["engine_job_id"]
-            status_resp = await adapter.status(engine_job_id)
+            # In the job's trace, so its polls show up there instead of as stray traces.
+            with job_span("poll", job_id, meta, backend_id=meta.get("backend_id")):
+                status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))

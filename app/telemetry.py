@@ -7,8 +7,13 @@ checkout whose environment lacks the packages still runs (every helper is a no-o
 
 A job's trace starts at submit: the API stores the W3C ``traceparent`` in the job's
 Redis hash, and the dispatcher and poller open their spans as its children, so
-submit → dispatch → engine calls → harvest is one trace although three processes
+submit → dispatch → engine polls → harvest is one trace although three processes
 handle the job.
+
+Only that is traced. The workers' own loops (a Redis command or SQL query per backend
+every tick, health checks) would otherwise each start a one-span trace, ~0.7M + 0.18M
+per engine a day, so workers record a span only inside a job's trace, and the API
+skips its probe and autoscaler endpoints.
 """
 
 from __future__ import annotations
@@ -34,10 +39,20 @@ logger = logging.getLogger(__name__)
 _enabled = False
 
 
-def setup_telemetry(default_service: str, db_engine: AsyncEngine | None = None) -> bool:
+# API paths not traced: kubelet probes and KEDA's /load poll, every few seconds each.
+# Regexes searched in the full URL.
+_UNTRACED_URLS = r"/healthz$,/load(\?|$)"
+
+
+def setup_telemetry(
+    default_service: str, db_engine: AsyncEngine | None = None, root_spans: bool = False
+) -> bool:
     """Export traces and logs over OTLP and instrument httpx, redis and ``db_engine``.
 
-    ``OTEL_SERVICE_NAME`` wins over ``default_service``. Call it once per process,
+    ``root_spans`` lets the process start traces of its own (the API: one per request).
+    Without it (the workers), a span is recorded only under a parent, i.e. inside a
+    job's ``job_span``; everything else is dropped at creation. Logs are exported either
+    way. ``OTEL_SERVICE_NAME`` wins over ``default_service``. Call it once per process,
     after logging is configured (it adds a handler to the root logger). Returns whether
     telemetry is on.
     """
@@ -58,12 +73,14 @@ def setup_telemetry(default_service: str, db_engine: AsyncEngine | None = None) 
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ALWAYS_ON, ParentBased
 
     # Attributes passed here override the env-detected ones, so resolve the env first.
     service = os.environ.get("OTEL_SERVICE_NAME") or default_service
     resource = Resource.create({"service.name": service})
 
-    tracer_provider = TracerProvider(resource=resource)
+    sampler = ParentBased(root=ALWAYS_ON if root_spans else ALWAYS_OFF)
+    tracer_provider = TracerProvider(resource=resource, sampler=sampler)
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(tracer_provider)
 
@@ -92,7 +109,7 @@ def instrument_app(app: FastAPI) -> None:
         return
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-    FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz")
+    FastAPIInstrumentor.instrument_app(app, excluded_urls=_UNTRACED_URLS)
 
 
 def inject_trace_context() -> dict[str, str]:

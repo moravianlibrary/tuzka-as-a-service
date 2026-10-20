@@ -128,9 +128,16 @@ without it nothing is set up and nothing is paid. The rest is the standard SDK e
 | `OTEL_RESOURCE_ATTRIBUTES` | — | e.g. `deployment.environment=prod` |
 
 Each job is **one trace**: the submit request stores the W3C `traceparent` in the job's
-Redis hash, and the dispatcher's `dispatch` span and the poller's `harvest`/`fail`
-spans continue it, with the engine HTTP calls, SQL and Redis commands inside. Python
-log records are exported too, carrying the trace id. See `app/telemetry.py`.
+Redis hash, and the dispatcher's `dispatch` span and the poller's `poll`, `harvest` and
+`fail` spans continue it, with the engine HTTP calls, SQL and Redis commands inside.
+Every other API request is a trace of its own, except `/healthz` and `/load`.
+
+That's all that's traced. The workers' loops run a Redis command or a SQL query per
+backend every second, plus health checks; traced, that would be ~0.7M + 0.18M × engines
+one-span traces a day. So the workers record spans only inside a job's trace (a
+parent-based sampler with root spans off), and drop the rest when they're created.
+Python log records are exported from every process either way, carrying the trace id
+when there is one. See `app/telemetry.py`.
 
 ## Running
 

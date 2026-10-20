@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("opentelemetry.sdk")
 
-from opentelemetry import trace  # noqa: E402
+from opentelemetry import propagate, trace  # noqa: E402
 from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
@@ -59,6 +59,25 @@ def test_job_without_trace_context_gets_a_root_span(spans) -> None:
     (harvest,) = spans.get_finished_spans()
     assert harvest.parent is None
     assert harvest.attributes["taas.domain"] == "default"
+
+
+def test_worker_sampler_keeps_only_job_traces() -> None:
+    from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ParentBased
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(sampler=ParentBased(root=ALWAYS_OFF))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+
+    with tracer.start_as_current_span("redis GET"):  # a worker's per-tick call
+        pass
+    assert exporter.get_finished_spans() == ()
+
+    parent = {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}
+    with tracer.start_as_current_span("poll", context=propagate.extract(parent)):
+        with tracer.start_as_current_span("GET /api/v1/status"):  # a call inside a job
+            pass
+    assert [s.name for s in exporter.get_finished_spans()] == ["GET /api/v1/status", "poll"]
 
 
 def test_off_without_an_otlp_endpoint(monkeypatch) -> None:
