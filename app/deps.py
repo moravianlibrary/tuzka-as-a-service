@@ -6,12 +6,12 @@ from functools import lru_cache
 
 import redis.asyncio as aioredis
 from fastapi import Depends, Request, Security
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.exceptions import RateLimited, Unauthorized
+from app.exceptions import NotFound, RateLimited, Unauthorized
 from app.models.db import get_db
 from app.models.user import User
 from app.services import config as config_service
@@ -20,6 +20,7 @@ from app.services.auth import hash_key
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
+_load_bearer = HTTPBearer(auto_error=False)
 
 # TTL cache for successful user lookups, keyed by hashed API key. Only *valid* users
 # are cached (invalid keys raise before reaching the insert), so it is bounded by the
@@ -99,6 +100,18 @@ async def require_master(
     if cookie and dash_session.verify(settings.master_key, cookie):
         return
     raise Unauthorized("Invalid master key")
+
+
+async def require_load_token(
+    credentials: HTTPAuthorizationCredentials | None = Security(_load_bearer),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Guard for GET /load. The ingress exposes the whole API, so this token is what
+    keeps the metric internal; with no LOAD_TOKEN configured the endpoint doesn't exist."""
+    if not settings.load_token:
+        raise NotFound()
+    if credentials is None or not hmac.compare_digest(credentials.credentials, settings.load_token):
+        raise Unauthorized("Invalid load token")
 
 
 def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:

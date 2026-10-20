@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     # Auth
     master_key: str = ""
+    # Bearer token for GET /load (the autoscaler's metric). Empty = /load answers 404.
+    load_token: str = ""
     key_encryption_secret: str = ""
 
     # Upload constraints

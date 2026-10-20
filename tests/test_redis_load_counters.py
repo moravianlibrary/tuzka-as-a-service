@@ -10,14 +10,13 @@ import time
 import pytest
 import redis.asyncio as aioredis
 
+from app.services.load import load_field, parse_load_field
 from app.services.redis_jobs import (
     LOAD_INFLIGHT_KEY,
     LOAD_QUEUED_KEY,
     LOAD_SPP_KEY,
     dequeue_jobs,
     enqueue_job,
-    load_field,
-    parse_load_field,
     record_page_seconds,
     release_and_requeue,
     set_done,

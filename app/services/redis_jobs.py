@@ -9,7 +9,7 @@ import redis.asyncio as aioredis
 
 from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
-from app.services.load import ewma
+from app.services.load import ewma, load_field
 
 settings = Settings()
 
@@ -116,17 +116,6 @@ def job_options(meta: dict[str, str]) -> dict[str, Any]:
     raw = meta.get("options")
     options: dict[str, Any] = json.loads(raw) if raw else {}
     return options
-
-
-def load_field(domain: str, outputs: frozenset[str]) -> str:
-    """The load-counter field for a (domain, outputs) pair, e.g. ``default|alto,txt``."""
-    return f"{domain}|{','.join(sorted(outputs))}"
-
-
-def parse_load_field(field: str) -> tuple[str, frozenset[str]]:
-    """Inverse of ``load_field``."""
-    domain, _, outputs = field.partition("|")
-    return domain, frozenset(o for o in outputs.split(",") if o)
 
 
 def _job_load_field(meta: dict[str, str]) -> str:

@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.base import EngineInfo
+from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
 
@@ -101,3 +102,23 @@ async def served_capabilities(db: AsyncSession, backend_id: int) -> dict[str, fr
         .where(BackendDomain.backend_id == backend_id)
     )
     return {name: frozenset(outputs) for name, outputs in rows.all()}
+
+
+async def adapter_capabilities(
+    db: AsyncSession, adapter: str | None = None
+) -> dict[str, dict[str, frozenset[str]]]:
+    """Adapter → domain → outputs, the union over all its backends' synced rows.
+    Disabled backends count too: a workload scaled to zero is still registered, and its
+    remembered capabilities are what lets /load ask for it to scale back up."""
+    query = (
+        select(Backend.adapter, Domain.name, BackendDomain.outputs)
+        .join(BackendDomain, BackendDomain.backend_id == Backend.id)
+        .join(Domain, Domain.id == BackendDomain.domain_id)
+    )
+    if adapter is not None:
+        query = query.where(Backend.adapter == adapter)
+    caps: dict[str, dict[str, frozenset[str]]] = {}
+    for name, domain, outputs in (await db.execute(query)).all():
+        served = caps.setdefault(name, {})
+        served[domain] = served.get(domain, frozenset()) | frozenset(outputs)
+    return caps

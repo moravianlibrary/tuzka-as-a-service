@@ -14,7 +14,7 @@ from starlette.requests import Request
 from app.config import Settings
 from app.deps import get_settings
 from app.exceptions import Unauthorized
-from app.routers import admin, dashboard, jobs, ws
+from app.routers import admin, dashboard, jobs, load, ws
 from app.services import dash_session, storage
 
 
@@ -108,6 +108,8 @@ def create_app() -> FastAPI:
     app.include_router(admin.router, prefix="/admin", tags=["Admin"])
     app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
     app.include_router(ws.router, tags=["WebSocket"])
+    # Internal autoscaler metric: token-guarded and kept out of the public schema.
+    app.include_router(load.router, include_in_schema=False)
 
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
