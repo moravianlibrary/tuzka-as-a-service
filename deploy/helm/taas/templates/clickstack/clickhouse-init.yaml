@@ -1,0 +1,73 @@
+{{- if .Values.clickstack.enabled }}
+{{- $c := .Values.clickstack.clickhouse }}
+{{- $name := printf "%s-clickhouse" (include "taas.fullname" .) }}
+{{- $schema := .Files.Get "files/clickstack/schema.sql" }}
+# Applies files/clickstack/schema.sql (all IF NOT EXISTS) on every install/upgrade, so a
+# new table lands with the release that needs it (a changed one needs an ALTER there).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-schema
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  schema.sql: |
+    {{- $schema | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-init
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    checksum/schema: {{ $schema | sha256sum | trunc 16 }}
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: clickhouse-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: clickhouse-init
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" . }}-secret
+                  key: CLICKHOUSE_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              until clickhouse client --host {{ $name }} --user {{ $c.user | quote }} \
+                  --password "$CLICKHOUSE_PASSWORD" --query "SELECT 1" >/dev/null 2>&1; do
+                echo "waiting for ClickHouse..."; sleep 3
+              done
+              clickhouse client --host {{ $name }} --user {{ $c.user | quote }} \
+                --password "$CLICKHOUSE_PASSWORD" --multiquery < /schema/schema.sql
+              echo "schema applied"
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+      volumes:
+        - name: schema
+          configMap:
+            name: {{ $name }}-schema
+{{- end }}

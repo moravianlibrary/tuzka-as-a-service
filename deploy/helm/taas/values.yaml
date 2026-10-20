@@ -290,6 +290,53 @@ metrics:
     # { release: kube-prometheus-stack }).
     labels: {}
 
+# -- ClickStack: ClickHouse (job events, step 5) + HyperDX (dashboards, traces, logs) +
+#    MongoDB (HyperDX's own state). When enabled, the api and workers send every job
+#    state change to ClickHouse's taas.job_events. Needs secrets.clickhousePassword and
+#    secrets.hyperdxApiKey.
+clickstack:
+  enabled: false
+  clickhouse:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "24.8"
+    user: taas
+    storage:
+      size: 50Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  hyperdx:
+    image:
+      repository: hyperdx/hyperdx
+      tag: "latest"   # pin to a release for production
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  mongodb:
+    image:
+      repository: mongo
+      tag: "7"
+    storage:
+      size: 1Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
   allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
@@ -319,6 +366,10 @@ secrets:
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "replaceMe"
   ocrEngineApiKey: "replaceMe"
+  # ClickStack (clickstack.enabled): the ClickHouse user's password, and the HyperDX API
+  # key the dashboard importer uses.
+  clickhousePassword: ""
+  hyperdxApiKey: ""
   # Shared secret authenticating frpc (GPU box) to the in-cluster frps. Must match
   # the box's frpc auth.token. Only used when tunnel.enabled.
   frpToken: "replaceMe"
@@ -363,6 +414,15 @@ expose:
   # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
   # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
   minioResults:
+    kind: none
+    host: ""
+    paths: ["/"]
+    ingressClassName: ""
+    annotations: {}
+    tls: []
+    gateway: { name: "", namespace: "", sectionName: "" }
+  # HyperDX UI (only with clickstack.enabled). Serve at root on its own host.
+  hyperdx:
     kind: none
     host: ""
     paths: ["/"]

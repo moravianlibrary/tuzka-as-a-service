@@ -1,5 +1,6 @@
--- ClickHouse schema for taas analytics (step 5). Applied by the compose service's
--- initdb hook and by the Helm init Job; every statement is idempotent.
+-- ClickHouse schema for taas analytics (step 5). The one copy: docker-compose mounts it
+-- into the clickhouse initdb directory, and the Helm chart's init Job applies it on every
+-- install/upgrade. Every statement is idempotent.
 
 CREATE DATABASE IF NOT EXISTS taas;
 

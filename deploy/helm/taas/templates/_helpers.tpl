@@ -51,6 +51,9 @@ Usage: {{- $targets := include "taas.exposeTargets" . | fromYamlArray }}
 {{- if .Values.compat.enabled -}}
 {{- $targets = append $targets (dict "name" "legacy" "cfg" .Values.expose.legacy "service" (printf "%s-compat" $full) "port" (.Values.compat.port | int) "strip" true) -}}
 {{- end -}}
+{{- if .Values.clickstack.enabled -}}
+{{- $targets = append $targets (dict "name" "hyperdx" "cfg" .Values.expose.hyperdx "service" (printf "%s-hyperdx" $full) "port" 8080 "strip" false) -}}
+{{- end -}}
 {{- toYaml $targets -}}
 {{- end }}
 

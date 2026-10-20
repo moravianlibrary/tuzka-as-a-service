@@ -248,7 +248,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./deploy/clickstack/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ./deploy/helm/taas/files/clickstack/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     healthcheck:

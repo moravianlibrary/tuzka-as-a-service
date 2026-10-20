@@ -130,6 +130,21 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `minio.results.bucket` | `results` | Results bucket |
 | `minio.{incoming,results}.storage.size` | `20Gi` | MinIO PVC sizes |
 
+### ClickStack (`clickstack.*`)
+
+ClickHouse for job events (one row per job state change, `taas.job_events`; the schema
+in `files/clickstack/schema.sql` is applied by a post-install/upgrade Job), HyperDX for
+dashboards, traces and logs, and MongoDB for HyperDX's own state. Off by default.
+
+| Key | Default | Description |
+|---|---|---|
+| `clickstack.enabled` | `false` | Deploy ClickStack; the api and workers then emit job events to it |
+| `clickstack.clickhouse.user` | `taas` | ClickHouse user (password: `secrets.clickhousePassword`) |
+| `clickstack.clickhouse.storage.size` | `50Gi` | ClickHouse PVC size |
+| `clickstack.hyperdx.image.tag` | `latest` | Pin a release for production |
+| `clickstack.mongodb.storage.size` | `1Gi` | MongoDB PVC size |
+| `expose.hyperdx.*` | `kind: none` | The HyperDX UI, on its own host |
+
 ### OCR engine
 
 | Key | Default | Description |
@@ -195,9 +210,9 @@ worker — it is neither a Helm value nor a DB config key.
 ### Secrets (`secrets.*`)
 
 `masterKey`, `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
-`ocrEngineApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
+`ocrEngineApiKey`; with `clickstack.enabled`, also `clickhousePassword` and `hyperdxApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
 
-### Exposure (`expose.<api|legacy|adminDashboard>.*`)
+### Exposure (`expose.<api|legacy|adminDashboard|minioResults|hyperdx>.*`)
 
 `kind` (`ingress`|`gateway`|`none`), `host`, `paths` / `pathPrefix`, `ingressClassName`,
 `annotations`, `tls`, `gateway.{name,namespace,sectionName}`.
