@@ -24,6 +24,8 @@ JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
 JOB_MAX_REQUEUES_DEFAULT = 5
 PRESIGNED_TTL_DEFAULT_MINUTES = 60
 STATE_TTL_MARGIN_SECONDS = 60
+# Seconds per page /load assumes for a domain with no measured pages yet.
+LOAD_DEFAULT_SECONDS_PER_PAGE = 10.0
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,11 @@ async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
 async def get_max_requeues(db: AsyncSession) -> int:
     value = await get_value(db, "jobs.max_requeues")
     return int(value) if value is not None else JOB_MAX_REQUEUES_DEFAULT
+
+
+async def get_default_seconds_per_page(db: AsyncSession) -> float:
+    value = await get_value(db, "load.default_seconds_per_page")
+    return float(value) if value is not None else LOAD_DEFAULT_SECONDS_PER_PAGE
 
 
 async def get_state_ttl_seconds(db: AsyncSession) -> int:

@@ -13,10 +13,12 @@ import redis.asyncio as aioredis
 from app.services.redis_jobs import (
     LOAD_INFLIGHT_KEY,
     LOAD_QUEUED_KEY,
+    LOAD_SPP_KEY,
     dequeue_jobs,
     enqueue_job,
     load_field,
     parse_load_field,
+    record_page_seconds,
     release_and_requeue,
     set_done,
     set_failed,
@@ -106,3 +108,12 @@ async def test_delayed_release_counts_as_queued(redis_client: aioredis.Redis) ->
     await set_running(redis_client, "j4", "e1", "http://e1", 1, TTL)
     await release_and_requeue(redis_client, "j4", 1.0, TTL, delay_s=30, avoid_backend_id=1)
     assert await _counts(redis_client) == ({FIELD: 1}, {FIELD: 0})
+
+
+@pytest.mark.asyncio
+async def test_record_page_seconds_keeps_an_average(redis_client: aioredis.Redis) -> None:
+    await record_page_seconds(redis_client, "default", 10.0)
+    await record_page_seconds(redis_client, "default", 20.0)
+    await record_page_seconds(redis_client, "maps", 100.0)
+    spp = {k.decode(): float(v) for k, v in (await redis_client.hgetall(LOAD_SPP_KEY)).items()}
+    assert spp == {"default": pytest.approx(11.0), "maps": 100.0}

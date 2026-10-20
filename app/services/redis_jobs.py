@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 
 from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
+from app.services.load import ewma
 
 settings = Settings()
 
@@ -43,6 +44,8 @@ _DELAYED_KEY = "jobs:delayed"
 # functions below, and only on a real transition, so re-running one is a no-op.
 LOAD_QUEUED_KEY = "load:queued"
 LOAD_INFLIGHT_KEY = "load:inflight"
+# Seconds per page, per domain: an EWMA of engine run time, for /load's backlog_s.
+LOAD_SPP_KEY = "load:spp"
 
 
 async def signal_submit(r: aioredis.Redis) -> None:
@@ -380,6 +383,14 @@ async def release_and_requeue(
     else:
         priority = int(meta.get("priority", 0)) if meta else 0
         await _add_pending(r, priority, job_id, score)
+
+
+async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) -> None:
+    """Fold one finished page's engine run time into the domain's seconds-per-page
+    average. Two pollers racing can drop a sample; for an average that's harmless."""
+    prev = await r.hget(LOAD_SPP_KEY, domain)
+    value = ewma(float(prev) if prev is not None else None, seconds)
+    await r.hset(LOAD_SPP_KEY, domain, str(value))
 
 
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:

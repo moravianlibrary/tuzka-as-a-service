@@ -29,8 +29,10 @@ from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
+    job_domain,
     job_outputs,
     publish_event,
+    record_page_seconds,
     release_and_requeue,
     set_done,
     set_failed,
@@ -380,6 +382,11 @@ async def main() -> None:
                 await db.commit()
 
             await set_done(r, job_id, state_ttl)
+            # Engine-clock run time feeds /load's seconds-per-page estimate.
+            if engine_started is not None and engine_finished is not None:
+                seconds = (engine_finished - engine_started).total_seconds()
+                if seconds > 0:
+                    await record_page_seconds(r, job_domain(meta), seconds)
             await publish_event(r, username, event_data)
             logger.info(f"Published done event for {username}")
 
