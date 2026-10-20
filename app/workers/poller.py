@@ -51,6 +51,7 @@ from app.services.storage import (
     presign_get,
     put_object,
 )
+from app.telemetry import job_span, setup_telemetry
 
 logger = logging.getLogger("poller-worker")
 
@@ -172,6 +173,7 @@ async def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     db_engine = make_engine(settings)
+    setup_telemetry("taas-poller", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     http = httpx.AsyncClient(timeout=60.0)
@@ -455,7 +457,8 @@ async def main() -> None:
 
     async def harvest_with_sem(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         async with sem:
-            await harvest(job_id, meta, times)
+            with job_span("harvest", job_id, meta, backend_id=meta.get("backend_id")):
+                await harvest(job_id, meta, times)
 
     logger.info("Poller worker started")
     try:
@@ -555,7 +558,8 @@ async def main() -> None:
 
                     # Mark failed jobs
                     for job_id, meta, error, attempt in failed_jobs:
-                        await mark_failed(job_id, meta, error, attempt=attempt)
+                        with job_span("fail", job_id, meta, backend_id=meta.get("backend_id")):
+                            await mark_failed(job_id, meta, error, attempt=attempt)
 
                     # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
                     # another backend picks them up after a jittered backoff. Redis is

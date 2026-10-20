@@ -114,6 +114,24 @@ dashboard analytics (breakdown + raw/CSV export) query from there rather than fr
 nightly rollup. See `app/services/analytics.py` and the
 [analytics design doc](../docs/2026-06-18-job-analytics-design.md).
 
+## Tracing
+
+OpenTelemetry traces and logs, **off by default**. Set `OTEL_EXPORTER_OTLP_ENDPOINT` on
+the api and the workers to export over OTLP/HTTP (e.g. to ClickStack's collector);
+without it nothing is set up and nothing is paid. The rest is the standard SDK env:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (off) | collector base URL, e.g. `http://otel-collector:4318` |
+| `OTEL_SERVICE_NAME` | `taas-api`, `taas-submit`, `taas-poller`, `taas-cleanup` | per process |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | e.g. an ingestion key, `authorization=…` |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | e.g. `deployment.environment=prod` |
+
+Each job is **one trace**: the submit request stores the W3C `traceparent` in the job's
+Redis hash, and the dispatcher's `dispatch` span and the poller's `harvest`/`fail`
+spans continue it, with the engine HTTP calls, SQL and Redis commands inside. Python
+log records are exported too, carrying the trace id. See `app/telemetry.py`.
+
 ## Running
 
 Containers (with the rest of the stack): see the [root README](../README.md) (`make up`).

@@ -45,6 +45,7 @@ from app.services.retry_policy import (
     is_retryable_dispatch_error,
 )
 from app.services.storage import get_incoming_client, get_object
+from app.telemetry import job_span, setup_telemetry
 
 logger = logging.getLogger("submit-worker")
 
@@ -128,6 +129,7 @@ async def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     engine = make_engine(settings)
+    setup_telemetry("taas-submit", db_engine=engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)
@@ -243,7 +245,17 @@ async def main() -> None:
         if not meta:
             logger.warning(f"Job {job_id} not found in Redis, skipping")
             return
+        # A child of the job's submit trace, so the engine calls below land in it.
+        with job_span("dispatch", job_id, meta, backend_id=backend.id):
+            await dispatch_job(job_id, original_score, backend, backend_domains, meta)
 
+    async def dispatch_job(
+        job_id: str,
+        original_score: float,
+        backend: Backend,
+        backend_domains: dict[str, frozenset[str]],
+        meta: dict[str, str],
+    ) -> None:
         username = meta["username"]
         external_id = meta["external_id"]
         ext = meta.get("ext", ".jpg")

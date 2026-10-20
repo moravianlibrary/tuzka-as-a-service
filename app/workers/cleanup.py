@@ -21,6 +21,7 @@ from app.services.storage import (
     get_results_client,
     list_expired_objects,
 )
+from app.telemetry import setup_telemetry
 
 logger = logging.getLogger("cleanup-worker")
 
@@ -57,6 +58,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = make_engine(settings)
+    setup_telemetry("taas-cleanup", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)

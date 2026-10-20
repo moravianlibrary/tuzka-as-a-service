@@ -14,8 +14,10 @@ from starlette.requests import Request
 from app.config import Settings
 from app.deps import get_settings
 from app.exceptions import Unauthorized
+from app.models import db
 from app.routers import admin, dashboard, jobs, ws
 from app.services import dash_session, storage
+from app.telemetry import instrument_app, setup_telemetry
 
 
 @asynccontextmanager
@@ -94,6 +96,8 @@ def create_app() -> FastAPI:
     )
     # httpx emits one INFO line per request; quiet it so it doesn't drown app logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # After basicConfig(force=True), which would drop the OTel log handler.
+    setup_telemetry("taas-api", db_engine=db.engine)
 
     app = FastAPI(
         title="taas",
@@ -103,6 +107,8 @@ def create_app() -> FastAPI:
         license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
         openapi_tags=TAGS_METADATA,
     )
+
+    instrument_app(app)
 
     app.include_router(jobs.router, prefix="/api/v1", tags=["Jobs"])
     app.include_router(admin.router, prefix="/admin", tags=["Admin"])

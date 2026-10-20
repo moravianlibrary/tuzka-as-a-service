@@ -40,6 +40,7 @@ from app.schemas.job import (
 from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.job_spec import fmt_label, parse_outputs, resolve_job_spec
+from app.telemetry import inject_trace_context
 
 router = APIRouter()
 
@@ -163,6 +164,8 @@ async def submit_job(
             "ext": ext,
             "submitted_at": str(time.time()),
             "priority": str(user_priority),
+            # The workers continue this request's trace from here (empty when off).
+            **inject_trace_context(),
         },
         state_ttl,
     )
