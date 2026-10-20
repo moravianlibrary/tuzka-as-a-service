@@ -120,6 +120,10 @@ bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make
 	$(UV) pytest tests/perf --benchmark-only --benchmark-sort=name \
 	  --benchmark-columns=min,median,mean,stddev,ops
 
+.PHONY: perf-taas
+perf-taas: ## Whole-taas measurement against a fake-engine stack (USERS=, RATE=, DURATION=, OUT=)
+	USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
+
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
 	IMAGE=$(IMAGE) bash scripts/test.sh
