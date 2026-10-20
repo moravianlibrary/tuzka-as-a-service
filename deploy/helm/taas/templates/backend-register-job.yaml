@@ -44,7 +44,7 @@ spec:
               curl -sf -X PUT "$API/admin/backends" \
                 -H "X-Master-Key: $MASTER_KEY" \
                 -H "Content-Type: application/json" \
-                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }},\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
+                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }},\"managed\":true,\"adapter\":\"tuzkaocr\",\"declared\":{{ $e.declaredDomains | toJson | replace "\"" "\\\"" }}}" \
                 || echo "upsert ocr-engine-{{ $i }} failed"
               {{- end }}
               {{- end }}

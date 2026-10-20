@@ -185,18 +185,24 @@ ocrEngine:
       targetCPUUtilizationPercentage: 70
       scaleDownStabilizationSeconds: 300
     keda:                    # only used when mode=keda (requires the KEDA operator)
-      # Empty => the chart's in-cluster Redis (<release>-redis:<redis.port>). Set this
-      # only to point KEDA at an external Redis.
-      redisAddress: ""
-      listName: "ocr-jobs"
-      listLength: "5"        # ~1 replica per this many queued jobs
-      pollingInterval: 15    # seconds between queue checks
-      cooldownPeriod: 300    # seconds idle before scaling back toward minReplicas
-      # Set ONLY for an external password-protected Redis: the name of an existing
-      # Secret (and its key) holding the Redis password. Empty => no auth (the bundled
-      # in-cluster Redis has none).
-      redisPasswordSecret: ""
-      redisPasswordKey: "password"
+      # Scales on the API's GET /load (KEDA metrics-api, bearer secrets.loadToken).
+      # Which queued work counts: the jobs a tuzkaocr backend could serve.
+      loadFilter: "adapter=tuzkaocr"
+      targetBacklogSeconds: 600    # ~1 replica per this many seconds of queued pages
+      activationBacklogSeconds: 0  # scale up from zero as soon as anything is queued
+      pollingInterval: 15          # seconds between /load checks
+      # Seconds without backlog before scaling back toward minReplicas. With
+      # minReplicas=0, set jobs.queued_timeout_seconds above the engine's cold start, or
+      # queued jobs time out while the first pod starts.
+      cooldownPeriod: 300
+  # Capabilities registered for every in-cluster engine before it has run (so a
+  # StatefulSet at zero replicas is still known to serve these domains); the engine's
+  # own report replaces them on its first domain sync.
+  declaredDomains:
+    default: [alto, txt]
+    kramarky: [alto, txt]
+    handwritten: [alto, txt]
+    kurrent: [alto, txt]
 
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
@@ -311,6 +317,9 @@ config:
 # -- Secrets (override via --set or an external secret manager)
 secrets:
   masterKey: "replaceMe"
+  # Bearer token for GET /load, the metric KEDA scales on. Required for
+  # ocrEngine.autoscaling.mode=keda; empty => /load answers 404.
+  loadToken: ""
   # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   keyEncryptionSecret: "replace-with-a-fernet-key"
   postgresPassword: "replaceMe"

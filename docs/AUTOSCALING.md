@@ -7,7 +7,7 @@ headless Service. It can scale three ways via `ocrEngine.autoscaling.mode`:
 |--------|-----------|-----------------|
 | `none` | nothing — static `ocrEngine.replicas` (default 1) | the manifest |
 | `hpa`  | CPU utilisation (`autoscaling/v2` HorizontalPodAutoscaler) | the **HPA** |
-| `keda` | Redis queue length (KEDA `ScaledObject`) | **KEDA** |
+| `keda` | queued work in seconds from the API's `GET /load` (KEDA `metrics-api` `ScaledObject`) | **KEDA** |
 
 `minReplicas` / `maxReplicas` bound the autoscaler; `maxReplicas` also caps how many
 backend rows taas pre-registers for the engine.
