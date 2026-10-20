@@ -374,6 +374,54 @@ async def release_and_requeue(
         await _add_pending(r, priority, job_id, score)
 
 
+async def rebuild_load_counters(r: aioredis.Redis) -> None:
+    """Recount the load counters from the queues themselves and swap them in (D3).
+
+    The counters move in separate steps from the queues, so a crash between the two
+    leaves them off for good; this repairs it. Sources: every pending ZSET (via the
+    levels set, no SCAN), the delayed-retry ZSET and the in-flight set. A transition that
+    lands mid-rebuild, or a job the submit worker holds between dequeue and dispatch,
+    can be off by one until the next rebuild, which is fine for an autoscaling signal.
+    """
+    levels = await r.smembers(_PENDING_LEVELS_KEY)
+    queued_ids: list[str] = []
+    for level in levels:
+        prio = int(level.decode() if isinstance(level, bytes) else level)
+        queued_ids += [_s(m) for m in await r.zrange(_pending_key(prio), 0, -1)]
+    queued_ids += [_s(m) for m in await r.zrange(_DELAYED_KEY, 0, -1)]
+    inflight_ids = [_s(m) for m in await r.smembers("jobs:inflight")]
+
+    async def count(job_ids: list[str]) -> dict[str, int]:
+        async with r.pipeline(transaction=False) as pipe:
+            for job_id in job_ids:
+                pipe.hgetall(f"job:{job_id}")
+            hashes = await pipe.execute()
+        counts: dict[str, int] = {}
+        for raw in hashes:
+            if raw:
+                field = _job_load_field({_s(k): _s(v) for k, v in raw.items()})
+                counts[field] = counts.get(field, 0) + 1
+        return counts
+
+    for key, counts in (
+        (LOAD_QUEUED_KEY, await count(queued_ids)),
+        (LOAD_INFLIGHT_KEY, await count(inflight_ids)),
+    ):
+        if not counts:
+            await r.delete(key)
+            continue
+        tmp = f"{key}:rebuild"
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.delete(tmp)
+            pipe.hset(tmp, mapping=cast("dict[Any, Any]", counts))
+            pipe.rename(tmp, key)  # atomic swap: readers never see a half-built hash
+            await pipe.execute()
+
+
+def _s(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
 async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) -> None:
     """Fold one finished page's engine run time into the domain's seconds-per-page
     average. Two pollers racing can drop a sample; for an average that's harmless."""

@@ -17,6 +17,7 @@ from app.services.redis_jobs import (
     LOAD_SPP_KEY,
     dequeue_jobs,
     enqueue_job,
+    rebuild_load_counters,
     record_page_seconds,
     release_and_requeue,
     set_done,
@@ -116,3 +117,29 @@ async def test_record_page_seconds_keeps_an_average(redis_client: aioredis.Redis
     await record_page_seconds(redis_client, "maps", 100.0)
     spp = {k.decode(): float(v) for k, v in (await redis_client.hgetall(LOAD_SPP_KEY)).items()}
     assert spp == {"default": pytest.approx(11.0), "maps": 100.0}
+
+
+@pytest.mark.asyncio
+async def test_rebuild_repairs_drifted_counters(redis_client: aioredis.Redis) -> None:
+    await enqueue_job(redis_client, "q1", _meta(), TTL)
+    await enqueue_job(redis_client, "q2", _meta("kramarky", "alto"), TTL)
+    await enqueue_job(redis_client, "r1", _meta(), TTL)
+    await enqueue_job(redis_client, "d1", _meta(), TTL)
+    for job_id in ("r1", "d1"):  # dispatched: off the pending queue, then running
+        await redis_client.zrem("jobs:pending:0", job_id)
+        await set_running(redis_client, job_id, "e1", "http://e1", 1, TTL)
+    await release_and_requeue(redis_client, "d1", 1.0, TTL, delay_s=60)  # delayed = queued
+    # Corrupt them: a lost decrement, a stale field.
+    await redis_client.hset(LOAD_QUEUED_KEY, mapping={FIELD: 99, "gone|txt": 5})
+    await redis_client.delete(LOAD_INFLIGHT_KEY)
+
+    await rebuild_load_counters(redis_client)
+
+    assert await _counts(redis_client) == ({FIELD: 2, "kramarky|alto": 1}, {FIELD: 1})
+
+
+@pytest.mark.asyncio
+async def test_rebuild_with_nothing_queued_clears_counters(redis_client: aioredis.Redis) -> None:
+    await redis_client.hset(LOAD_QUEUED_KEY, FIELD, 3)
+    await rebuild_load_counters(redis_client)
+    assert await _counts(redis_client) == ({}, {})

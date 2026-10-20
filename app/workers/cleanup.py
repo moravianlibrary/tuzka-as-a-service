@@ -15,6 +15,7 @@ from app.models.backend import Backend  # noqa: F401 — registers FK target wit
 from app.models.db import make_engine
 from app.services.config import get_storage_ttl_minutes
 from app.services.reaper import reap_stale_jobs
+from app.services.redis_jobs import rebuild_load_counters
 from app.services.storage import (
     delete_objects,
     get_incoming_client,
@@ -98,6 +99,10 @@ async def main() -> None:
                         await delete_expired_jobs(db)
                 except Exception:
                     logger.exception("Cleanup worker failed")
+                try:
+                    await rebuild_load_counters(r)
+                except Exception:
+                    logger.exception("Load counter rebuild failed")
 
             tick += 1
             await asyncio.sleep(REAP_TICK_SECONDS)
