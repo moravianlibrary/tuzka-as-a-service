@@ -38,6 +38,12 @@ _POLL_WAKEUP_TTL_SECONDS = 60
 # Delayed-retry ZSET: job_id scored by ready-at unix time.
 _DELAYED_KEY = "jobs:delayed"
 
+# Load counters for GET /load: how many jobs are waiting (incl. delayed retries) and in
+# flight, per "{domain}|{sorted,outputs}" field (load_field). Moved only by the state
+# functions below, and only on a real transition, so re-running one is a no-op.
+LOAD_QUEUED_KEY = "load:queued"
+LOAD_INFLIGHT_KEY = "load:inflight"
+
 
 async def signal_submit(r: aioredis.Redis) -> None:
     """Wake the submit worker — new pending work or a freed slot. One round-trip."""
@@ -107,6 +113,21 @@ def job_options(meta: dict[str, str]) -> dict[str, Any]:
     raw = meta.get("options")
     options: dict[str, Any] = json.loads(raw) if raw else {}
     return options
+
+
+def load_field(domain: str, outputs: frozenset[str]) -> str:
+    """The load-counter field for a (domain, outputs) pair, e.g. ``default|alto,txt``."""
+    return f"{domain}|{','.join(sorted(outputs))}"
+
+
+def parse_load_field(field: str) -> tuple[str, frozenset[str]]:
+    """Inverse of ``load_field``."""
+    domain, _, outputs = field.partition("|")
+    return domain, frozenset(o for o in outputs.split(",") if o)
+
+
+def _job_load_field(meta: dict[str, str]) -> str:
+    return load_field(job_domain(meta), job_outputs(meta))
 
 
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
@@ -184,8 +205,11 @@ async def enqueue_job(
     key = f"job:{job_id}"
     # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
     # does not upcast; cast around the third-party stub friction (values are all strings).
-    await r.hset(key, mapping=cast("dict[Any, Any]", metadata))
-    await r.expire(key, state_ttl)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hset(key, mapping=cast("dict[Any, Any]", metadata))
+        pipe.expire(key, state_ttl)
+        pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(metadata), 1)
+        await pipe.execute()
     await _add_pending(r, priority, job_id, float(metadata.get("submitted_at", time.time())))
 
 
@@ -253,8 +277,17 @@ async def set_running(
         },
     )
     await r.expire(key, state_ttl)
-    await r.sadd("jobs:inflight", job_id)
-    await r.incr(f"backend:{backend_id}:inflight")
+    # Only a job that really entered the in-flight set moves from queued to inflight,
+    # so a repeated call can't skew the load counters.
+    if await r.sadd("jobs:inflight", job_id):
+        meta = await get_job(r, job_id)
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.incr(f"backend:{backend_id}:inflight")
+            if meta is not None:
+                field = _job_load_field(meta)
+                pipe.hincrby(LOAD_QUEUED_KEY, field, -1)
+                pipe.hincrby(LOAD_INFLIGHT_KEY, field, 1)
+            await pipe.execute()
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
@@ -271,6 +304,8 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> None:
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
     removed = await r.srem("jobs:inflight", job_id)
+    if removed and meta is not None:
+        await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await signal_submit(r)  # a slot just freed — let the worker refill it now
@@ -289,6 +324,13 @@ async def set_failed(r: aioredis.Redis, job_id: str, error: str, state_ttl: int)
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
     removed = await r.srem("jobs:inflight", job_id)
+    if meta is not None:
+        # A job that never ran (failed at dispatch, timed out in the queue) leaves the
+        # queued count; one that ran leaves inflight. Already failed/done: nothing.
+        if removed:
+            await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
+        elif meta.get("status") == "queued":
+            await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(meta), -1)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await signal_submit(r)  # a slot just freed — let the worker refill it now
@@ -321,6 +363,12 @@ async def release_and_requeue(
     meta = await get_job(r, job_id)
     backend_id = meta.get("backend_id") if meta else None
     removed = await r.srem("jobs:inflight", job_id)
+    if removed and meta is not None:
+        field = _job_load_field(meta)
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.hincrby(LOAD_INFLIGHT_KEY, field, -1)
+            pipe.hincrby(LOAD_QUEUED_KEY, field, 1)
+            await pipe.execute()
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
     await r.hset(key, mapping={"status": "queued"})
