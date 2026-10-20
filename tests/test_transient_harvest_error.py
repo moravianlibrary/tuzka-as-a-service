@@ -9,6 +9,7 @@ time we harvest, so infrastructure errors must not be recorded as the job's fail
 import httpx
 from sqlalchemy.exc import DBAPIError
 
+from app.engines.base import OutputUnavailable
 from app.workers.poller import is_transient_harvest_error
 
 
@@ -39,3 +40,9 @@ def test_transport_errors_are_transient() -> None:
 def test_other_exceptions_are_terminal() -> None:
     assert not is_transient_harvest_error(KeyError("job_id"))
     assert not is_transient_harvest_error(ValueError("boom"))
+
+
+def test_unavailable_output_is_terminal() -> None:
+    # The engine finished but can't produce an output (TuzkaM: georeferencing failed);
+    # re-harvesting asks the same question, so the job fails instead of waiting.
+    assert not is_transient_harvest_error(OutputUnavailable("gcp", "georeferencing failed"))
