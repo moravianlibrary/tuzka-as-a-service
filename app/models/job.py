@@ -39,6 +39,8 @@ class Job(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
     )
     file_size_bytes: Mapped[int | None] = mapped_column(default=None)
+    # Image size, for dispatch scoring (seconds per megapixel); None before 0.9.
+    megapixels: Mapped[float | None] = mapped_column(default=None)
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     # dispatched_at is on the taas clock (submit worker POST); engine_received_at /
     # started_at / finished_at are on the engine clock (adopted from GET /status). Keeping

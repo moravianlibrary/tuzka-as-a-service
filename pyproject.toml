@@ -37,6 +37,8 @@ api = [
   "opentelemetry-instrumentation-fastapi>=0.48b0",
   # taas-admin, the admin CLI: the api image is the admin image
   "typer>=0.12",
+  # Image size at submit (header only), for dispatch scoring
+  "pillow>=10.0",
 ]
 dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "types-jsonschema", "xmlschema"]
 

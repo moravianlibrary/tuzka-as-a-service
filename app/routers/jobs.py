@@ -54,6 +54,7 @@ from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
+from app.services.imageinfo import image_megapixels
 from app.services.job_spec import (
     DEFAULT_DOMAIN,
     fmt_label,
@@ -150,6 +151,7 @@ async def submit_job(
         raise Forbidden(denied)
     spec = await resolve_job_spec(db, domain, requested, options)
     job_fmt = fmt_label(spec.outputs)
+    megapixels = image_megapixels(image_bytes)
 
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
@@ -173,6 +175,7 @@ async def submit_job(
         outputs=sorted(spec.outputs),
         options=spec.options,
         file_size_bytes=len(image_bytes),
+        megapixels=megapixels,
     )
     db.add(job)
     await db.commit()
@@ -193,6 +196,7 @@ async def submit_job(
             "outputs": ",".join(sorted(spec.outputs)),
             "options": json.dumps(spec.options),
             "ext": ext,
+            "mp": str(megapixels),
             "submitted_at": str(time.time()),
             "priority": str(user_priority),
             # The workers continue this request's trace from here (empty when off).

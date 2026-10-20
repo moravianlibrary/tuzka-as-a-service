@@ -53,6 +53,7 @@ from app.services.batch_archive import PageRow, build_results_archive
 from app.services.batches import page_score, plan_batch_member
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
+from app.services.imageinfo import image_megapixels
 from app.services.job_spec import (
     DEFAULT_DOMAIN,
     fmt_label,
@@ -143,7 +144,7 @@ async def submit_batch(
     incoming = request.app.state.incoming_client
     bucket = settings.minio_incoming_bucket
     job_fmt = fmt_label(spec.outputs)
-    pages: list[tuple[UUID, str]] = []  # (job id, extension), in archive order
+    pages: list[tuple[UUID, str, float]] = []  # (job id, extension, MP), archive order
     skipped: list[str] = []
     members = iter_members(upload, kind, settings.max_upload_bytes)
     try:
@@ -159,6 +160,7 @@ async def submit_batch(
                 raise PayloadTooLarge(f"More than {settings.batch_max_pages} pages")
             job_id = uuid4()
             ext = PurePosixPath(member.name).suffix.lower()
+            megapixels = image_megapixels(member.data)
             content_type = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
             await storage.put_object(
                 incoming, bucket, f"{username}/{job_id}{ext}", member.data, content_type
@@ -175,9 +177,10 @@ async def submit_batch(
                     outputs=sorted(spec.outputs),
                     options=spec.options,
                     file_size_bytes=member.size,
+                    megapixels=megapixels,
                 )
             )
-            pages.append((job_id, ext))
+            pages.append((job_id, ext, megapixels))
             if len(pages) % COMMIT_EVERY == 0:
                 await db.commit()
         if not pages:
@@ -200,7 +203,7 @@ async def submit_batch(
     await redis_jobs.init_batch(r, str(batch_id), len(pages), state_ttl)
     trace = inject_trace_context()
     emitter = get_emitter()
-    for index, (job_id, ext) in enumerate(pages):
+    for index, (job_id, ext, megapixels) in enumerate(pages):
         await redis_jobs.enqueue_job(
             r,
             str(job_id),
@@ -213,6 +216,7 @@ async def submit_batch(
                 "outputs": ",".join(sorted(spec.outputs)),
                 "options": json.dumps(spec.options),
                 "ext": ext,
+                "mp": str(megapixels),
                 "submitted_at": str(page_score(submitted, index)),
                 "priority": str(priority),
                 **trace,
@@ -246,13 +250,13 @@ async def _abandon(
     bucket: str,
     username: str,
     batch_id: UUID,
-    pages: list[tuple[UUID, str]],
+    pages: list[tuple[UUID, str, float]],
 ) -> None:
     """Undo a batch that failed while being read: its uploaded pages and its rows (the
     jobs go with the batch row)."""
     await db.rollback()
     if pages:
-        paths = [f"{username}/{job_id}{ext}" for job_id, ext in pages]
+        paths = [f"{username}/{job_id}{ext}" for job_id, ext, _ in pages]
         await storage.delete_objects(incoming, bucket, paths)
     await db.execute(delete(Batch).where(Batch.id == batch_id))
     await db.commit()
