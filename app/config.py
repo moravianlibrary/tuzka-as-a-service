@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     health_cache_seconds: float = 10.0
     domain_sync_seconds: float = 300.0
 
+    # ClickHouse (ClickStack): job events for analytics. Empty URL = events are dropped
+    # at the source (the emitter is a no-op), e.g. local dev without the clickstack
+    # profile. HTTP interface, e.g. http://clickhouse:8123.
+    clickhouse_url: str = ""
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "taas"
+
     # Compression
     zstd_compression_level: int = 3
 
