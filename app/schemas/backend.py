@@ -46,8 +46,18 @@ class BackendCreate(BaseModel):
     device: Device = "cpu"
     managed: bool = False
     adapter: str = "tuzkaocr"
+    # Capabilities to assume until the engine reports its own: {domain: [outputs]}.
+    # Lets a workload that is scaled to zero be scaled up for its domains (PUT only).
+    declared: dict[str, list[str]] | None = None
 
     _check_url = field_validator("url")(_validate_url)
+
+    @field_validator("declared")
+    @classmethod
+    def _check_declared(cls, v: dict[str, list[str]] | None) -> dict[str, list[str]] | None:
+        if v is not None and any(not d or not outs or not all(outs) for d, outs in v.items()):
+            raise ValueError("declared needs non-empty domain names and output lists")
+        return v
     _no_nul = field_validator("url", "label", "api_key")(_reject_nul)
 
     _validate_adapter = field_validator("adapter")(

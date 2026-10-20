@@ -53,10 +53,10 @@ def plan_domain_links(
     return links, schemas_to_store, changed
 
 
-async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo) -> None:
-    """Upsert the described domains, store their schemas and rebuild this backend's
-    ``backend_domains`` rows. The caller commits."""
-    names = sorted(info.domains)
+async def _domain_rows(
+    db: AsyncSession, names: list[str]
+) -> list[tuple[int, str, dict[str, Any] | None]]:
+    """Make sure every name has a ``domains`` row; return ``(id, name, options_schema)``."""
     if names:
         await db.execute(
             insert(Domain)
@@ -66,9 +66,22 @@ async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo)
     rows = await db.execute(
         select(Domain.id, Domain.name, Domain.options_schema).where(Domain.name.in_(names))
     )
+    return [(domain_id, name, schema) for domain_id, name, schema in rows.all()]
+
+
+async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo) -> None:
+    """Upsert the described domains, store their schemas and rebuild this backend's
+    ``backend_domains`` rows (engine rows replace declared ones). The caller commits.
+
+    An empty describe() changes nothing: an engine that is down or scaled to zero keeps
+    its remembered capabilities, which is what lets /load ask for it to come back (D7).
+    """
+    names = sorted(info.domains)
+    if not names:
+        return
     ids: dict[str, int] = {}
     known_schemas: dict[str, dict[str, Any] | None] = {}
-    for domain_id, name, schema in rows.all():
+    for domain_id, name, schema in await _domain_rows(db, names):
         ids[name] = domain_id
         known_schemas[name] = schema
 
@@ -90,6 +103,27 @@ async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo)
                     {"backend_id": backend_id, "domain_id": ids[name], "outputs": sorted(outputs)}
                     for name, outputs in links.items()
                 ]
+            )
+        )
+
+
+async def apply_declared_capabilities(
+    db: AsyncSession, backend_id: int, declared: dict[str, list[str]]
+) -> None:
+    """Record capabilities declared at registration (``source='declared'``), for domains
+    the engine hasn't reported itself yet; engine rows are never overwritten. The caller
+    commits."""
+    names = sorted(declared)
+    for domain_id, name, _ in await _domain_rows(db, names):
+        outputs = sorted(set(declared[name]))
+        stmt = insert(BackendDomain).values(
+            backend_id=backend_id, domain_id=domain_id, outputs=outputs, source="declared"
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["backend_id", "domain_id"],
+                set_={"outputs": stmt.excluded.outputs},
+                where=BackendDomain.source == "declared",
             )
         )
 

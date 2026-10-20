@@ -26,6 +26,7 @@ from app.schemas.user import (
     UserUpdate,
 )
 from app.services import config as config_service
+from app.services.domain_sync import apply_declared_capabilities
 from app.services.auth import (
     encrypt_backend_key,
     generate_key,
@@ -368,6 +369,9 @@ async def upsert_backend(
 
     await _commit_backend(db)
     await db.refresh(backend)
+    if body.declared:
+        await apply_declared_capabilities(db, backend.id, body.declared)
+        await db.commit()
     return _backend_response(backend)
 
 
