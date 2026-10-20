@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -64,13 +65,22 @@ def fmt_label(outputs: frozenset[str]) -> str:
         return "custom"
 
 
+@lru_cache(maxsize=64)
+def _validator(schema_json: str) -> Draft202012Validator:
+    """A compiled validator per distinct schema. Schemas change only on domain sync, so a
+    handful of entries covers every domain; keyed by the canonical JSON, a changed schema
+    simply gets a new entry."""
+    return Draft202012Validator(json.loads(schema_json))
+
+
 def options_errors(schema: dict[str, Any] | None, options: dict[str, Any]) -> list[str]:
     """Why ``options`` don't satisfy ``schema``; empty when they do. A domain with no
     stored schema yet accepts only ``{}``."""
     if schema is None:
         return [f"unknown option '{key}'" for key in sorted(options)]
     messages = []
-    for error in Draft202012Validator(schema).iter_errors(options):
+    validator = _validator(json.dumps(schema, sort_keys=True))
+    for error in validator.iter_errors(options):
         where = ".".join(str(p) for p in error.absolute_path)
         messages.append(f"{where}: {error.message}" if where else error.message)
     return sorted(messages)
