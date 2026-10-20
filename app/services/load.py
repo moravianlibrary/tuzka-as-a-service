@@ -37,7 +37,9 @@ def ewma(prev: float | None, sample: float, alpha: float = SPP_ALPHA) -> float:
 class LoadTotals:
     queued: int = 0
     inflight: int = 0
-    # Seconds of engine work waiting in the queue: queued pages × seconds per page.
+    # Seconds of engine work not finished yet: (queued + in-flight pages) × seconds per
+    # page. In-flight pages count so an autoscaler doesn't scale down engines that are
+    # still working once the queue empties.
     backlog_s: float = 0.0
 
     def as_dict(self) -> dict[str, int | float]:
@@ -88,7 +90,7 @@ def compute_load(
         q, i = max(q, 0), max(i, 0)
         total_queued += q
         total_inflight += i
-        backlog += q * spp.get(domain, default_spp)
+        backlog += (q + i) * spp.get(domain, default_spp)
     return LoadTotals(total_queued, total_inflight, backlog)
 
 

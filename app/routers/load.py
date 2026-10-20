@@ -31,7 +31,8 @@ async def get_load(
     r: aioredis.Redis = Depends(get_redis),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """How much work is waiting, as ``{queued, inflight, backlog_s}``.
+    """How much work is left, as ``{queued, inflight, backlog_s}``; ``backlog_s`` is the
+    seconds of engine work in the queued and in-flight pages.
 
     ``domain=a,b`` counts only those domains. ``adapter=x`` counts only jobs a backend
     of adapter ``x`` could serve (its domains, with all the requested outputs), using

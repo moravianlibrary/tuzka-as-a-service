@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format is based on
 ### Added
 
 - `GET /load` for autoscalers: `{queued, inflight, backlog_s}`, where `backlog_s` is the
-  queued pages times the measured seconds per page of their domain (an average of recent
+  queued and in-flight pages times the measured seconds per page of their domain (an average of recent
   engine run times, `load.default_seconds_per_page` until there is one). Filter with
   `domain=a,b` and `adapter=x` (only the jobs a backend of that adapter could serve);
   `group_by=domain|adapter` shows the breakdown. It's internal: not in the OpenAPI

@@ -94,13 +94,19 @@ The signal is the API's `GET /load`, read by KEDA's `metrics-api` scaler:
 
 ```
 GET /load?adapter=tuzkaocr        Authorization: Bearer <secrets.loadToken>
-{"queued": 120, "inflight": 8, "backlog_s": 1180.0}
+{"queued": 120, "inflight": 8, "backlog_s": 1280.0}
 ```
 
-`backlog_s` is the queued pages that **this engine could serve** (its domains, with
-every output the job asked for) times the measured seconds per page of each domain
+`backlog_s` is the queued **and in-flight** pages that **this engine could serve** (its
+domains, with every output the job asked for) times the measured seconds per page of
+each domain
 (an average of recent engine run times; `load.default_seconds_per_page`, 10 s, until a
 domain has any). KEDA aims for `backlog_s / replicas ≈ keda.targetBacklogSeconds`.
+In-flight pages count so that KEDA doesn't scale engines down while they're still
+working just because the queue has emptied. It still can when the remaining work
+drops, and Kubernetes removes the highest-numbered pod whether or not it's busy;
+taas then requeues that pod's pages on another engine (the work is redone, the job
+isn't lost).
 
 - Requires the **KEDA operator** installed cluster-wide (`hpa` is the default because
   it needs no extra operator).
