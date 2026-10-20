@@ -18,14 +18,16 @@ class Job(Base):
         primary_key=True, server_default=text("gen_random_uuid()")
     )
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=False)
-    # Caller-chosen correlation label, echoed back in status/events/external URLs. NOT unique:
-    # a caller may reuse it (e.g. re-running OCR on the same document). The unique per-job
-    # identity and storage key is `id` (the server PK).
     # The caller's own label for the job (any string, not unique); None = none given.
     external_id: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="queued", nullable=False)
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)
+    # A page of a batch: the batch, and the page's path inside the uploaded archive.
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), default=None
+    )
+    source_name: Mapped[str | None] = mapped_column(default=None)
     outputs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
     options: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     engine_job_id: Mapped[str | None] = mapped_column(default=None)
@@ -56,6 +58,7 @@ class Job(Base):
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_backend_id", "backend_id"),
+        Index("ix_jobs_batch_status", "batch_id", "status"),
         CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"),
     )
 
