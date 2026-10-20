@@ -14,8 +14,8 @@ from app.models.backend import Backend
 from app.models.db import get_db
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.backend import BackendCreate, BackendResponse, BackendUpdate
-from app.schemas.user import (
+from app.core.schemas.backend import BackendCreate, BackendResponse, BackendUpdate
+from app.core.schemas.user import (
     EffectiveLimits,
     SetKeyRequest,
     UserCreate,
