@@ -24,7 +24,7 @@ from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
     get_backend_inflight,
-    get_job,
+    get_jobs,
     job_domain,
     job_options,
     job_outputs,
@@ -253,8 +253,9 @@ async def main() -> None:
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
+        meta: dict[str, str] | None,
     ) -> None:
-        meta = await get_job(r, job_id)
+        # meta was read this tick, with every other dequeued job's, in one round trip.
         if not meta:
             logger.warning(f"Job {job_id} not found in Redis, skipping")
             return
@@ -439,9 +440,10 @@ async def main() -> None:
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
+                    metas = await get_jobs(r, [job_id for job_id, _ in entries])
                     pending: list[PendingJob] = []
                     for job_id, score in entries:
-                        meta = await get_job(r, job_id) or {}
+                        meta = metas[job_id] or {}
                         domain, outputs = job_domain(meta), job_outputs(meta)
                         pending.append(
                             PendingJob(job_id, score, domain, outputs, parse_avoid(meta))
@@ -461,7 +463,9 @@ async def main() -> None:
                     )
                     results = await asyncio.gather(
                         *[
-                            dispatch(job.job_id, job.score, slot.backend, slot.domains)
+                            dispatch(
+                                job.job_id, job.score, slot.backend, slot.domains, metas[job.job_id]
+                            )
                             for job, slot in assignments
                         ],
                         return_exceptions=True,

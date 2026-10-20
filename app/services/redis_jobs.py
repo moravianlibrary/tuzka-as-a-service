@@ -249,6 +249,23 @@ async def get_job(r: aioredis.Redis, job_id: str) -> dict[str, str] | None:
     }
 
 
+async def get_jobs(r: aioredis.Redis, job_ids: list[str]) -> dict[str, dict[str, str] | None]:
+    """``get_job`` for many jobs in one round trip (a pipeline of HGETALLs)."""
+    async with r.pipeline(transaction=False) as pipe:
+        for job_id in job_ids:
+            pipe.hgetall(f"job:{job_id}")
+        raw = await pipe.execute()
+    return {
+        job_id: {
+            k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
+            for k, v in data.items()
+        }
+        if data
+        else None
+        for job_id, data in zip(job_ids, raw, strict=True)
+    }
+
+
 async def set_running(
     r: aioredis.Redis,
     job_id: str,
