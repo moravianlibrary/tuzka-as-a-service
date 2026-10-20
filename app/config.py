@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Upload constraints
     allowed_extensions: list[str] = [".tif", ".tiff", ".jpg", ".jpeg", ".png"]
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
+    # Batches (POST /api/v1/batches): the archive, and the pages in it.
+    batch_max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+    batch_max_pages: int = 2000
 
     # Workers. Ticks tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps
     # backend slots turning over near the job time. Backoff still adapts upward

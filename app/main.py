@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from app.config import Settings
 from app.models import db
-from app.routers import jobs, ws
+from app.routers import batches, jobs, ws
 from app.services import storage
 from app.services.event_emitter import get_emitter
 from app.telemetry import instrument_app, setup_telemetry
@@ -60,6 +60,11 @@ TAGS_METADATA = [
         "results. Authenticated with an `X-API-Key` header.",
     },
     {
+        "name": "Batches",
+        "description": "Many pages at once: one archive in, one archive of results out. "
+        "Authenticated with an `X-API-Key` header.",
+    },
+    {
         "name": "WebSocket",
         "description": "Realtime job-status stream over WebSocket. Authenticated with an "
         "`api_key` query parameter.",
@@ -96,6 +101,7 @@ def create_app() -> FastAPI:
     instrument_app(app)
 
     app.include_router(jobs.router, prefix="/api/v1", tags=["Jobs"])
+    app.include_router(batches.router, prefix="/api/v1", tags=["Batches"])
     app.include_router(ws.router, tags=["WebSocket"])
 
     @app.get("/", include_in_schema=False)
