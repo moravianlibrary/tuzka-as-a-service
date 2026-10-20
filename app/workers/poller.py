@@ -22,7 +22,7 @@ from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
-from app.services import batch_store
+from app.services import batch_store, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
@@ -386,6 +386,13 @@ async def main() -> None:
                 await db.commit()
 
             batch = await set_done(r, job_id, state_ttl)
+            # Engine-clock run time per megapixel scores this backend for dispatch.
+            if backend_id is not None and engine_started and engine_finished:
+                seconds = (engine_finished - engine_started).total_seconds()
+                if seconds > 0:
+                    await perf.record_service(
+                        r, backend_id, job_domain(meta), seconds, float(meta.get("mp") or 1.0)
+                    )
             emitter.emit(
                 job_event(
                     "done",
@@ -436,6 +443,9 @@ async def main() -> None:
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
             batch = await set_failed(r, job_id, error, state_ttl)
+            if attempt and attempt.get("backend_id") is not None:
+                if perf.counts_against_backend(attempt.get("http_status")):
+                    await perf.record_failure(r, int(attempt["backend_id"]), job_domain(meta))
             values: dict[str, Any] = {
                 "status": "failed",
                 "error": error,
@@ -607,6 +617,8 @@ async def main() -> None:
                                 avoid_backend_id=avoid_id,
                             )
                             await r.hincrby(f"job:{job_id}", "requeues", 1)
+                            if avoid_id is not None:  # retryable: the backend's fault
+                                await perf.record_failure(r, avoid_id, job_domain(meta))
                             logger.info(
                                 f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})"
                             )

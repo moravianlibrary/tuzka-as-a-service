@@ -67,6 +67,12 @@ def effective_spp(backend_id: int, domain: str, scores: Scores, fallback: float)
     return fallback * penalty
 
 
+def counts_against_backend(http_status: int | None) -> bool:
+    """Whether a failed attempt says something about the backend (transport errors,
+    5xx, 408, 429) rather than about the page (4xx: a bad image fails everywhere)."""
+    return http_status is None or http_status >= 500 or http_status in (408, 429)
+
+
 async def record_service(
     r: aioredis.Redis, backend_id: int, domain: str, seconds: float, megapixels: float
 ) -> None:

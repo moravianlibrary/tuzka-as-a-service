@@ -18,7 +18,7 @@ from app.engines.base import EngineAdapter, EngineFullError
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
-from app.services import batch_store
+from app.services import batch_store, perf
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import apply_domain_sync, served_capabilities
@@ -393,6 +393,7 @@ async def main() -> None:
                 health_cache[backend.id] = (False, time.time())
                 await r.hincrby(f"job:{job_id}", "requeues", 1)
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
+                await perf.record_failure(r, backend.id, domain)
                 attempt = attempt_entry(
                     "dispatch", backend.id, http_st, msg, retry=True, at=utcnow().isoformat()
                 )
@@ -423,6 +424,8 @@ async def main() -> None:
             attempt = attempt_entry(
                 "dispatch", backend.id, http_st, msg, retry=False, at=utcnow().isoformat()
             )
+            if perf.counts_against_backend(http_st):
+                await perf.record_failure(r, backend.id, domain)
             async with session_factory() as db:
                 batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
