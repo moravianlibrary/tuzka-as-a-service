@@ -178,10 +178,6 @@ local-deploy-seed: ## Seed 3 test users (alice/bob/carol) with priorities + keys
 local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + forwards)
 	bash $(LOCAL_DIR)/scenarios.sh
 
-.PHONY: local-deploy-bench-db
-local-deploy-bench-db: ## Seed ~10M synthetic analytics rows + time the dashboard queries (ROWS=, MODE=seed|query|clean)
-	bash $(LOCAL_DIR)/bench-analytics-db.sh
-
 .PHONY: local-deploy-forward-bench
 local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
 	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up

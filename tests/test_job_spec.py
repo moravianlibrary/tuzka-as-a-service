@@ -132,7 +132,7 @@ async def session():
     async with factory() as s:
         await s.execute(
             text(
-                "TRUNCATE job_analytics, backend_domains, domains, engine_versions, "
+                "TRUNCATE backend_domains, domains, "
                 "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
             )
         )

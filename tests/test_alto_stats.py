@@ -7,7 +7,8 @@ test_analytics_db.py (gated on TEST_DATABASE_URL)."""
 from datetime import datetime
 
 from app.routers.dashboard import _alto_range, _bucket_count
-from app.services.analytics import _dur_s, parse_alto
+from app.services.alto_stats import parse_alto
+from app.services.events import _dur_s
 
 ALTO_NS = (
     b'<?xml version="1.0" encoding="UTF-8"?>'

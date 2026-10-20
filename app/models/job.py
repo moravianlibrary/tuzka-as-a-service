@@ -66,5 +66,10 @@ class JobResult(Base):
     fmt: Mapped[str] = mapped_column(primary_key=True)
     presigned_url: Mapped[str | None] = mapped_column(default=None)
     presigned_until: Mapped[datetime | None] = mapped_column(default=None)
+    # Compressed size as stored; the results storage cap sums it (None: before 0.9).
+    size_bytes: Mapped[int | None] = mapped_column(default=None)
+    # Set when the object was evicted (max age or the storage cap); the row stays until
+    # the job's TTL so its result endpoints can answer 410 instead of 404.
+    evicted_at: Mapped[datetime | None] = mapped_column(default=None)
 
     job: Mapped["Job"] = relationship(back_populates="results", lazy="raise")

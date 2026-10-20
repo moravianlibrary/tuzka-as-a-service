@@ -23,7 +23,7 @@ from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
 from app.services import config as config_service
-from app.services.analytics import parse_alto, write_analytics_row
+from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
 from app.services.event_emitter import get_emitter
 from app.services.events import EventName, JobEvent, attempt_failure, durations
@@ -275,7 +275,6 @@ async def main() -> None:
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         username = meta["username"]
         external_id = meta["external_id"]
-        fmt = meta.get("fmt", "multi")
         engine_job_id = meta["engine_job_id"]
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
@@ -352,6 +351,7 @@ async def main() -> None:
                         fmt=result_fmt,
                         presigned_url=presigned_url,
                         presigned_until=utcnow() + timedelta(minutes=presigned_ttl),
+                        size_bytes=len(compressed),  # what the results storage cap counts
                     )
                     db.add(jr)
 
@@ -379,32 +379,6 @@ async def main() -> None:
                 finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
                 await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
-
-                # Write permanent analytics row
-                if job_rec is not None:
-                    await write_analytics_row(
-                        db,
-                        job_id=job_id,
-                        external_id=job_rec.external_id,
-                        submitted_at=job_rec.submitted_at,
-                        username=username,
-                        engine_version=job_rec.engine_version,
-                        engine_device=backend_device or "cpu",
-                        backend_id=backend_id,
-                        domain=job_rec.domain,
-                        fmt=fmt,
-                        status="done",
-                        file_size_bytes=job_rec.file_size_bytes,
-                        dispatched_at=job_rec.dispatched_at,
-                        engine_received_at=engine_created,
-                        started_at=engine_started,
-                        finished_at=finished_at,
-                        stored_at=stored_at,
-                        alto_lines=alto_lines,
-                        alto_blocks=alto_blocks,
-                        alto_chars=alto_chars,
-                        mean_conf=mean_conf,
-                    )
 
                 await db.commit()
 
@@ -466,33 +440,13 @@ async def main() -> None:
                 values.update(append_attempt(attempt))
             await db.execute(update(Job).where(Job.id == job_id).values(**values))
 
-            # Read current job state for analytics
+            # The job as it ended, for its failed event.
             job_row = await db.execute(
                 select(Job, Backend.device)
                 .outerjoin(Backend, Job.backend_id == Backend.id)
                 .where(Job.id == job_id)
             )
             job_rec, backend_device = job_row.first() or (None, None)
-            if job_rec is not None:
-                await write_analytics_row(
-                    db,
-                    job_id=job_id,
-                    external_id=job_rec.external_id,
-                    submitted_at=job_rec.submitted_at,
-                    username=username,
-                    engine_version=job_rec.engine_version,
-                    engine_device=backend_device or "cpu",
-                    backend_id=job_rec.backend_id,
-                    domain=job_rec.domain,
-                    fmt=job_rec.fmt,
-                    status="failed",
-                    file_size_bytes=job_rec.file_size_bytes,
-                    dispatched_at=job_rec.dispatched_at,
-                    engine_received_at=job_rec.engine_received_at,
-                    started_at=job_rec.started_at,
-                    finished_at=failed_at,
-                    stored_at=None,
-                )
 
             await db.commit()
         emitter.emit(

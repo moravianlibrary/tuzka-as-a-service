@@ -31,7 +31,15 @@ from app.deps import (
     require_principal,
 )
 from app.engines.outputs import ext_for
-from app.exceptions import BadRequest, Conflict, Forbidden, NotFound, NotReady, Unprocessable
+from app.exceptions import (
+    BadRequest,
+    Conflict,
+    Forbidden,
+    Gone,
+    NotFound,
+    NotReady,
+    Unprocessable,
+)
 from app.models.db import get_db
 from app.models.job import Job, JobResult
 from app.models.user import User
@@ -253,6 +261,7 @@ async def get_job_status(
         202: {"description": "Job accepted but not finished yet; retry later"},
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found for the authenticated user"},
+        410: {"description": "The results expired (max age or the storage cap)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
@@ -284,6 +293,8 @@ async def get_job_result(
     # Get results
     res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
     job_results = res.scalars().all()
+    if job_results and all(jr.evicted_at is not None for jr in job_results):
+        raise Gone("Results expired")
 
     results_client = request.app.state.results_public_client
     entries = []
@@ -315,6 +326,7 @@ async def get_job_result(
         202: {"description": "Job accepted but not finished yet; retry later"},
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found, or no result in the requested format"},
+        410: {"description": "The result expired (max age or the storage cap)"},
         409: {"description": "Job processing failed (no artifact to download)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
@@ -348,8 +360,11 @@ async def download_job_result(
     res = await db.execute(
         select(JobResult).where(JobResult.job_id == job_id, JobResult.fmt == fmt)
     )
-    if not res.scalar_one_or_none():
+    stored = res.scalar_one_or_none()
+    if not stored:
         raise NotFound(f"No {fmt} result available")
+    if stored.evicted_at is not None:
+        raise Gone(f"The {fmt} result expired")
 
     obj_path = f"{username}/{job.id}.{ext_for(fmt)}.zst"
     results_client = request.app.state.results_client
