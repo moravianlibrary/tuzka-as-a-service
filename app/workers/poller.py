@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
-from app.engines.base import EngineAdapter
+from app.engines.base import EngineAdapter, EngineStatus
 from app.engines.outputs import ext_for, fmt_to_outputs
 from app.models.backend import Backend
 from app.models.db import make_engine
@@ -82,6 +82,17 @@ def _parse_engine_dt(value: str | None) -> datetime | None:
     if dt.tzinfo is not None:
         dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
+
+
+def _status_times(status: EngineStatus) -> dict[str, Any]:
+    """What harvest reads from a status: the engine's metrics plus its timestamps
+    (engine clock), which feed the job's engine_received/started/finished columns."""
+    return {
+        **status.metrics,
+        "created_at": status.created_at,
+        "started_at": status.started_at,
+        "finished_at": status.finished_at,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +235,7 @@ async def main() -> None:
 
         if status_resp.state not in ("failed", "error"):
             return PollOutcome(
-                job_id, status_resp.state, meta, status_resp.metrics, False, None, None
+                job_id, status_resp.state, meta, _status_times(status_resp), False, None, None
             )
         # Engine-reported failure: error_status decides retry vs fail. Engines that
         # predate the field still expose it as the result endpoint's HTTP status (D3).
@@ -235,7 +246,7 @@ async def main() -> None:
             job_id,
             status_resp.state,
             meta,
-            status_resp.metrics,
+            _status_times(status_resp),
             is_retryable_engine_failure(error_status),
             error_status,
             status_resp.error,
