@@ -198,7 +198,7 @@ Service (a Prometheus scrape target). Box-side setup: [`deploy/box/`](../../box/
 | `tunnel.service.type` | `NodePort` | `NodePort` (bare metal) or `LoadBalancer` (cloud / MetalLB) — the box dials this |
 | `tunnel.service.nodePort` | `32700` | Port the box dials (`<node-ip>:<nodePort>`); ignored for `LoadBalancer` |
 | `tunnelBoxes` | `[]` | Off-cluster boxes. Each: `name`, `engines[]` (`name` + `remotePort`), optional `exporters[]` (`name` + `remotePort` + `port`). All `remotePort`s unique across all boxes |
-| `tunnelBoxesDefaults.{port,maxInflight,priority,device}` | `8000` / `8` / `0` / `cpu` | Per-engine defaults (overridable per engine) |
+| `tunnelBoxesDefaults.{port,maxInflight,device}` | `8000` / `8` / `cpu` | Per-engine defaults (overridable per engine); backend priority is admin-managed (`taas-admin backend update`) |
 | `metrics.serviceMonitor.enabled` | `false` | Emit a Prometheus-Operator `ServiceMonitor` per box exporter (else scrape the exporter Services statically) |
 | `secrets.frpToken` | `replaceMe` | Shared secret authenticating frpc↔frps (== box `FRP_TOKEN`) |
 

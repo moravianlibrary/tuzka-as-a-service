@@ -4,8 +4,8 @@ Runs the **whole app** (api, workers, compat, Redis, MinIO, Postgres) on a local
 **k3d** cluster, with **two real TuzkaOCR engines (GPU + CPU) running on your host**,
 surfaced inside the cluster through the in-cluster `frps` reverse-tunnel proxy — no app
 changes, the engines look like ordinary in-cluster backends. The two engines are
-registered as two backends with different priorities so you can test **heterogeneous
-dispatch + prioritization**.
+registered as two backends (the scenarios give them different priorities) so you can
+test **heterogeneous dispatch + prioritization**.
 
 ```
 host                                            k3d cluster (taas)
@@ -13,8 +13,8 @@ host                                            k3d cluster (taas)
    tuzkaocr-gpu :8000 ◄─ reverse tunnel ─┐
    tuzkaocr-cpu :8000 ◄─ reverse tunnel ─┤
    frpc ── dials localhost:32700 ────────┼──►  taas-frps  (NodePort 32700)
-                                  ├─► taas-tunnel-engine-gpu1:8000  (priority 10) ─┐
-                                  └─► taas-tunnel-engine-cpu1:8000  (priority 0) ──┴► workers
+                                  ├─► taas-tunnel-engine-gpu1:8000  (gpu) ─┐
+                                  └─► taas-tunnel-engine-cpu1:8000  (cpu) ──┴► workers
 ```
 
 Backends are registered by the Helm hook with an idempotent `taas-admin backend upsert`
@@ -143,6 +143,8 @@ make local-deploy-scenarios    # runs the two scenarios below (N=6 jobs/burst; o
 
 - **Backend priority** — the submit worker orders backends by `priority desc`, so jobs
   prefer `gpu1` (priority 10) until its `max_inflight`, then spill to `cpu1` (0).
+  Priority is admin-managed (the deploy registers backends at 0 and never changes it),
+  so the scenarios set it first with `taas-admin backend update <id> --priority N`.
   Scenario A submits a burst as one user and prints the per-backend job split.
 - **User priority** — a job is enqueued into `jobs:pending:{user.priority}`, and the
   queue drains higher-priority lists first. Scenario B queues a low-priority (carol)

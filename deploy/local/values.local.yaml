@@ -71,18 +71,17 @@ tunnelBoxesDefaults:
 
 # One box with two host engines tunneled in as two backends, to test heterogeneous
 # dispatch + backend prioritization. remotePorts MUST match the frpc proxies in
-# engine-proxy/.
+# engine-proxy/. Backend priority isn't set here (the deploy never writes it):
+# `make local-deploy-scenarios` sets gpu1=10, cpu1=0 with taas-admin.
 tunnelBoxes:
   - name: box1
     engines:
       - name: gpu1
         remotePort: 8000
         device: gpu
-        priority: 10     # preferred — jobs go here until maxInflight, then spill to cpu1
       - name: cpu1
         remotePort: 8001
         device: cpu
-        priority: 0
 
 # Throwaway test secrets. frpToken + ocrEngineApiKey MUST match engine-proxy/.env.
 secrets:
