@@ -78,7 +78,7 @@ router = APIRouter()
     status_code=202,
     summary="Submit an OCR job",
     responses={
-        400: {"description": "Unsupported extension or file too large"},
+        400: {"description": "Unsupported extension, file too large, or malformed multipart body"},
         401: {"description": "Missing or invalid X-API-Key header"},
         403: {"description": "The API key isn't allowed this domain or these outputs"},
         422: {

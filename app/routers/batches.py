@@ -75,6 +75,7 @@ COMMIT_EVERY = 100
     status_code=202,
     summary="Submit an archive of pages as one batch",
     responses={
+        400: {"description": "Malformed multipart body"},
         401: {"description": "Missing or invalid X-API-Key header"},
         403: {"description": "The API key isn't allowed this domain or these outputs"},
         413: {"description": "Archive, a page in it, or the page count over its limit"},
