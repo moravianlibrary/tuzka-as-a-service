@@ -111,6 +111,23 @@ def _parse_engine_dt(value: str | None) -> datetime | None:
     return dt
 
 
+def engine_stamps(times: dict[str, Any]) -> dict[str, datetime]:
+    """The engine's own created/started/finished (engine clock) as job columns, for
+    the ones it reported. created_at goes to engine_received_at, so the engine-queue
+    span (engine_received -> started) stays on one clock; the taas-clock dispatched_at
+    is never overwritten. Shared by done and failed jobs so both record the run."""
+    stamps: dict[str, datetime] = {}
+    for key, column in (
+        ("created_at", "engine_received_at"),
+        ("started_at", "started_at"),
+        ("finished_at", "finished_at"),
+    ):
+        value = _parse_engine_dt(times.get(key))
+        if value is not None:
+            stamps[column] = value
+    return stamps
+
+
 def _status_times(status: EngineStatus) -> dict[str, Any]:
     """What harvest reads from a status: the engine's metrics plus its timestamps
     (engine clock), which feed the job's engine_received/started/finished columns."""
@@ -398,19 +415,11 @@ async def main() -> None:
                     "status": "done",
                     "stored_at": stored_at,
                 }
-                # Adopt the engine's own created/started/finished (engine clock) into the
-                # engine-side stamps. We keep the taas-clock dispatched_at as set by the
-                # submit worker (do NOT overwrite it): that preserves a single-clock
-                # taas-queue span (submitted -> dispatched). created_at lands in its own
-                # engine_received_at column so the engine-queue span (engine_received ->
-                # started) is also single-clock and never goes negative on sub-second waits.
-                engine_created = _parse_engine_dt(times.get("created_at"))
-                engine_started = _parse_engine_dt(times.get("started_at"))
-                engine_finished = _parse_engine_dt(times.get("finished_at"))
-                if engine_created is not None:
-                    done_values["engine_received_at"] = engine_created
-                if engine_started is not None:
-                    done_values["started_at"] = engine_started
+                stamps = engine_stamps(times)
+                done_values.update(stamps)
+                engine_created = stamps.get("engine_received_at")
+                engine_started = stamps.get("started_at")
+                engine_finished = stamps.get("finished_at")
                 finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
                 # Only the first harvest marks it done; a second one (another poller
@@ -475,7 +484,7 @@ async def main() -> None:
             attempt = attempt_entry(
                 "harvest", backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
             )
-            await mark_failed(job_id, meta, str(e), attempt=attempt)
+            await mark_failed(job_id, meta, str(e), attempt=attempt, times=times)
         except Exception as e:
             # The engine already finished this job; a transient DB/storage error here is
             # not the job's fault. Leave it inflight so the next poll re-harvests it (the
@@ -489,11 +498,17 @@ async def main() -> None:
                 )
                 return
             logger.exception("Failed to harvest job %s", job_id)
-            await mark_failed(job_id, meta, str(e))
+            await mark_failed(job_id, meta, str(e), times=times)
 
     async def mark_failed(
-        job_id: str, meta: dict[str, str], error: str, attempt: dict[str, Any] | None = None
+        job_id: str,
+        meta: dict[str, str],
+        error: str,
+        attempt: dict[str, Any] | None = None,
+        times: dict[str, Any] | None = None,
     ) -> None:
+        """Fail the job for good. ``times`` is the engine's last status, when it ran the
+        job: its stamps are kept, so a job that failed after minutes of work shows them."""
         username = meta.get("username", "")
         external_id = meta.get("external_id") or None
         failed_at = utcnow()
@@ -517,7 +532,9 @@ async def main() -> None:
                 "status": "failed",
                 "error": error,
                 "finished_at": failed_at,
+                **engine_stamps(times or {}),
             }
+            finished_at = values["finished_at"]
             if attempt is not None:
                 values.update(append_attempt(attempt))
             await db.execute(
@@ -547,7 +564,7 @@ async def main() -> None:
                     job_rec.dispatched_at if job_rec else None,
                     job_rec.engine_received_at if job_rec else None,
                     job_rec.started_at if job_rec else None,
-                    failed_at,
+                    finished_at,
                     None,
                 ),
             )
@@ -603,7 +620,9 @@ async def main() -> None:
                     )
 
                     done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
-                    failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any]]] = []
+                    failed_jobs: list[
+                        tuple[str, dict[str, str], str, dict[str, Any], dict[str, Any]]
+                    ] = []
                     requeue_jobs: list[
                         tuple[str, dict[str, str], float, int | None, dict[str, Any]]
                     ] = []
@@ -624,7 +643,7 @@ async def main() -> None:
                         elif action == "fail":
                             err = poll_failure_message(outcome, max_requeues)
                             attempt = poll_attempt(outcome, False, utcnow().isoformat())
-                            failed_jobs.append((outcome.job_id, meta, err, attempt))
+                            failed_jobs.append((outcome.job_id, meta, err, attempt, outcome.times))
                         elif action == "requeue":
                             delay = backoff_seconds(requeues)
                             avoid: int | None = (
@@ -666,9 +685,9 @@ async def main() -> None:
                                 logger.error("Harvest failed: %s", result)
 
                     # Mark failed jobs
-                    for job_id, meta, error, attempt in failed_jobs:
+                    for job_id, meta, error, attempt, times in failed_jobs:
                         with job_span("fail", job_id, meta, backend_id=meta.get("backend_id")):
-                            await mark_failed(job_id, meta, error, attempt=attempt)
+                            await mark_failed(job_id, meta, error, attempt=attempt, times=times)
 
                     # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
                     # another backend picks them up after a jittered backoff. Redis is

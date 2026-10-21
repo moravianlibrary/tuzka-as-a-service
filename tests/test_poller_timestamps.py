@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from app.engines.base import EngineStatus
-from app.workers.poller import _parse_engine_dt, _status_times
+from app.workers.poller import _parse_engine_dt, _status_times, engine_stamps
 
 
 def test_parse_engine_dt_naive_utc_from_offset():
@@ -40,4 +40,26 @@ def test_status_times_carry_engine_timestamps_and_metrics() -> None:
         "created_at": "2026-01-01T00:00:00+00:00",
         "started_at": "2026-01-01T00:00:01+00:00",
         "finished_at": "2026-01-01T00:00:05+00:00",
+    }
+
+
+def test_engine_stamps_map_engine_times_to_job_columns() -> None:
+    times = {
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "started_at": "2026-01-01T00:00:01+00:00",
+        "finished_at": "2026-01-01T00:08:30+00:00",
+        "n_words": 7,
+    }
+    assert engine_stamps(times) == {
+        "engine_received_at": datetime(2026, 1, 1, 0, 0, 0),
+        "started_at": datetime(2026, 1, 1, 0, 0, 1),
+        "finished_at": datetime(2026, 1, 1, 0, 8, 30),
+    }
+
+
+def test_engine_stamps_skip_what_the_engine_did_not_report() -> None:
+    # An unreachable engine gives no times: the failed job keeps taas's finished_at.
+    assert engine_stamps({}) == {}
+    assert engine_stamps({"started_at": "2026-01-01T00:00:01Z", "finished_at": None}) == {
+        "started_at": datetime(2026, 1, 1, 0, 0, 1)
     }
