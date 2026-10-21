@@ -25,6 +25,7 @@ from app.services.redis_jobs import (
     rebuild_load_counters,
     requeue_orphans,
 )
+from app.services.redis_pool import make_redis
 from app.services.retention import (
     delete_expired_batches,
     delete_finished_jobs,
@@ -74,7 +75,7 @@ async def main() -> None:
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)
-    r = aioredis.from_url(settings.redis_url, decode_responses=False)
+    r = make_redis(settings)
     emitter = get_emitter(settings)  # the reaper's failed events
     await emitter.start()
 

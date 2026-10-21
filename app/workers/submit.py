@@ -46,6 +46,7 @@ from app.services.redis_jobs import (
     set_running,
     wait_for_submit_signal,
 )
+from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
     attempt_entry,
     backoff_seconds,
@@ -230,7 +231,7 @@ async def main() -> None:
     engine = make_engine(settings)
     setup_telemetry("taas-submit", db_engine=engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    r = aioredis.from_url(settings.redis_url, decode_responses=False)
+    r = make_redis(settings)
     incoming_client = get_incoming_client(settings)
     http = httpx.AsyncClient(timeout=60.0)
     emitter = get_emitter(settings)
@@ -675,7 +676,11 @@ async def main() -> None:
             # Block until new work / a freed slot signals (signal_submit), with the tick
             # as an idle-wait floor. Event-driven so fast jobs refill slots immediately
             # and slow jobs don't busy-poll.
-            await wait_for_submit_signal(r, settings.submit_tick_seconds)
+            try:
+                await wait_for_submit_signal(r, settings.submit_tick_seconds)
+            except Exception:  # a Redis hiccup must not end the worker
+                logger.exception("Waiting for the submit signal failed")
+                await asyncio.sleep(settings.submit_tick_seconds)
     finally:
         await emitter.aclose()
         await http.aclose()

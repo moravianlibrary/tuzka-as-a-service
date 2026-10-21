@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-import redis.asyncio as aioredis
 import zstandard
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -50,6 +49,7 @@ from app.services.redis_jobs import (
     set_failed,
     wait_for_poll_signal,
 )
+from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
     Stage,
     attempt_entry,
@@ -229,7 +229,7 @@ async def main() -> None:
     db_engine = make_engine(settings)
     setup_telemetry("taas-poller", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
-    r = aioredis.from_url(settings.redis_url, decode_responses=False)
+    r = make_redis(settings)
     http = httpx.AsyncClient(timeout=60.0)
     results_client = get_results_client(settings)
     results_public_client = get_results_public_client(settings)
@@ -581,6 +581,13 @@ async def main() -> None:
             await publish_event(r, username, batch_event(batch))
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
+    # Bounds a pass's status checks: one per due job, so hundreds at once otherwise,
+    # each holding an engine and a Redis connection.
+    poll_sem = asyncio.Semaphore(settings.poller_poll_concurrency)
+
+    async def check_with_sem(job_id: str, meta: dict[str, str]) -> PollOutcome:
+        async with poll_sem:
+            return await check_one(job_id, meta)
 
     async def harvest_with_sem(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         async with sem:
@@ -618,7 +625,7 @@ async def main() -> None:
                 if due:
                     logger.info(f"Checking {len(due)} inflight jobs")
                     statuses = await asyncio.gather(
-                        *[check_one(jid, metas_by_id[jid]) for jid in due]
+                        *[check_with_sem(jid, metas_by_id[jid]) for jid in due]
                     )
 
                     done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
@@ -741,7 +748,11 @@ async def main() -> None:
                 logger.exception("Poller worker failed")
                 wait_timeout = settings.poller_tick_seconds
 
-            await wait_for_poll_signal(r, wait_timeout)
+            try:
+                await wait_for_poll_signal(r, wait_timeout)
+            except Exception:  # a Redis hiccup must not end the worker
+                logger.exception("Waiting for the poll signal failed")
+                await asyncio.sleep(settings.poller_tick_seconds)
     finally:
         await emitter.aclose()
         await http.aclose()

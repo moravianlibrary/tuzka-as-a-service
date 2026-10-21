@@ -2,7 +2,6 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
@@ -11,6 +10,7 @@ from app.models import db
 from app.routers import batches, jobs, load, ws
 from app.services import storage
 from app.services.event_emitter import get_emitter
+from app.services.redis_pool import make_redis
 from app.telemetry import instrument_app, setup_telemetry
 
 
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # One pooled redis client for the app's lifetime (get_redis hands out this shared
     # client), rather than a new pool per request.
-    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=False)
+    app.state.redis = make_redis(settings)
     app.state.incoming_client = storage.get_incoming_client(settings)
     app.state.results_client = storage.get_results_client(settings)
     app.state.results_public_client = storage.get_results_public_client(settings)

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
+    # Connections per process, and how long a caller waits for a free one before it
+    # errors. redis-py 8 otherwise caps a pool at 100 and raises at once past that.
+    redis_max_connections: int = 200
+    redis_pool_timeout_seconds: float = 20.0
 
     # MinIO incoming
     minio_incoming_url: str = "http://localhost:9000"
@@ -59,6 +63,8 @@ class Settings(BaseSettings):
     submit_tick_seconds: float = 1.0
     poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10
+    # Engine status checks in flight at once per poll pass (one per due in-flight job).
+    poller_poll_concurrency: int = 50
     poll_backoff_initial: float = 1.0
     poll_backoff_max: float = 5.0
     # Submit-worker caches: how often to reload the backend list, re-check a backend's
