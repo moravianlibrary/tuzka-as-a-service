@@ -60,8 +60,9 @@ All notable changes to this project are documented here. The format is based on
 - Map sheets: domain `maps`, served by the TuzkaM engine through a new `tuzkam` adapter,
   with outputs `json`, `geojson`, `gcp`, `alto` and `txt` and options `georef`, `region`,
   `alto_profile`, `source_identifier` and `physical_img_nr`. Asking for `geojson`/`gcp`
-  with `georef: false` is a `422` at submit; when georeferencing fails, a job that asked
-  for them fails (no partial results) and isn't retried. Domains can have their own
+  with `georef: false` is a `422` at submit. When georeferencing fails, a job that asked
+  for `gcp` fails (no partial results) and isn't retried; `geojson` comes back as an empty
+  FeatureCollection and the job is done. Domains can have their own
   upload limit and running timeout (`maps`: 150 MiB, 1800 s). Locally with
   `docker compose --profile maps`; in the chart with `tuzkam.enabled`, scaled from zero
   by KEDA. See `docs/maps.md`.

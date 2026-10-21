@@ -11,8 +11,8 @@ taas reaches it through the `tuzkam` adapter; a job asks for it with `domain=map
 | `json` | TuzkaM's full result: every word with its box and confidence, the georef summary (`schema_version` inside) | no |
 | `alto` | ALTO XML of the words (`alto_profile` picks the profile) | no |
 | `txt` | plain text of the words | no |
-| `geojson` | the words as GeoJSON features with approximate coordinates | **yes** |
-| `gcp` | ground control points for QGIS's georeferencer | **yes** |
+| `geojson` | the words and matched places as GeoJSON features (lon, lat), plus the sheet's footprint; for web maps | **yes** |
+| `gcp` | ground control points (QGIS `.points`: pixel ↔ lon/lat) for warping the scan itself into a georeferenced raster | **yes** |
 
 ```bash
 curl -H "X-API-Key: $KEY" -F image=@sheet.jpg -F domain=maps \
@@ -38,15 +38,30 @@ them against.
 Asking for `geojson` or `gcp` with `georef: false` is a `422` at submit: they can't exist
 without georeferencing.
 
-## When georeferencing fails, the job fails
+## When georeferencing fails
 
 A sheet can be read fine and still not georeference (too few labels matched the
-gazetteer). TuzkaM then can't produce `gcp` (and `geojson` needs a georeferenced job).
-If the job asked for such an output, **the whole job fails**, with an error like
+gazetteer). The two georeferenced outputs then behave differently, because that's how
+TuzkaM answers:
+
+| Output | Fit failed (`georef.status` `not_found` / `unavailable`) |
+|---|---|
+| `gcp` | TuzkaM answers `409`: **the whole job fails** |
+| `geojson` | TuzkaM answers `200` with an **empty** FeatureCollection: the job is `done` |
+
+A job that asked for `gcp` fails with an error like
 `gcp unavailable: Georeferencing failed; QGIS points are unavailable`, and it isn't
 retried: another attempt gives the same answer. A job delivers everything it asked for
-or nothing, so a client never has to check which outputs it actually got. To get the
-text of a sheet that may not georeference, ask for `json`, `alto` or `txt` only.
+or nothing.
+
+**`geojson` is the exception: an empty collection is not an error.** A job that asked
+for `geojson` (and not `gcp`) is `done` even when the fit failed, and its GeoJSON has no
+features. Check `georef.status` in the `json` output (ask for both), or treat an empty
+FeatureCollection as "not georeferenced". With `georef: false` both outputs are refused
+at submit (`422`, above).
+
+To get the text of a sheet that may not georeference, leave out `gcp`: ask for `json`,
+`alto` and `txt`, and `geojson` if the coordinates are welcome when they exist.
 
 ## Limits
 
