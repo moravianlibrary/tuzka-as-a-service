@@ -15,7 +15,7 @@ taas reaches it through the `tuzkam` adapter; a job asks for it with `domain=map
 | `gcp` | ground control points (QGIS `.points`: pixel ↔ lon/lat) for warping the scan itself into a georeferenced raster | **yes** |
 
 ```bash
-curl -H "X-API-Key: $KEY" -F image=@sheet.jpg -F domain=maps \
+curl -H "X-API-Key: $KEY" -F image=@test-data/map-sample.jpg -F domain=maps \
   -F outputs=json,geojson,alto -F 'options={"region": "CZ"}' \
   "$TAAS/api/v1/jobs"
 ```
