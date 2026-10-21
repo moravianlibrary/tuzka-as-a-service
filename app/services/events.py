@@ -124,7 +124,7 @@ def durations(
     }
 
 
-def _ch_datetime(value: datetime) -> str:
+def ch_datetime(value: datetime) -> str:
     # ClickHouse's default DateTime64 input format (no 'T', no zone: naive UTC, as
     # everywhere in taas), so the insert doesn't depend on best_effort parsing.
     return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -149,6 +149,6 @@ def job_event_row(e: JobEvent) -> dict[str, Any]:
     """The event as a ``JSONEachRow`` object: timestamps in ClickHouse's format, the
     flag as 0/1, ``None`` kept (Nullable columns)."""
     row = asdict(e)
-    row["ts"] = _ch_datetime(e.ts)
+    row["ts"] = ch_datetime(e.ts)
     row["error_flag"] = int(e.error_flag)
     return row

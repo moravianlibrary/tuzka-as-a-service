@@ -42,7 +42,9 @@ All notable changes to this project are documented here. The format is based on
   `done`, `failed`) is sent to ClickHouse's `taas.job_events`, with durations, OCR
   metrics and an error flag and class, but no error text (that stays in Postgres). The
   emitter is fire-and-forget: a job never fails or waits because analytics did, and
-  with `CLICKHOUSE_URL` unset it's off. The Helm chart deploys ClickHouse, HyperDX and
+  with `CLICKHOUSE_URL` unset it's off. Every 15 s the cleanup worker also writes the
+  queue depth (`queued`, `inflight` per domain) and each backend's in-flight count to
+  `taas.live_metrics`. The Helm chart deploys ClickHouse, HyperDX and
   MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword` and
   `secrets.hyperdxApiKey`), applies the schema on every install/upgrade, and imports
   the HyperDX dashboards from `files/clickstack/dashboard.json`. docker-compose has a

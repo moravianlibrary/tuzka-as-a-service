@@ -2,6 +2,7 @@
 purges expired storage objects."""
 
 import asyncio
+import contextlib
 import logging
 from datetime import timedelta
 
@@ -12,7 +13,7 @@ from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
 from app.models.db import make_engine
-from app.services import batch_store
+from app.services import batch_store, live_metrics
 from app.services.config import get_storage_ttl_minutes
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
@@ -52,6 +53,13 @@ async def main() -> None:
         settings.minio_incoming_bucket: incoming_client,
         settings.minio_results_bucket: results_client,
     }
+
+    # Queue depth and backend use for HyperDX, every 15 s (step 5, D6).
+    live = (
+        asyncio.create_task(live_metrics.run(r, session_factory, settings))
+        if settings.clickhouse_url
+        else None
+    )
 
     logger.info("Cleanup worker started")
     REAP_TICK_SECONDS = 60
@@ -104,6 +112,10 @@ async def main() -> None:
             tick += 1
             await asyncio.sleep(REAP_TICK_SECONDS)
     finally:
+        if live is not None:
+            live.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await live
         await emitter.aclose()
         await r.aclose()
         await db_engine.dispose()
