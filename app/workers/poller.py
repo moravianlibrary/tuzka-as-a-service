@@ -11,6 +11,7 @@ import httpx
 import redis.asyncio as aioredis
 import zstandard
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -376,14 +377,19 @@ async def main() -> None:
                         presigned_ttl,
                     )
 
-                    jr = JobResult(
-                        job_id=job_id,
-                        fmt=result_fmt,
-                        presigned_url=presigned_url,
-                        presigned_until=utcnow() + timedelta(minutes=presigned_ttl),
-                        size_bytes=len(compressed),  # what the results storage cap counts
+                    # An upsert: a second harvest of the job (another poller during a
+                    # rollout, or a re-run after a crash) rewrote the same object.
+                    row = {
+                        "presigned_url": presigned_url,
+                        "presigned_until": utcnow() + timedelta(minutes=presigned_ttl),
+                        "size_bytes": len(compressed),  # what the results storage cap counts
+                        "evicted_at": None,
+                    }
+                    await db.execute(
+                        pg_insert(JobResult)
+                        .values(job_id=job_id, fmt=result_fmt, **row)
+                        .on_conflict_do_update(index_elements=["job_id", "fmt"], set_=row)
                     )
-                    db.add(jr)
 
                     event_data[f"{result_fmt}_url"] = presigned_url  # alto_url, geojson_url, …
 
@@ -407,12 +413,22 @@ async def main() -> None:
                     done_values["started_at"] = engine_started
                 finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
-                await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
+                # Only the first harvest marks it done; a second one (another poller
+                # got there first) must not report the job, its events or its timing again.
+                claimed = await db.execute(
+                    update(Job).where(Job.id == job_id, Job.status != "done").values(**done_values)
+                )
+                first_harvest = getattr(claimed, "rowcount", 1) == 1
                 await batch_store.finish_if_done(db, meta.get("batch_id"))
 
                 await db.commit()
 
-            batch = await set_done(r, job_id, state_ttl)
+            batch = await set_done(r, job_id, state_ttl)  # idempotent
+            if not first_harvest:
+                logger.info("Job %s was already harvested; not reporting it again", job_id)
+                if batch is not None:  # the first harvest died before its set_done
+                    await publish_event(r, username, batch_event(batch))
+                return
             # Engine-clock run time per megapixel scores this backend for dispatch.
             if backend_id is not None and engine_started and engine_finished:
                 seconds = (engine_finished - engine_started).total_seconds()
@@ -483,6 +499,13 @@ async def main() -> None:
         failed_at = utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
+            # A job another harvest already finished stays done: a late failure (say a
+            # second harvest that lost the race) mustn't overwrite its results.
+            done = await db.scalar(select(Job.status).where(Job.id == job_id)) == "done"
+            if done:
+                logger.warning("Job %s is already done; not failing it: %s", job_id, error)
+                await set_done(r, job_id, state_ttl)
+                return
             batch = await set_failed(r, job_id, error, state_ttl)
             if (
                 attempt
@@ -497,7 +520,9 @@ async def main() -> None:
             }
             if attempt is not None:
                 values.update(append_attempt(attempt))
-            await db.execute(update(Job).where(Job.id == job_id).values(**values))
+            await db.execute(
+                update(Job).where(Job.id == job_id, Job.status != "done").values(**values)
+            )
 
             # The job as it ended, for its failed event.
             job_row = await db.execute(
