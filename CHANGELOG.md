@@ -18,6 +18,16 @@ All notable changes to this project are documented here. The format is based on
   failed pages. Limits: `BATCH_MAX_UPLOAD_BYTES` (2 GiB) and `BATCH_MAX_PAGES` (2000).
   A batch costs one submit from the rate limit. `make test-batch` runs it end to end.
 - `GET /api/v1/jobs?external_id=…` finds your jobs by their label.
+- **Clients 0.2.0** (Python `taas_client`, Java `cz.osdd.taas.client`), both doing both
+  modes. Per page: `submit` takes `domain`, `outputs` and `options` (with client-wide
+  defaults) and an optional `external_id` label, and `domains()` lists what you can
+  submit to. Batches: `submit_batch` / `submitBatch` take an archive, a directory or a
+  list of images (packed into a `.tar.zst` on the fly), then wait for it (woken by the
+  WebSocket progress events) and download one results archive with its parsed
+  `manifest.json`. The demos (`clients/python/examples/demo.py`,
+  `examples/Demo.java`) run the same images both ways. **Breaking:** results and events
+  are matched on the `job_id` that submit returns; the `uuid` parameter and fields are
+  gone.
 - **`taas-admin`**, the admin CLI, replaces the HTTP admin API and the dashboard. It ships
   in the api image and writes to Postgres directly: `user` (create, rotate-key, set-key,
   enable/disable, set-priority, set-limits, set-scopes), `backend` (upsert, update,
