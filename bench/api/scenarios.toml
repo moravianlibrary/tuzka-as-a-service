@@ -122,6 +122,13 @@ name = "new-submit-concurrency"
 mode = ["new"]
 submit_concurrency = [1, 4, 16]
 
+# The same pages per page (all in flight, results pushed one by one) vs as one batch
+# (one archive up, one results archive down). Compare wall time and requests; a batch
+# page's latency is the whole batch's by construction.
+[[matrix]]
+name = "batch-vs-per-page"
+mode = ["new", "batch"]
+
 # Off by default — each is a long run. Enable with `make bench ONLY=<name>`.
 
 # The grid the two 1-D sweeps never covered: poll interval AND distance together.

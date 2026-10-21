@@ -41,7 +41,9 @@ from common import taas_admin
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 
-SCRIPTS = {"legacy": "legacy_proarc.py", "new": "new_client.py"}
+SCRIPTS = {"legacy": "legacy_proarc.py", "new": "new_client.py", "batch": "new_client.py"}
+# Fixed arguments a mode adds to its script (batch is new_client.py in batch pacing).
+MODE_ARGS = {"batch": ["--batch"]}
 
 # param name in scenarios.toml -> CLI option on the sub-script
 COMMON_OPTS = {
@@ -67,6 +69,7 @@ MODE_OPTS = {
         "domain": "--domain",
         "submit_concurrency": "--submit-concurrency",
     },
+    "batch": {"fmt": "--fmt", "domain": "--domain"},
 }
 # `serial` is a no-op for legacy — ProArc is serial by construction, so
 # concurrency=1 already is it. Setting it in a matrix therefore paces both sides
@@ -74,6 +77,7 @@ MODE_OPTS = {
 MODE_FLAGS = {
     "legacy": {"reuse_connections": "--reuse-connections"},
     "new": {"serial": "--serial"},
+    "batch": {},
 }
 
 # Consumed by this runner, never forwarded to a sub-script.
@@ -203,6 +207,7 @@ def build_argv(case: Case, urls: dict[str, Any], out_json: Path) -> list[str]:
     """Map the case's params onto the right sub-script's CLI."""
     mode = case.mode
     argv = [sys.executable, str(HERE / SCRIPTS[mode]), "--json", str(out_json)]
+    argv += MODE_ARGS.get(mode, [])
 
     opts = {**COMMON_OPTS, **MODE_OPTS[mode]}
     flags = {**COMMON_FLAGS, **MODE_FLAGS[mode]}

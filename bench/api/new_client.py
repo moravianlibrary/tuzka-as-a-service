@@ -19,15 +19,22 @@ the other pages, whereas ProArc's sequential loop never has a queue to wait in.
 the next). Nothing queues, so *there* per-page latency is comparable and the gap is
 pure protocol overhead. See README.md, "Two comparisons".
 
+`--batch` sends the same pages as one batch instead (step 7): one archive up, progress
+over the WebSocket, one results archive down. A page counts as finished when its
+outputs are extracted from that archive and written, so every page's latency is the
+whole batch's; compare `wall_seconds` and `requests`, not per-page latency.
+
 Usage:
     python bench/api/new_client.py --n 10 --images test-data
     python bench/api/new_client.py --n 10 --serial
+    python bench/api/new_client.py --n 10 --batch
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -218,6 +225,60 @@ def submit_serially(
     return errors
 
 
+def run_batch(
+    client: TaasClient, images: list[Path], timeout: float, out_dir: Path | None
+) -> tuple[list[PageTiming], list[str]]:
+    """All pages as one batch: submit the archive, wait, download and unpack the results.
+
+    Every page starts when the batch goes out and finishes when its two artifacts are
+    written. The batch's HTTP calls (1 submit, 1 results request, 1 download; progress
+    arrives over the WebSocket) are booked on the first page, so the run total is right.
+    """
+    started = time.monotonic()
+    try:
+        batch = client.submit_batch(images, external_id="bench-batch")
+        client.wait_batch(batch.batch_id, timeout=timeout)
+    except Exception as exc:
+        finished = time.monotonic()
+        failed = [
+            PageTiming(page.name, started, finished, ok=False, http_requests=0, error=str(exc))
+            for page in images
+        ]
+        return failed, [f"batch: {exc}"]
+
+    timings: list[PageTiming] = []
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        results = client.download_batch_results(batch.batch_id, tmp, extract=True)
+        assert results.directory is not None and results.manifest is not None
+        for i, page in enumerate(results.manifest):
+            name = page["source_name"]
+            paths = page.get("outputs") or {}
+            alto = (results.directory / paths["alto"]).read_bytes() if "alto" in paths else b""
+            txt = (results.directory / paths["txt"]).read_bytes() if "txt" in paths else b""
+            error = page.get("error") if page.get("status") != "done" else None
+            if error is None:
+                try:
+                    store_artifacts(out_dir, name, alto, txt)
+                except MissingArtifact as exc:
+                    error = str(exc)
+            if error is not None:
+                errors.append(f"{name}: {error}")
+            timings.append(
+                PageTiming(
+                    name=name,
+                    started=started,
+                    finished=time.monotonic(),
+                    ok=error is None,
+                    http_requests=3 if i == 0 else 0,
+                    alto_bytes=len(alto),
+                    txt_bytes=len(txt),
+                    error=error,
+                )
+            )
+    return timings, errors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
@@ -234,7 +295,15 @@ def main() -> None:
         action="store_true",
         help="one page at a time (wait for each result) — comparable to ProArc's loop",
     )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="all pages as one batch: one archive up, one results archive down",
+    )
     args = parser.parse_args()
+    if args.batch and args.serial:
+        parser.error("--batch and --serial are different pacings; pick one")
+    pacing = "batch" if args.batch else "serial" if args.serial else "all-in-flight"
 
     images = discover_images(args.images, args.n, args.seed)
     api_key = resolve_api_key(args, "bench-new")
@@ -245,7 +314,11 @@ def main() -> None:
         taas=args.taas_url,
         fmt=args.fmt,
         domain=args.domain,
-        pacing="serial (1 page in flight)" if args.serial else "all pages in flight",
+        pacing={
+            "batch": "one batch (archive in, archive out)",
+            "serial": "serial (1 page in flight)",
+            "all-in-flight": "all pages in flight",
+        }[pacing],
         submit_concurrency=1 if args.serial else args.submit_concurrency,
     )
 
@@ -268,8 +341,12 @@ def main() -> None:
     submitted_at = started
     submit_errors: list[str] = []
 
+    timings: list[PageTiming] | None = None
     try:
-        if args.serial:
+        if args.batch:
+            timings, submit_errors = run_batch(client, images, args.timeout, collector._out_dir)
+            submitted_at = time.monotonic()
+        elif args.serial:
             submit_errors = submit_serially(client, collector, images, args.timeout)
             submitted_at = time.monotonic()
         else:
@@ -283,21 +360,28 @@ def main() -> None:
 
     wall = time.monotonic() - started
     first = collector.first_result_at
+    if timings is not None:  # batch: the first page out of the results archive
+        first = min((t.finished for t in timings), default=None)
 
+    suffix = {"batch": " — batch", "serial": " — serial"}.get(pacing, "")
     run = BenchRun(
-        mode="new (taas API / WebSocket client)" + (" — serial" if args.serial else ""),
+        mode="new (taas API / WebSocket client)" + suffix,
         concurrency=1 if args.serial else len(images),
         wall_seconds=wall,
-        timings=collector.timings,
+        timings=timings if timings is not None else collector.timings,
         server=fetch_server_timings(args.taas_url, api_key),
         notes={
-            "pacing": "serial" if args.serial else "all-in-flight",
+            "pacing": pacing,
             # In serial mode the submit phase *is* the whole run, so this equals wall.
             "submit_phase_seconds": round(submitted_at - started, 2),
             "time_to_first_result": round(first - started, 2) if first else None,
             "submit_concurrency": 1 if args.serial else args.submit_concurrency,
             "fmt": args.fmt,
-            "requests_per_page": "1 submit + 1 fetch per artifact (no polling)",
+            "requests_per_page": (
+                "per batch: 1 submit + 1 results + 1 download (progress over WebSocket)"
+                if args.batch
+                else "1 submit + 1 fetch per artifact (no polling)"
+            ),
             "submit_errors": submit_errors[:5],
         },
     )
