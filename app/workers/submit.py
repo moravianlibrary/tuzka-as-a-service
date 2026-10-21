@@ -28,7 +28,7 @@ from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
-    dequeue_jobs,
+    claim_pending,
     get_backend_batches,
     get_backend_inflight,
     get_jobs,
@@ -37,6 +37,7 @@ from app.services.redis_jobs import (
     job_options,
     job_outputs,
     parse_avoid,
+    peek_pending,
     promote_due_retries,
     publish_event,
     requeue_job,
@@ -54,6 +55,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
+from app.workers.shutdown import install_stop
 
 logger = logging.getLogger("submit-worker")
 
@@ -558,9 +560,10 @@ async def main() -> None:
             if batch is not None:
                 await publish_event(r, username, batch_event(batch))
 
+    stop = install_stop()
     logger.info("Submit worker started")
     try:
-        while True:
+        while not stop.is_set():
             try:
                 await refresh_backends()
 
@@ -595,13 +598,17 @@ async def main() -> None:
                     capacity = sum(slot.free for slot in tier)
                     if capacity == 0:
                         continue  # this tier is full; a lower one may still have room
-                    entries = await dequeue_jobs(r, capacity)
+                    # Peeked, not popped: a job leaves its queue only once claimed below,
+                    # so one no backend serves yet, or one in hand when this worker dies,
+                    # stays queued.
+                    entries = await peek_pending(r, capacity)
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
-                    metas = await get_jobs(r, [job_id for job_id, _ in entries])
+                    metas = await get_jobs(r, [job_id for job_id, _, _ in entries])
+                    priorities = {job_id: prio for job_id, _, prio in entries}
                     pending: list[PendingJob] = []
-                    for job_id, score in entries:
+                    for job_id, score, _ in entries:
                         meta = metas[job_id] or {}
                         domain, outputs = job_domain(meta), job_outputs(meta)
                         pending.append(
@@ -633,11 +640,15 @@ async def main() -> None:
                     ) -> float:
                         return perf.effective_spp(backend_id, domain, scores, fallback[domain])
 
-                    assignments, leftovers = allocate_scored(tier, pending, spp, tolerance)
-                    for job in leftovers:
-                        # a lower tier may serve its domain, or a full backend frees up
-                        await requeue_job(r, job.job_id, job.score)
-
+                    # Leftovers stay queued for a lower tier or a backend that frees up.
+                    assignments, _ = allocate_scored(tier, pending, spp, tolerance)
+                    # Another submit worker (two run during a rollout) may have claimed a
+                    # job first; it's dispatched there, not twice.
+                    assignments = [
+                        (job, slot)
+                        for job, slot in assignments
+                        if await claim_pending(r, job.job_id, priorities[job.job_id])
+                    ]
                     if not assignments:
                         continue
 

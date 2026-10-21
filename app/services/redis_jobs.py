@@ -209,38 +209,84 @@ async def enqueue_job(
     await _add_pending(r, priority, job_id, float(metadata.get("submitted_at", time.time())))
 
 
-async def dequeue_jobs(r: aioredis.Redis, count: int) -> list[tuple[str, float]]:
-    """Drain up to ``count`` jobs from priority queues, highest priority first.
-
-    Reads the registered priority levels (``jobs:pending:levels``) and drains their
-    queues in descending priority order.
-    """
+async def _pending_levels(r: aioredis.Redis) -> list[int]:
+    """The registered priority levels, highest first (``[0]`` when none are)."""
     members = await r.smembers(_PENDING_LEVELS_KEY)
     prios: list[int] = []
     for m in members:
         with contextlib.suppress(ValueError):
             prios.append(int(m.decode() if isinstance(m, bytes) else m))
     prios.sort(reverse=True)
-    if not prios:
-        prios = [0]
+    return prios or [0]
 
-    results: list[tuple[str, float]] = []
-    remaining = count
 
-    for prio in prios:
+async def peek_pending(r: aioredis.Redis, count: int) -> list[tuple[str, float, int]]:
+    """The first ``count`` pending jobs as ``(job_id, score, priority)``, highest priority
+    first and oldest first within one. Nothing is removed: a job leaves its queue only when
+    a worker claims it (``claim_pending``), so one that no backend can serve yet, or that
+    a worker was holding when it died, is never lost."""
+    results: list[tuple[str, float, int]] = []
+    for prio in await _pending_levels(r):
+        remaining = count - len(results)
         if remaining <= 0:
             break
-        # zpopmin returns [(member, score), ...]; the stub over-broadens this to a union,
-        # so narrow to the documented shape for the decode step.
+        # zrange withscores returns [(member, score), ...]; the stub over-broadens it.
         batch = cast(
-            "list[tuple[bytes | str, float]]", await r.zpopmin(_pending_key(prio), remaining)
+            "list[tuple[bytes | str, float]]",
+            await r.zrange(_pending_key(prio), 0, remaining - 1, withscores=True),
         )
         for member, score in batch:
             member_str = member.decode() if isinstance(member, bytes) else member
-            results.append((member_str, float(score)))
-        remaining -= len(batch)
-
+            results.append((member_str, float(score), prio))
     return results
+
+
+async def claim_pending(r: aioredis.Redis, job_id: str, priority: int) -> bool:
+    """Take a peeked job off its queue to dispatch it. True for exactly one worker; False
+    when another one claimed it first. ``claimed_at`` tells ``requeue_orphans`` a job
+    being dispatched right now from one that was lost."""
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.zrem(_pending_key(priority), job_id)
+        pipe.hset(f"job:{job_id}", "claimed_at", str(time.time()))
+        removed, _ = await pipe.execute()
+    return bool(removed == 1)
+
+
+async def requeue_orphans(
+    r: aioredis.Redis, job_ids: list[str], now: float, claim_grace_s: float = 300.0
+) -> list[str]:
+    """Put back on their queue the jobs among ``job_ids`` (queued in Postgres) that Redis
+    still has as queued but in no queue: claimed by a worker that died before dispatching
+    them. A job claimed in the last ``claim_grace_s`` is left alone, since its dispatch may
+    still be running. Returns the ids requeued."""
+    if not job_ids:
+        return []
+    async with r.pipeline(transaction=False) as pipe:
+        for job_id in job_ids:
+            pipe.hmget(f"job:{job_id}", "status", "priority", "submitted_at", "claimed_at")
+            pipe.zscore(_DELAYED_KEY, job_id)
+        replies = await pipe.execute()
+    candidates: list[tuple[str, int, float]] = []
+    for i, job_id in enumerate(job_ids):
+        status, prio_raw, submitted_raw, claimed_raw = (
+            _s(v) if v is not None else None for v in replies[2 * i]
+        )
+        if status != "queued" or replies[2 * i + 1] is not None:
+            continue  # gone, running or finished, or waiting as a delayed retry
+        if claimed_raw is not None and now - float(claimed_raw) < claim_grace_s:
+            continue
+        priority = int(prio_raw or 0)
+        candidates.append((job_id, priority, float(submitted_raw or now)))
+    async with r.pipeline(transaction=False) as pipe:
+        for job_id, priority, _ in candidates:
+            pipe.zscore(_pending_key(priority), job_id)
+        scores = await pipe.execute() if candidates else []
+    requeued: list[str] = []
+    for (job_id, priority, submitted_at), score in zip(candidates, scores, strict=True):
+        if score is None:
+            await _add_pending(r, priority, job_id, submitted_at)
+            requeued.append(job_id)
+    return requeued
 
 
 async def get_job(r: aioredis.Redis, job_id: str) -> dict[str, str] | None:

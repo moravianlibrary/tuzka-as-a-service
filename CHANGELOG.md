@@ -216,6 +216,20 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A queued job could be lost: the submit worker took jobs off the queue every pass and
+  put back the ones no backend could take, so a worker that stopped mid-pass (a rollout,
+  an OOM kill) dropped them. They stayed `queued` until the queued timeout failed them,
+  and `/load` didn't count them, so KEDA didn't scale for them. A job waiting for a
+  backend at zero replicas was taken and put back every pass, so a rollout lost it
+  almost surely. Jobs now leave the queue only when a worker claims one to dispatch
+  (two workers can't both claim it), and the cleanup worker puts back any queued job
+  that is in no queue.
+- The workers ignored SIGTERM (as PID 1, a signal without a handler is dropped), so every
+  stop waited out the 30 s grace period and was SIGKILLed mid-pass, with two submit
+  workers running during each rollout. They now finish the current pass and exit.
+- A job that failed after the engine ran it (an output it couldn't produce, or an
+  engine-reported failure) had no `started_at`, and its `failed` event no run time; the
+  engine's timestamps are now kept, as for a done job.
 - The Helm chart's KEDA mode never scaled: its Redis trigger watched a list `ocr-jobs`
   that taas never writes. KEDA now scales the engine on `GET /load` (`metrics-api`,
   `keda.loadFilter`, `keda.targetBacklogSeconds`; needs `secrets.loadToken`). The

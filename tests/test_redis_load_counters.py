@@ -15,7 +15,7 @@ from app.services.redis_jobs import (
     LOAD_INFLIGHT_KEY,
     LOAD_QUEUED_KEY,
     LOAD_SPP_KEY,
-    dequeue_jobs,
+    claim_pending,
     enqueue_job,
     get_jobs,
     rebuild_load_counters,
@@ -70,7 +70,7 @@ async def test_enqueue_run_done(redis_client: aioredis.Redis) -> None:
     await enqueue_job(redis_client, "j1", _meta(), TTL)
     assert await _counts(redis_client) == ({FIELD: 1}, {})
 
-    await dequeue_jobs(redis_client, 1)  # still queued logically until it runs
+    await claim_pending(redis_client, "j1", 0)  # still queued logically until it runs
     await set_running(redis_client, "j1", "e1", "http://e1", 1, TTL)
     assert await _counts(redis_client) == ({FIELD: 0}, {FIELD: 1})
 

@@ -4,20 +4,23 @@ purges expired storage objects."""
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import timedelta
 
 import redis.asyncio as aioredis
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
 from app.models.db import make_engine
+from app.models.job import Job
 from app.services import batch_store, live_metrics
 from app.services.config import get_storage_ttl_minutes
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
-from app.services.redis_jobs import rebuild_load_counters
+from app.services.redis_jobs import rebuild_load_counters, requeue_orphans
 from app.services.retention import (
     delete_expired_batches,
     delete_finished_jobs,
@@ -30,11 +33,33 @@ from app.services.storage import (
     list_expired_objects,
 )
 from app.telemetry import setup_telemetry
+from app.workers.shutdown import install_stop, sleep_unless_stopped
 
 logger = logging.getLogger("cleanup-worker")
 
 # Max objects per remove_objects call when purging expired storage objects.
 DELETE_BATCH_SIZE = 1000
+# Queued jobs checked for a lost queue entry per tick, and how old they must be.
+ORPHAN_SCAN_LIMIT = 10_000
+ORPHAN_MIN_AGE = timedelta(seconds=60)
+
+
+async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
+    """Put back on their queue the queued jobs that are in none (a submit worker claimed
+    them and died before dispatching). Without this they'd sit until the queued timeout
+    fails them, and /load wouldn't count them, so KEDA wouldn't scale for them."""
+    cutoff = utcnow() - ORPHAN_MIN_AGE
+    ids = (
+        await db.scalars(
+            select(Job.id)
+            .where(Job.status == "queued", Job.submitted_at < cutoff)
+            .limit(ORPHAN_SCAN_LIMIT)
+        )
+    ).all()
+    requeued = await requeue_orphans(r, [str(job_id) for job_id in ids], time.time())
+    if requeued:
+        logger.warning("Requeued %d job(s) missing from the queue: %s", len(requeued), requeued)
+    return len(requeued)
 
 
 async def main() -> None:
@@ -61,12 +86,19 @@ async def main() -> None:
         else None
     )
 
+    stop = install_stop()
     logger.info("Cleanup worker started")
     REAP_TICK_SECONDS = 60
     HEAVY_EVERY = 10  # heavy object/retention sweep every 10th tick (~10 min)
     tick = 0
     try:
-        while True:
+        while not stop.is_set():
+            try:
+                async with session_factory() as db:
+                    await requeue_lost_jobs(db, r)
+            except Exception:
+                logger.exception("Requeue of lost jobs failed")
+
             try:
                 async with session_factory() as db:
                     await reap_stale_jobs(db, r)
@@ -110,7 +142,7 @@ async def main() -> None:
                     logger.exception("Load counter rebuild failed")
 
             tick += 1
-            await asyncio.sleep(REAP_TICK_SECONDS)
+            await sleep_unless_stopped(stop, REAP_TICK_SECONDS)
     finally:
         if live is not None:
             live.cancel()

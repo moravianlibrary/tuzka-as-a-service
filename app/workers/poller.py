@@ -66,6 +66,7 @@ from app.services.storage import (
     put_object,
 )
 from app.telemetry import job_span, setup_telemetry
+from app.workers.shutdown import install_stop
 
 logger = logging.getLogger("poller-worker")
 
@@ -586,9 +587,10 @@ async def main() -> None:
             with job_span("harvest", job_id, meta, backend_id=meta.get("backend_id")):
                 await harvest(job_id, meta, times)
 
+    stop = install_stop()
     logger.info("Poller worker started")
     try:
-        while True:
+        while not stop.is_set():
             # How long to wait before the next pass. Recomputed each iteration from the
             # nearest scheduled next_poll_at, so we wake exactly when a running job is due
             # rather than on a coarse grid; capped by poller_tick_seconds as an idle/self-
