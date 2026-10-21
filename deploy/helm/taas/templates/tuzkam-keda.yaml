@@ -24,7 +24,7 @@ spec:
     # Seconds of queued map work a TuzkaM backend could serve.
     - type: metrics-api
       metadata:
-        url: {{ printf "http://%s-api:%v/load?adapter=tuzkam" (include "taas.fullname" .) .Values.api.port | quote }}
+        url: {{ printf "http://%s-api.%s.svc:%v/load?adapter=tuzkam" (include "taas.fullname" .) .Release.Namespace .Values.api.port | quote }}
         valueLocation: backlog_s
         targetValue: {{ $m.keda.targetBacklogSeconds | quote }}
         activationTargetValue: {{ $m.keda.activationBacklogSeconds | quote }}

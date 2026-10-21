@@ -51,7 +51,7 @@ spec:
     # The API's /load: seconds of queued work this engine could serve (backlog_s).
     - type: metrics-api
       metadata:
-        url: {{ printf "http://%s-api:%v/load?%s" (include "taas.fullname" .) .Values.api.port $k.loadFilter | quote }}
+        url: {{ printf "http://%s-api.%s.svc:%v/load?%s" (include "taas.fullname" .) .Release.Namespace .Values.api.port $k.loadFilter | quote }}
         valueLocation: backlog_s
         targetValue: {{ $k.targetBacklogSeconds | quote }}
         activationTargetValue: {{ $k.activationBacklogSeconds | quote }}
