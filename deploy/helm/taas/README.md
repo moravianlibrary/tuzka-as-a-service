@@ -185,10 +185,12 @@ registered with the maps capabilities declared, so map jobs queue while no pod r
 | `tuzkam.minReplicas` / `maxReplicas` | `0` / `4` | KEDA bounds; `maxReplicas` is also how many backends get registered |
 | `tuzkam.maxInflight` | `1` | Map sheets per pod at a time |
 | `tuzkam.keda.*` | — | `targetBacklogSeconds`, `activationBacklogSeconds`, `pollingInterval`, `cooldownPeriod` |
-| `tuzkam.resources` | 2 CPU, 4Gi | Per pod |
+| `tuzkam.resources` | 2 CPU, 4Gi request / 8Gi limit | Per pod; a 166 MP sheet peaks near 4 GiB |
 
-Set `jobs.queued_timeout_seconds` above TuzkaM's cold start (image pull + model load),
-or map jobs submitted at zero replicas time out before the first pod is ready.
+Set `jobs.queued_timeout_seconds` to at least twice TuzkaM's cold start (image pull +
+model load), or map jobs submitted at zero replicas time out before the first pod is
+ready. Measured on k3d with the image already on the node: 35–44 s from submit to
+dispatch, so the 900 s default leaves room for a first image pull (~1.7 GB) too.
 
 ### Off-cluster boxes via reverse tunnel (`tunnel.*`, `tunnelBoxes`)
 

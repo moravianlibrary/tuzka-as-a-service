@@ -72,7 +72,8 @@ WHERE name = 'maps';
   registers it.
 - **Kubernetes:** `tuzkam.enabled=true` in the Helm chart: a StatefulSet that KEDA
   scales from zero on `/load?adapter=tuzkam` (see the chart README). Set
-  `jobs.queued_timeout_seconds` above TuzkaM's cold start, or sheets submitted while it's
+  `jobs.queued_timeout_seconds` to at least twice TuzkaM's cold start (35–44 s on k3d
+  with the image cached; the 900 s default covers it), or sheets submitted while it's
   at zero time out before the first pod is ready.
 
 TuzkaM doesn't advertise domains itself; the adapter reports the ones in the
