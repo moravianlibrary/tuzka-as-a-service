@@ -27,7 +27,13 @@ from app.services import config as config_service
 from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
 from app.services.event_emitter import get_emitter
-from app.services.events import EventName, JobEvent, attempt_failure, durations
+from app.services.events import (
+    EventName,
+    JobEvent,
+    attempt_failure,
+    durations,
+    extra_metrics,
+)
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
@@ -431,6 +437,7 @@ async def main() -> None:
                     blocks=alto_blocks,
                     chars=alto_chars,
                     mean_conf=mean_conf,
+                    extra=extra_metrics(times),
                     **durations(
                         job_rec.submitted_at if job_rec else None,
                         job_rec.dispatched_at if job_rec else None,

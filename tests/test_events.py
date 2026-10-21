@@ -10,6 +10,7 @@ from app.services.events import (
     attempt_failure,
     durations,
     error_class,
+    extra_metrics,
     job_event_row,
 )
 
@@ -86,3 +87,20 @@ def test_attempt_failure_reads_the_attempt() -> None:
         "http_status": 422,
     }
     assert attempt_failure(None)["error_class"] == ""  # a harvest error
+
+
+def test_extra_metrics_keeps_adapter_specific_ones_as_strings() -> None:
+    metrics = {
+        "n_lines": 12,
+        "mean_conf": 0.9,
+        "started_at": "2026-01-01T00:00:00",
+        "words": 340,
+        "georef.status": "ok",
+        "georef.residual_m": 4.2,
+        "missing": None,
+    }
+    assert extra_metrics(metrics) == {
+        "georef.residual_m": "4.2",
+        "georef.status": "ok",
+        "words": "340",
+    }

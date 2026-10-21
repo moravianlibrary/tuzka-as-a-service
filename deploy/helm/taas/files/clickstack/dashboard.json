@@ -158,6 +158,73 @@
         ],
         "groupBy": ""
       }
+    },
+    {
+      "id": "taas-maps-georef",
+      "x": 0,
+      "y": 28,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "granularity": "auto",
+        "alignDateRangeToGranularity": true,
+        "whereLanguage": "lucene",
+        "source": "Job Events",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 2,
+          "thousandSeparated": true,
+          "average": false,
+          "decimalBytes": false,
+          "factor": 1
+        },
+        "where": "event:done AND domain:maps",
+        "name": "Maps: georef status share",
+        "displayType": "stacked_bar",
+        "select": [
+          {
+            "aggFn": "count",
+            "aggCondition": "",
+            "aggConditionLanguage": "sql",
+            "valueExpression": ""
+          }
+        ],
+        "groupBy": "extra['georef.status']"
+      }
+    },
+    {
+      "id": "taas-maps-residual",
+      "x": 12,
+      "y": 28,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "granularity": "auto",
+        "alignDateRangeToGranularity": true,
+        "whereLanguage": "lucene",
+        "source": "Job Events",
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 2,
+          "thousandSeparated": true,
+          "average": false,
+          "decimalBytes": false,
+          "factor": 1
+        },
+        "where": "event:done AND domain:maps",
+        "name": "Maps: median georef residual (m)",
+        "displayType": "line",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "level": 0.5,
+            "aggCondition": "",
+            "aggConditionLanguage": "sql",
+            "valueExpression": "toFloat64OrNull(extra['georef.residual_m'])"
+          }
+        ],
+        "groupBy": ""
+      }
     }
   ],
   "filters": [],
