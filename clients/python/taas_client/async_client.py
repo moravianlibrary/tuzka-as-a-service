@@ -169,9 +169,7 @@ class AsyncTaasClient:
             with path.open("rb") as f:
                 return await self._post_batch((path.name, f), data)
 
-        images = _common.collect_images(
-            Path(source) if isinstance(source, (Path, str)) else source
-        )
+        images = _common.collect_images(Path(source) if isinstance(source, (Path, str)) else source)
         if not images:
             raise ValueError("no images to submit")
         with tempfile.TemporaryDirectory(prefix="taas-batch-") as tmp:

@@ -48,7 +48,8 @@ def upsert(
     adapter: str = typer.Option("tuzkaocr"),
     managed: bool = typer.Option(False, help="Registered by the chart (shown, not edited)."),
     declared: str | None = typer.Option(
-        None, help='Capabilities to assume until the engine is seen, as JSON: {"domain": ["alto", …]}.'
+        None,
+        help='Capabilities to assume until the engine is seen, as JSON: {"domain": ["alto", …]}.',
     ),
 ) -> None:
     """Create the backend with this URL, or update it. Idempotent (the Helm hook runs it
@@ -80,7 +81,7 @@ def update(
     adapter: str | None = typer.Option(None),
 ) -> None:
     """Change some fields of a backend; options left out stay as they are."""
-    fields = {
+    fields: dict[str, object] = {
         k: v
         for k, v in {
             "url": url,

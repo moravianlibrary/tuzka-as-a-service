@@ -50,7 +50,7 @@ def resolve_sources(dashboard: dict[str, Any], source_ids: dict[str, str]) -> di
     missing = sorted(s for s in sources if s is not None and s not in known)
     if missing:
         raise ValueError(f"dashboard {dashboard['name']!r} uses unknown sources: {missing}")
-    resolved = json.loads(json.dumps(dashboard))
+    resolved: dict[str, Any] = json.loads(json.dumps(dashboard))
     for tile in resolved.get("tiles", []):
         source = tile.get("config", {}).get("source")
         if source in source_ids:

@@ -140,7 +140,7 @@ class TuzkaOcrAdapter:
         )
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
-        metrics: dict[str, int | float] = {}
+        metrics: dict[str, int | float | str] = {}
         for key in ("n_lines", "mean_conf"):
             val = data.get(key)
             if val is not None and isinstance(val, (int, float)):

@@ -23,6 +23,10 @@ COLUMNS = (
     "allowed_outputs",
 )
 
+ClearOption = typer.Option(
+    [], help="Class to reset to the global default: submit, query or ws (repeatable)."
+)
+
 
 @app.command("list")
 def list_users(as_json: bool = JsonOption) -> None:
@@ -97,9 +101,7 @@ def set_limits(
     query_burst: int | None = typer.Option(None),
     ws_per_minute: int | None = typer.Option(None),
     ws_burst: int | None = typer.Option(None),
-    clear: list[str] = typer.Option(
-        [], help="Class to reset to the global default: submit, query or ws (repeatable)."
-    ),
+    clear: list[str] = ClearOption,
 ) -> None:
     """Override the user's rate limits; options left out stay as they are."""
     fields: dict[str, object] = {}

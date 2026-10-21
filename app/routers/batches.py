@@ -11,8 +11,8 @@ from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
-from miniopy_async import Minio
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from miniopy_async.api import Minio
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,9 +45,8 @@ from app.schemas.batch import (
     BatchStatus,
     BatchSubmitResponse,
 )
-from app.services import batch_store
+from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
-from app.services import redis_jobs, storage
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
 from app.services.batch_archive import PageRow, build_results_archive
 from app.services.batches import page_score, plan_batch_member

@@ -27,12 +27,12 @@ from app.services.event_emitter import get_emitter
 from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
+    batch_event,
     dequeue_jobs,
     get_backend_batches,
     get_backend_inflight,
     get_jobs,
     job_domain,
-    batch_event,
     job_event_payload,
     job_options,
     job_outputs,
@@ -156,7 +156,7 @@ async def _fallback_spp(r: aioredis.Redis, domains: Iterable[str]) -> dict[str, 
     values = await r.hmget("load:spp", names) if names else []
     return {
         name: float(value) if value is not None else DEFAULT_SECONDS_PER_MP
-        for name, value in zip(names, values)
+        for name, value in zip(names, values, strict=True)
     }
 
 
@@ -194,16 +194,12 @@ def allocate_scored(
         serving = [s for s in slots if can_serve(s, job)]
         allow_avoided = all(s.backend.id in job.avoid for s in serving)
         candidates = [
-            s
-            for s in serving
-            if s.free > 0 and (allow_avoided or s.backend.id not in job.avoid)
+            s for s in serving if s.free > 0 and (allow_avoided or s.backend.id not in job.avoid)
         ]
         if not candidates:
             leftovers.append(job)
             continue
-        finish = {
-            id(s): expected_finish(s, job, spp(s.backend.id, job.domain)) for s in candidates
-        }
+        finish = {id(s): expected_finish(s, job, spp(s.backend.id, job.domain)) for s in candidates}
         best = min(finish.values())
         near = [s for s in candidates if finish[id(s)] <= best * (1 + tolerance)]
         affine = [s for s in near if job.batch_id and s.batches.get(job.batch_id, 0) > 0]
@@ -629,7 +625,12 @@ async def main() -> None:
                     async with session_factory() as db:
                         tolerance = await config_service.get_affinity_tolerance(db)
 
-                    def spp(backend_id: int, domain: str) -> float:
+                    def spp(
+                        backend_id: int,
+                        domain: str,
+                        scores: perf.Scores = scores,
+                        fallback: dict[str, float] = fallback,
+                    ) -> float:
                         return perf.effective_spp(backend_id, domain, scores, fallback[domain])
 
                     assignments, leftovers = allocate_scored(tier, pending, spp, tolerance)

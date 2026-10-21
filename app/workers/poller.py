@@ -36,10 +36,10 @@ from app.services.events import (
 )
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
+    batch_event,
     get_inflight_ids,
     get_job,
     job_domain,
-    batch_event,
     job_event_payload,
     job_outputs,
     publish_event,
@@ -91,8 +91,7 @@ async def fetch_outputs(
     An output the engine can't produce raises ``OutputUnavailable`` and nothing is kept:
     a job delivers all it was asked for or fails (no partial results)."""
     return {
-        output: (await adapter.fetch(engine_job_id, output)).content
-        for output in sorted(outputs)
+        output: (await adapter.fetch(engine_job_id, output)).content for output in sorted(outputs)
     }
 
 
@@ -485,9 +484,12 @@ async def main() -> None:
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
             batch = await set_failed(r, job_id, error, state_ttl)
-            if attempt and attempt.get("backend_id") is not None:
-                if perf.counts_against_backend(attempt.get("http_status")):
-                    await perf.record_failure(r, int(attempt["backend_id"]), job_domain(meta))
+            if (
+                attempt
+                and attempt.get("backend_id") is not None
+                and perf.counts_against_backend(attempt.get("http_status"))
+            ):
+                await perf.record_failure(r, int(attempt["backend_id"]), job_domain(meta))
             values: dict[str, Any] = {
                 "status": "failed",
                 "error": error,

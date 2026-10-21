@@ -123,9 +123,7 @@ def inject_trace_context() -> dict[str, str]:
 
 
 @contextmanager
-def job_span(
-    name: str, job_id: str, meta: Mapping[str, str], **attributes: Any
-) -> Iterator[None]:
+def job_span(name: str, job_id: str, meta: Mapping[str, str], **attributes: Any) -> Iterator[None]:
     """A span for work on one job, continuing the trace whose ``traceparent`` was
     stored in the job's Redis hash at submit. Without telemetry it costs a context
     lookup and nothing is recorded."""

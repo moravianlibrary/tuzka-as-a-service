@@ -24,9 +24,7 @@ def list_domains(as_json: bool = JsonOption) -> None:
 
 
 @app.command("set-label")
-def set_label(
-    name: str, label: str, description: str | None = typer.Option(None)
-) -> None:
+def set_label(name: str, label: str, description: str | None = typer.Option(None)) -> None:
     """Set the domain's display label (and optionally its description)."""
     fields: dict[str, object] = {"label": label}
     if description is not None:

@@ -107,7 +107,7 @@ async def load_scores(
             pipe.hmget(_key(backend_id), fields)
         rows = await pipe.execute()
     scores: Scores = {}
-    for backend_id, values in zip(ids, rows):
+    for backend_id, values in zip(ids, rows, strict=True):
         for i, domain in enumerate(names):
             spp, samples, pen = values[3 * i : 3 * i + 3]
             if spp is not None:

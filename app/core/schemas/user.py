@@ -44,7 +44,6 @@ class UserUpdate(UserLimitOverrides):
     active: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=INT32_MAX)
 
-
     @model_validator(mode="before")
     @classmethod
     def _reject_explicit_null(cls, data: Any) -> Any:

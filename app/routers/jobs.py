@@ -66,8 +66,8 @@ from app.services.job_spec import (
     resolve_job_spec,
 )
 from app.services.scopes import Principal, check_scope
-from app.telemetry import inject_trace_context
 from app.services.uploads import UploadTooLarge, read_limited
+from app.telemetry import inject_trace_context
 
 router = APIRouter()
 

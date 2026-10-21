@@ -15,12 +15,12 @@ from app.models.db import make_engine
 from app.services.config import get_storage_ttl_minutes
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
+from app.services.redis_jobs import rebuild_load_counters
 from app.services.retention import (
     delete_expired_batches,
     delete_finished_jobs,
     evict_results,
 )
-from app.services.redis_jobs import rebuild_load_counters
 from app.services.storage import (
     delete_objects,
     get_incoming_client,

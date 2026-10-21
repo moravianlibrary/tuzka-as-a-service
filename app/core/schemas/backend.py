@@ -58,6 +58,7 @@ class BackendCreate(BaseModel):
         if v is not None and any(not d or not outs or not all(outs) for d, outs in v.items()):
             raise ValueError("declared needs non-empty domain names and output lists")
         return v
+
     _no_nul = field_validator("url", "label", "api_key")(_reject_nul)
 
     _validate_adapter = field_validator("adapter")(

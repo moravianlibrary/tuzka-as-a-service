@@ -8,17 +8,15 @@ import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any
 
 import typer
 from fastapi import HTTPException
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.models.db import make_engine
-
-T = TypeVar("T")
 
 # Exit codes: 1 = the operation was refused (not found, conflict), 2 = bad input.
 EXIT_REFUSED = 1
@@ -31,7 +29,7 @@ def settings() -> Settings:
     return Settings()
 
 
-def run(op: Callable[[AsyncSession], Awaitable[T]]) -> T:
+def run[T](op: Callable[[AsyncSession], Awaitable[T]]) -> T:
     """Run one admin operation in its own session, and turn its errors into a message
     and an exit code instead of a traceback."""
 
@@ -50,7 +48,7 @@ def run(op: Callable[[AsyncSession], Awaitable[T]]) -> T:
         raise typer.Exit(EXIT_INVALID if e.status_code == 400 else EXIT_REFUSED) from e
 
 
-def build(model: type[T], **fields: Any) -> T:
+def build[T: BaseModel](model: type[T], **fields: Any) -> T:
     """Validate CLI input with the same pydantic schema the API used; a bad value
     prints ``error: <field>: <message>`` and exits 2."""
     try:
@@ -103,9 +101,9 @@ def output(rows: Iterable[dict[str, Any]], columns: Sequence[str], as_json: bool
         return
     cells = [[_cell(r.get(c)) for c in columns] for r in rows]
     widths = [max([len(c), *(len(row[i]) for row in cells)]) for i, c in enumerate(columns)]
-    typer.echo("  ".join(c.upper().ljust(w) for c, w in zip(columns, widths)).rstrip())
+    typer.echo("  ".join(c.upper().ljust(w) for c, w in zip(columns, widths, strict=True)).rstrip())
     for row in cells:
-        typer.echo("  ".join(v.ljust(w) for v, w in zip(row, widths)).rstrip())
+        typer.echo("  ".join(v.ljust(w) for v, w in zip(row, widths, strict=True)).rstrip())
 
 
 def row(obj: Any, columns: Sequence[str]) -> dict[str, Any]:

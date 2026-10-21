@@ -119,10 +119,12 @@ async def run(after: tuple[datetime, str], dry_run: bool) -> int:
                         text(_SELECT),
                         {"after_ts": after_ts, "after_id": after_id, "limit": BATCH_ROWS},
                     )
-                    rows = result.mappings().all()
-                if not rows:
+                    page = result.mappings().all()
+                if not page:
                     break
-                body = "\n".join(json.dumps(job_event_row(event_from_analytics(r))) for r in rows)
+                body = "\n".join(
+                    json.dumps(job_event_row(event_from_analytics(dict(r)))) for r in page
+                )
                 resp = await http.post(
                     f"{settings.clickhouse_url.rstrip('/')}/",
                     params={"query": query},
@@ -130,8 +132,8 @@ async def run(after: tuple[datetime, str], dry_run: bool) -> int:
                     auth=auth,
                 )
                 resp.raise_for_status()  # a backfill must not drop rows silently
-                total += len(rows)
-                after_ts, after_id = rows[-1]["submitted_at"], str(rows[-1]["job_id"])
+                total += len(page)
+                after_ts, after_id = page[-1]["submitted_at"], str(page[-1]["job_id"])
                 print(f"{total} rows; resume with --after {after_ts.isoformat()}/{after_id}")
         print(f"done: {total} rows")
         return 0

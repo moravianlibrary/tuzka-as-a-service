@@ -145,9 +145,7 @@ def is_archive(path: Path) -> bool:
     """Whether ``path`` is an archive the batch API accepts (same magic bytes it checks)."""
     with path.open("rb") as f:
         head = f.read(262)
-    return (
-        head.startswith((_ZSTD_MAGIC, _GZIP_MAGIC, _ZIP_MAGIC)) or head[257:262] == b"ustar"
-    )
+    return head.startswith((_ZSTD_MAGIC, _GZIP_MAGIC, _ZIP_MAGIC)) or head[257:262] == b"ustar"
 
 
 def collect_images(source: Path | Iterable[Path | str]) -> list[tuple[Path, str]]:

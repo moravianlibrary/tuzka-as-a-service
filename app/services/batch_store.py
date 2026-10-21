@@ -14,9 +14,7 @@ from app.models.domain import Domain
 from app.models.job import Job, JobResult
 
 
-def estimate_eta(
-    remaining_pages: int, seconds_per_page: float | None, slots: int
-) -> float | None:
+def estimate_eta(remaining_pages: int, seconds_per_page: float | None, slots: int) -> float | None:
     """A rough ETA: the pages left times seconds per page, spread over the slots of the
     backends serving the domain. None without a seconds-per-page measurement."""
     if seconds_per_page is None:

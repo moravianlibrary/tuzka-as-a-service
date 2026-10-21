@@ -11,7 +11,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine, Iterable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -75,6 +75,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         select(Job).where(Job.status.in_(("queued", "running"))).limit(REAP_MAX_PER_TICK)
     )
     candidates = result.scalars().all()
+
     def running_timeout_for(domain: str | None) -> int:
         limits = domain_limits.get(domain or "default")
         if limits is None or limits.running_timeout_seconds is None:
@@ -121,7 +122,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
             ),
             *(
                 _bounded(publish_event(r, job.username, batch_event(batch)))
-                for (job, _), batch in zip(stale, batches)
+                for (job, _), batch in zip(stale, batches, strict=True)
                 if batch is not None
             ),
         )
@@ -139,13 +140,16 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     engine_version=job.engine_version or "",
                     file_size_bytes=job.file_size_bytes,
                     **failure("timeout", None),
-                    **durations(
-                        job.submitted_at,
-                        job.dispatched_at,
-                        job.engine_received_at,
-                        job.started_at,
-                        now,
-                        None,
+                    **cast(
+                        "dict[str, Any]",
+                        durations(
+                            job.submitted_at,
+                            job.dispatched_at,
+                            job.engine_received_at,
+                            job.started_at,
+                            now,
+                            None,
+                        ),
                     ),
                 )
             )

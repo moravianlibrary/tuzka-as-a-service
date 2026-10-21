@@ -83,7 +83,7 @@ async def delete_finished_jobs(db: AsyncSession, results_client: Minio, bucket: 
         if not jobs:
             break
         ids = [job_id for job_id, _ in jobs]
-        owner = dict(jobs)
+        owner: dict[uuid.UUID, str] = {job_id: username for job_id, username in jobs}
         results = (
             await db.execute(
                 select(JobResult.job_id, JobResult.fmt).where(

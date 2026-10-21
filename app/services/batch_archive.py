@@ -15,7 +15,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import zstandard
 from miniopy_async.api import Minio
@@ -76,16 +76,20 @@ async def build_results_archive(
     """Build the archive of ``rows`` and upload it to ``object_path``; returns its size."""
     dctx = zstandard.ZstdDecompressor()
     with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as spool:
-        with zstandard.ZstdCompressor().stream_writer(spool, closefd=False) as zst:
-            with tarfile.open(fileobj=zst, mode="w|") as tar:
-                for row in rows:
-                    for output in sorted(row.outputs):
-                        stored = f"{username}/{row.job_id}.{ext_for(output)}.zst"
-                        data = await get_object(results_client, bucket, stored)
-                        _add(tar, page_path(row.source_name, output), dctx.decompress(data))
-                manifest = json.dumps(build_manifest(rows), indent=2, ensure_ascii=False)
-                _add(tar, MANIFEST, manifest.encode())
+        with (
+            zstandard.ZstdCompressor().stream_writer(spool, closefd=False) as zst,
+            tarfile.open(fileobj=zst, mode="w|") as tar,
+        ):
+            for row in rows:
+                for output in sorted(row.outputs):
+                    stored = f"{username}/{row.job_id}.{ext_for(output)}.zst"
+                    data = await get_object(results_client, bucket, stored)
+                    _add(tar, page_path(row.source_name, output), dctx.decompress(data))
+            manifest = json.dumps(build_manifest(rows), indent=2, ensure_ascii=False)
+            _add(tar, MANIFEST, manifest.encode())
         size = spool.tell()
         spool.seek(0)
-        await put_file(results_client, bucket, object_path, spool, size, "application/zstd")
+        await put_file(
+            results_client, bucket, object_path, cast(BinaryIO, spool), size, "application/zstd"
+        )
     return size
