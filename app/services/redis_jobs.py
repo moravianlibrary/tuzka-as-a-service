@@ -252,40 +252,44 @@ async def claim_pending(r: aioredis.Redis, job_id: str, priority: int) -> bool:
     return bool(removed == 1)
 
 
+# requeue_orphans' check-and-requeue for one job, atomic so a submit worker can't claim
+# the job between the check and the ZADD (that dispatched it twice).
+# KEYS: job hash, delayed ZSET, levels SET. ARGV: job id, now, claim grace, pending prefix.
+_REQUEUE_ORPHAN_LUA = """
+local f = redis.call('HMGET', KEYS[1], 'status', 'priority', 'submitted_at', 'claimed_at')
+if f[1] ~= 'queued' then return 0 end
+if redis.call('ZSCORE', KEYS[2], ARGV[1]) then return 0 end
+local now = tonumber(ARGV[2])
+if f[4] and now - tonumber(f[4]) < tonumber(ARGV[3]) then return 0 end
+local prio = f[2] or '0'
+local pending = ARGV[4] .. prio
+if redis.call('ZSCORE', pending, ARGV[1]) then return 0 end
+redis.call('ZADD', pending, f[3] and tonumber(f[3]) or now, ARGV[1])
+redis.call('SADD', KEYS[3], prio)
+return 1
+"""
+
+
 async def requeue_orphans(
     r: aioredis.Redis, job_ids: list[str], now: float, claim_grace_s: float = 300.0
 ) -> list[str]:
     """Put back on their queue the jobs among ``job_ids`` (queued in Postgres) that Redis
     still has as queued but in no queue: claimed by a worker that died before dispatching
     them. A job claimed in the last ``claim_grace_s`` is left alone, since its dispatch may
-    still be running. Returns the ids requeued."""
+    still be running. Each job is checked and requeued in one script, so a claim can't
+    slip in between. Returns the ids requeued."""
     if not job_ids:
         return []
+    sha = await r.script_load(_REQUEUE_ORPHAN_LUA)
+    prefix = _PENDING_KEY.format(priority="")
     async with r.pipeline(transaction=False) as pipe:
         for job_id in job_ids:
-            pipe.hmget(f"job:{job_id}", "status", "priority", "submitted_at", "claimed_at")
-            pipe.zscore(_DELAYED_KEY, job_id)
+            keys = (f"job:{job_id}", _DELAYED_KEY, _PENDING_LEVELS_KEY)
+            pipe.evalsha(sha, len(keys), *keys, job_id, now, claim_grace_s, prefix)
         replies = await pipe.execute()
-    candidates: list[tuple[str, int, float]] = []
-    for i, job_id in enumerate(job_ids):
-        status, prio_raw, submitted_raw, claimed_raw = (
-            _s(v) if v is not None else None for v in replies[2 * i]
-        )
-        if status != "queued" or replies[2 * i + 1] is not None:
-            continue  # gone, running or finished, or waiting as a delayed retry
-        if claimed_raw is not None and now - float(claimed_raw) < claim_grace_s:
-            continue
-        priority = int(prio_raw or 0)
-        candidates.append((job_id, priority, float(submitted_raw or now)))
-    async with r.pipeline(transaction=False) as pipe:
-        for job_id, priority, _ in candidates:
-            pipe.zscore(_pending_key(priority), job_id)
-        scores = await pipe.execute() if candidates else []
-    requeued: list[str] = []
-    for (job_id, priority, submitted_at), score in zip(candidates, scores, strict=True):
-        if score is None:
-            await _add_pending(r, priority, job_id, submitted_at)
-            requeued.append(job_id)
+    requeued = [job_id for job_id, added in zip(job_ids, replies, strict=True) if added]
+    if requeued:
+        await signal_submit(r)
     return requeued
 
 
