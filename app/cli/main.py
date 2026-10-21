@@ -11,7 +11,14 @@ from app.cli import backend, config, domain, job, user
 
 app = typer.Typer(no_args_is_help=True, help=__doc__)
 app.add_typer(user.app, name="user", help="API users, their keys, limits and scopes.")
-app.add_typer(backend.app, name="backend", help="OCR engines taas dispatches to.")
+app.add_typer(
+    backend.app,
+    name="backend",
+    help=(
+        "OCR engines taas dispatches to. The submit worker reloads backends every"
+        " BACKEND_REFRESH_SECONDS (30 s), so changes apply within that."
+    ),
+)
 app.add_typer(domain.app, name="domain", help="Domains: labels and legacy engine ids.")
 app.add_typer(config.app, name="config", help="Runtime config (the config table).")
 app.add_typer(job.app, name="job", help="Inspect jobs (failed ones are kept longest).")

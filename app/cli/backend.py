@@ -109,13 +109,17 @@ def _set(backend_id: int, **fields: object) -> None:
 
 @app.command()
 def enable(backend_id: int) -> None:
-    """Put the backend back into rotation."""
+    """Put the backend back into rotation (within 30 s: the submit worker's refresh)."""
     _set(backend_id, enabled=True)
 
 
 @app.command()
 def disable(backend_id: int) -> None:
-    """Take the backend out of rotation without deleting it."""
+    """Take the backend out of rotation without deleting it.
+
+    The submit worker sees it within BACKEND_REFRESH_SECONDS (30 s); until then it
+    can still dispatch new pages there.
+    """
     _set(backend_id, enabled=False)
 
 

@@ -63,7 +63,8 @@ kubectl -n taas exec deploy/taas-api -- taas-admin --help          # Kubernetes
 
 Tables by default, `--json` for scripts. Secrets are read from a named env var, never
 from argv. API processes cache key lookups for 10 s, so key and scope changes apply
-within that. Scripts use `scripts/lib/taas-admin.sh` (`TAAS_ADMIN_MODE=compose|k3d`).
+within that; the submit worker reloads backends every 30 s
+(`BACKEND_REFRESH_SECONDS`), so a backend change takes up to that long. Scripts use `scripts/lib/taas-admin.sh` (`TAAS_ADMIN_MODE=compose|k3d`).
 Job history and dashboards are in ClickStack (HyperDX), not in taas.
 
 ### WebSocket — `/ws?api_key=...`
