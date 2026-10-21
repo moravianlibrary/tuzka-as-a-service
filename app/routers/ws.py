@@ -6,7 +6,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
-from app.clock import utcnow
+from app.clock import utc_iso, utcnow
 from app.deps import authenticate_api_key, get_settings
 from app.models.db import async_session
 from app.models.job import Job
@@ -54,7 +54,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             "job_id": "<job id>",          // what submit returned
             "external_id": "<your label>",  // or null
             "status": "done" | "failed",
-            "ts": "<ISO-8601 timestamp>",  // finished_at, may be null
+            "ts": "<ISO-8601 UTC timestamp, …Z>",  // finished_at, may be null
             "error": "<message>"           // present only when status == failed
         }
 
@@ -125,7 +125,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     str(job.id),
                     job.external_id,
                     job.status,
-                    ts=job.finished_at.isoformat() if job.finished_at else None,
+                    ts=utc_iso(job.finished_at) if job.finished_at else None,
                 )
                 if job.error:
                     event["error"] = job.error

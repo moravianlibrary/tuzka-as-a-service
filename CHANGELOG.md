@@ -123,6 +123,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- API timestamps are UTC with a `Z` (`2026-10-21T08:02:19.668317Z`), as the OpenAPI
+  `date-time` format requires: job status and lists, batches and the WebSocket
+  catch-up `ts`. They were the same UTC times without any offset before; a client
+  that parsed them as local time now gets the right instant.
 - **Dispatch by measured speed.** Each page goes to the backend that would finish it
   first, from the backend's measured engine seconds per megapixel (the API now reads
   each image's size at submit; Pillow joins the api image) and its pages in flight,

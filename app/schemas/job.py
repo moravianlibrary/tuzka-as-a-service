@@ -1,10 +1,11 @@
 """Pydantic schemas for job submit/status/result responses."""
 
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
+
+from app.clock import UtcDatetime
 
 
 class JobSubmitResponse(BaseModel):
@@ -22,9 +23,9 @@ class JobStatus(BaseModel):
     domain: str | None
     # Requested outputs; None for jobs submitted before outputs were stored.
     outputs: list[str] | None = None
-    submitted_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    submitted_at: UtcDatetime
+    started_at: UtcDatetime | None
+    finished_at: UtcDatetime | None
     error: str | None
 
 

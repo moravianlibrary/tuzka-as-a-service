@@ -1,9 +1,10 @@
 """Pydantic schemas for the batch endpoints (step 7)."""
 
-from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.clock import UtcDatetime
 
 
 class BatchSubmitResponse(BaseModel):
@@ -33,8 +34,8 @@ class BatchStatus(BaseModel):
     running: int
     done: int
     failed: int
-    submitted_at: datetime
-    finished_at: datetime | None = None
+    submitted_at: UtcDatetime
+    finished_at: UtcDatetime | None = None
     eta_s: float | None = Field(
         default=None,
         description="A rough estimate of the seconds left, from the queue and recent "
@@ -46,7 +47,7 @@ class BatchStatus(BaseModel):
 class BatchResults(BaseModel):
     status: str = "finished"
     url: str
-    expires_at: datetime
+    expires_at: UtcDatetime
 
 
 class BatchRetryResponse(BaseModel):
