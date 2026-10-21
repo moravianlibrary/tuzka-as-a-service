@@ -31,6 +31,7 @@ from app.models.job import Job
 from app.models.user import User
 from app.services import config as config_service
 from app.services.auth import encrypt_backend_key, generate_key, hash_key
+from app.services.domain_sync import apply_declared_capabilities
 
 # --- Users ---
 
@@ -196,6 +197,9 @@ async def upsert_backend(db: AsyncSession, body: BackendCreate, secret: str) -> 
         backend.api_key_enc = encrypt_backend_key(body.api_key, secret) if body.api_key else None
     await _commit_backend(db)
     await db.refresh(backend)
+    if body.declared:
+        await apply_declared_capabilities(db, backend.id, body.declared)
+        await db.commit()
     return backend
 
 

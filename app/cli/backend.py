@@ -1,5 +1,7 @@
 """``taas-admin backend …``"""
 
+import json
+
 import typer
 
 from app.cli.common import JsonOption, build, output, row, run, secret_from_env, settings
@@ -45,6 +47,9 @@ def upsert(
     device: str = typer.Option("cpu"),
     adapter: str = typer.Option("tuzkaocr"),
     managed: bool = typer.Option(False, help="Registered by the chart (shown, not edited)."),
+    declared: str | None = typer.Option(
+        None, help='Capabilities to assume until the engine is seen, as JSON: {"domain": ["alto", …]}.'
+    ),
 ) -> None:
     """Create the backend with this URL, or update it. Idempotent (the Helm hook runs it
     on every deploy); priority is left alone."""
@@ -57,6 +62,7 @@ def upsert(
         device=device,
         adapter=adapter,
         managed=managed,
+        declared=json.loads(declared) if declared else None,
     )
     secret = settings().key_encryption_secret
     _print(run(lambda db: admin_ops.upsert_backend(db, body, secret)))

@@ -46,7 +46,8 @@ spec:
               echo "registering ocr-engine-{{ $i }} -> $URL"
               taas-admin backend upsert --url "$URL" --label "ocr-engine-{{ $i }}" \
                 --api-key-env OCR_ENGINE_API_KEY --max-inflight {{ $e.maxInflight }} \
-                --adapter tuzkaocr --managed >/dev/null \
+                --adapter tuzkaocr --managed \
+                --declared {{ $e.declaredDomains | toJson | squote }} >/dev/null \
                 || echo "upsert ocr-engine-{{ $i }} failed"
               {{- end }}
               {{- end }}

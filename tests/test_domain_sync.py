@@ -12,7 +12,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.engines.base import DomainInfo, EngineInfo
-from app.services.domain_sync import apply_domain_sync, plan_domain_links, served_capabilities
+from app.services.domain_sync import (
+    apply_declared_capabilities,
+    apply_domain_sync,
+    plan_domain_links,
+    served_capabilities,
+)
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -143,3 +148,52 @@ async def test_apply_rebuilds_links_and_newest_schema_wins(session, caplog) -> N
     stored = await session.scalar(_SCHEMA_OF_DEFAULT)
     assert stored == SCHEMA_V2
     assert "changed" in caplog.text
+
+
+async def _sources(session) -> dict[str, tuple[str, list[str]]]:
+    rows = await session.execute(
+        text(
+            "SELECT d.name, bd.source, bd.outputs FROM backend_domains bd "
+            "JOIN domains d ON d.id = bd.domain_id WHERE bd.backend_id = 1"
+        )
+    )
+    return {name: (source, sorted(outputs)) for name, source, outputs in rows.all()}
+
+
+@pytest.mark.asyncio
+async def test_empty_describe_keeps_remembered_rows(session) -> None:
+    await apply_domain_sync(session, 1, _info(default=DomainInfo(ALTO_TXT, SCHEMA_V1)))
+    await session.commit()
+
+    await apply_domain_sync(session, 1, _info())  # engine down / scaled to zero
+    await session.commit()
+
+    assert await served_capabilities(session, 1) == {"default": ALTO_TXT}
+
+
+@pytest.mark.asyncio
+async def test_engine_sync_replaces_declared_rows(session) -> None:
+    await apply_declared_capabilities(session, 1, {"default": ["alto", "txt"], "maps": ["json"]})
+    await session.commit()
+    assert await _sources(session) == {
+        "default": ("declared", ["alto", "txt"]),
+        "maps": ("declared", ["json"]),
+    }
+
+    await apply_domain_sync(session, 1, _info(default=DomainInfo(frozenset({"alto"}), None)))
+    await session.commit()
+    assert await _sources(session) == {"default": ("engine", ["alto"])}
+
+
+@pytest.mark.asyncio
+async def test_declared_never_overrides_engine_rows(session) -> None:
+    await apply_domain_sync(session, 1, _info(default=DomainInfo(ALTO_TXT, None)))
+    await session.commit()
+
+    await apply_declared_capabilities(session, 1, {"default": ["geojson"], "maps": ["json"]})
+    await session.commit()
+
+    assert await _sources(session) == {
+        "default": ("engine", ["alto", "txt"]),
+        "maps": ("declared", ["json"]),
+    }

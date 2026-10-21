@@ -86,6 +86,7 @@ tunnelBoxes:
 
 # Throwaway test secrets. frpToken + ocrEngineApiKey MUST match engine-proxy/.env.
 secrets:
+  loadToken: "test-load-token"
   keyEncryptionSecret: "2bn3JCnUdwtXUSesg0YllMR47VWV4R_DcTt9p57Fy1A="
   postgresPassword: "test-pg-pass"
   minioIncomingAccessKey: "minioincoming"

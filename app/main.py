@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from app.config import Settings
 from app.models import db
-from app.routers import batches, jobs, ws
+from app.routers import batches, jobs, load, ws
 from app.services import storage
 from app.services.event_emitter import get_emitter
 from app.telemetry import instrument_app, setup_telemetry
@@ -103,6 +103,8 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router, prefix="/api/v1", tags=["Jobs"])
     app.include_router(batches.router, prefix="/api/v1", tags=["Batches"])
     app.include_router(ws.router, tags=["WebSocket"])
+    # Internal autoscaler metric: token-guarded and kept out of the public schema.
+    app.include_router(load.router, include_in_schema=False)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:

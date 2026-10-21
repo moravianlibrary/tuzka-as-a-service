@@ -27,10 +27,10 @@ spec:
     scaleDown:
       stabilizationWindowSeconds: {{ $e.autoscaling.hpa.scaleDownStabilizationSeconds }}
 {{- else if eq $e.autoscaling.mode "keda" }}
-{{- $redisAddr := $e.autoscaling.keda.redisAddress }}
-{{- if not $redisAddr }}
-{{- $redisAddr = printf "%s-redis:%v" (include "taas.fullname" .) .Values.redis.port }}
+{{- if not .Values.secrets.loadToken }}
+{{- fail "ocrEngine.autoscaling.mode=keda needs secrets.loadToken: KEDA reads the API's /load with it" }}
 {{- end }}
+{{- $k := $e.autoscaling.keda }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -45,19 +45,19 @@ spec:
     name: {{ $name }}
   minReplicaCount: {{ $e.autoscaling.minReplicas }}
   maxReplicaCount: {{ $e.autoscaling.maxReplicas }}
-  pollingInterval: {{ $e.autoscaling.keda.pollingInterval | default 15 }}
-  cooldownPeriod: {{ $e.autoscaling.keda.cooldownPeriod | default 300 }}
+  pollingInterval: {{ $k.pollingInterval }}
+  cooldownPeriod: {{ $k.cooldownPeriod }}
   triggers:
-    - type: redis
+    # The API's /load: seconds of queued work this engine could serve (backlog_s).
+    - type: metrics-api
       metadata:
-        address: {{ $redisAddr | quote }}
-        listName: {{ $e.autoscaling.keda.listName | quote }}
-        listLength: {{ $e.autoscaling.keda.listLength | quote }}
-      {{- if $e.autoscaling.keda.redisPasswordSecret }}
+        url: {{ printf "http://%s-api:%v/load?%s" (include "taas.fullname" .) .Values.api.port $k.loadFilter | quote }}
+        valueLocation: backlog_s
+        targetValue: {{ $k.targetBacklogSeconds | quote }}
+        activationTargetValue: {{ $k.activationBacklogSeconds | quote }}
+        authMode: bearer
       authenticationRef:
         name: {{ $name }}-keda-auth
-      {{- end }}
-{{- if $e.autoscaling.keda.redisPasswordSecret }}
 ---
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
@@ -68,9 +68,8 @@ metadata:
     app.kubernetes.io/component: ocr-engine
 spec:
   secretTargetRef:
-    - parameter: password
-      name: {{ $e.autoscaling.keda.redisPasswordSecret }}
-      key: {{ $e.autoscaling.keda.redisPasswordKey | default "password" }}
-{{- end }}
+    - parameter: token
+      name: {{ include "taas.fullname" . }}-secret
+      key: LOAD_TOKEN
 {{- end }}
 {{- end }}

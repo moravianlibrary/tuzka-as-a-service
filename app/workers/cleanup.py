@@ -20,6 +20,7 @@ from app.services.retention import (
     delete_finished_jobs,
     evict_results,
 )
+from app.services.redis_jobs import rebuild_load_counters
 from app.services.storage import (
     delete_objects,
     get_incoming_client,
@@ -92,6 +93,10 @@ async def main() -> None:
 
                 except Exception:
                     logger.exception("Cleanup worker failed")
+                try:
+                    await rebuild_load_counters(r)
+                except Exception:
+                    logger.exception("Load counter rebuild failed")
 
             tick += 1
             await asyncio.sleep(REAP_TICK_SECONDS)

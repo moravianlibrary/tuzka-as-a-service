@@ -43,6 +43,18 @@ All notable changes to this project are documented here. The format is based on
   through dispatch, engine polls and harvest, across processes. Workers trace nothing
   outside a job; the API skips `/healthz` and `/load`. The chart runs an OTel collector
   into ClickHouse for HyperDX (`clickstack.otel.*`) and sets the endpoint on the pods.
+- `GET /load` for autoscalers: `{queued, inflight, backlog_s}`, where `backlog_s` is the
+  queued and in-flight pages times the measured seconds per page of their domain (an average of recent
+  engine run times, `load.default_seconds_per_page` until there is one). Filter with
+  `domain=a,b` and `adapter=x` (only the jobs a backend of that adapter could serve);
+  `group_by=domain|adapter` shows the breakdown. It's internal: not in the OpenAPI
+  schema, behind a bearer token (`LOAD_TOKEN`, Helm `secrets.loadToken`), and 404 when no
+  token is configured. The counters behind it are repaired from the queues every ~10
+  minutes by the cleanup worker.
+- Scaling from zero: a backend keeps its last reported domains while its engine is down,
+  and `taas-admin backend upsert --declared` takes capabilities (`{domain: [outputs]}`) for an
+  engine that hasn't run yet; the Helm register hook declares `ocrEngine.declaredDomains`
+  for every in-cluster engine. The engine's own report replaces declared ones.
 - API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
   flight, a new connection per page, 3 s polling) against the taas client (all pages
   submitted up front, results pushed over one WebSocket). Same corpus, same stack, so the
@@ -175,6 +187,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The Helm chart's KEDA mode never scaled: its Redis trigger watched a list `ocr-jobs`
+  that taas never writes. KEDA now scales the engine on `GET /load` (`metrics-api`,
+  `keda.loadFilter`, `keda.targetBacklogSeconds`; needs `secrets.loadToken`). The
+  `keda.redisAddress`, `listName`, `listLength` and `redisPassword*` values are gone.
+  With `minReplicas: 0`, set `jobs.queued_timeout_seconds` above the engine's cold
+  start.
 - The Python client (`TaasClient`) no longer opens a fresh `httpx.AsyncClient` for every
   presigned result fetch. One pooled client now lives for the lifetime of the WebSocket
   connection, so a result download reuses the connection instead of paying a new TCP — and,

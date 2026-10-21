@@ -1,7 +1,7 @@
 # Many-to-many mapping of which backends serve which domains. Rebuilt for a backend
 # on each healthcheck from the engine's GET /api/v1/models; the submit worker uses it
 # to route a domain-tagged job only to a backend that serves that domain.
-from sqlalchemy import ForeignKey, PrimaryKeyConstraint, Text
+from sqlalchemy import CheckConstraint, ForeignKey, PrimaryKeyConstraint, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,5 +19,10 @@ class BackendDomain(Base):
     )
     # Outputs this backend produces for this domain (e.g. {alto, txt}).
     outputs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    # "engine" (from domain sync) or "declared" (at registration, until the first sync).
+    source: Mapped[str] = mapped_column(nullable=False, server_default="engine")
 
-    __table_args__ = (PrimaryKeyConstraint("backend_id", "domain_id"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("backend_id", "domain_id"),
+        CheckConstraint("source IN ('engine', 'declared')", name="ck_backend_domains_source"),
+    )

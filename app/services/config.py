@@ -31,6 +31,8 @@ RESULTS_MAX_AGE_DEFAULT_SECONDS = 86_400
 # finish within this fraction of the fastest one (step 8, D7).
 AFFINITY_TOLERANCE_DEFAULT = 0.15
 STATE_TTL_MARGIN_SECONDS = 60
+# Seconds per page /load assumes for a domain with no measured pages yet.
+LOAD_DEFAULT_SECONDS_PER_PAGE = 10.0
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,11 @@ async def get_affinity_tolerance(db: AsyncSession) -> float:
 async def get_max_requeues(db: AsyncSession) -> int:
     value = await get_value(db, "jobs.max_requeues")
     return int(value) if value is not None else JOB_MAX_REQUEUES_DEFAULT
+
+
+async def get_default_seconds_per_page(db: AsyncSession) -> float:
+    value = await get_value(db, "load.default_seconds_per_page")
+    return float(value) if value is not None else LOAD_DEFAULT_SECONDS_PER_PAGE
 
 
 async def get_state_ttl_seconds(db: AsyncSession) -> int:

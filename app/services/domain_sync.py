@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.base import EngineInfo
+from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
 
@@ -52,10 +53,10 @@ def plan_domain_links(
     return links, schemas_to_store, changed
 
 
-async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo) -> None:
-    """Upsert the described domains, store their schemas and rebuild this backend's
-    ``backend_domains`` rows. The caller commits."""
-    names = sorted(info.domains)
+async def _domain_rows(
+    db: AsyncSession, names: list[str]
+) -> list[tuple[int, str, dict[str, Any] | None]]:
+    """Make sure every name has a ``domains`` row; return ``(id, name, options_schema)``."""
     if names:
         await db.execute(
             insert(Domain)
@@ -65,9 +66,22 @@ async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo)
     rows = await db.execute(
         select(Domain.id, Domain.name, Domain.options_schema).where(Domain.name.in_(names))
     )
+    return [(domain_id, name, schema) for domain_id, name, schema in rows.all()]
+
+
+async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo) -> None:
+    """Upsert the described domains, store their schemas and rebuild this backend's
+    ``backend_domains`` rows (engine rows replace declared ones). The caller commits.
+
+    An empty describe() changes nothing: an engine that is down or scaled to zero keeps
+    its remembered capabilities, which is what lets /load ask for it to come back (D7).
+    """
+    names = sorted(info.domains)
+    if not names:
+        return
     ids: dict[str, int] = {}
     known_schemas: dict[str, dict[str, Any] | None] = {}
-    for domain_id, name, schema in rows.all():
+    for domain_id, name, schema in await _domain_rows(db, names):
         ids[name] = domain_id
         known_schemas[name] = schema
 
@@ -93,6 +107,27 @@ async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo)
         )
 
 
+async def apply_declared_capabilities(
+    db: AsyncSession, backend_id: int, declared: dict[str, list[str]]
+) -> None:
+    """Record capabilities declared at registration (``source='declared'``), for domains
+    the engine hasn't reported itself yet; engine rows are never overwritten. The caller
+    commits."""
+    names = sorted(declared)
+    for domain_id, name, _ in await _domain_rows(db, names):
+        outputs = sorted(set(declared[name]))
+        stmt = insert(BackendDomain).values(
+            backend_id=backend_id, domain_id=domain_id, outputs=outputs, source="declared"
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["backend_id", "domain_id"],
+                set_={"outputs": stmt.excluded.outputs},
+                where=BackendDomain.source == "declared",
+            )
+        )
+
+
 async def served_capabilities(db: AsyncSession, backend_id: int) -> dict[str, frozenset[str]]:
     """Domain → outputs that ``backend_id`` currently serves (from the synced mapping)."""
     rows = await db.execute(
@@ -101,3 +136,23 @@ async def served_capabilities(db: AsyncSession, backend_id: int) -> dict[str, fr
         .where(BackendDomain.backend_id == backend_id)
     )
     return {name: frozenset(outputs) for name, outputs in rows.all()}
+
+
+async def adapter_capabilities(
+    db: AsyncSession, adapter: str | None = None
+) -> dict[str, dict[str, frozenset[str]]]:
+    """Adapter → domain → outputs, the union over all its backends' synced rows.
+    Disabled backends count too: a workload scaled to zero is still registered, and its
+    remembered capabilities are what lets /load ask for it to scale back up."""
+    query = (
+        select(Backend.adapter, Domain.name, BackendDomain.outputs)
+        .join(BackendDomain, BackendDomain.backend_id == Backend.id)
+        .join(Domain, Domain.id == BackendDomain.domain_id)
+    )
+    if adapter is not None:
+        query = query.where(Backend.adapter == adapter)
+    caps: dict[str, dict[str, frozenset[str]]] = {}
+    for name, domain, outputs in (await db.execute(query)).all():
+        served = caps.setdefault(name, {})
+        served[domain] = served.get(domain, frozenset()) | frozenset(outputs)
+    return caps

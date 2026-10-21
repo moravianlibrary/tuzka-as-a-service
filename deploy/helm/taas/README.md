@@ -53,8 +53,8 @@ When `ocrEngine.enabled: false`, no engine is deployed — register external bac
 remote GPU box) with `taas-admin backend upsert` (in the api pod), or reverse-tunnel an off-cluster engine in (see
 the next section).
 
-**Scaling:** `hpa` scales on CPU; `keda` scales on the Redis job-queue length
-(`autoscaling.keda.*`); `none` uses a static `ocrEngine.replicas` (default 1). Raising `maxReplicas` later
+**Scaling:** `hpa` scales on CPU; `keda` scales on the queued work the API reports at
+`GET /load` (`autoscaling.keda.*`, needs `secrets.loadToken`; see `AUTOSCALING.md`); `none` uses a static `ocrEngine.replicas` (default 1). Raising `maxReplicas` later
 needs a `helm upgrade` so the register hook adds the new ordinals' backends. Under a GitOps
 controller (Argo CD / Flux) the autoscaler needs a `/spec/replicas` ignore rule or scaled-up
 pods get reverted and killed — see [AUTOSCALING.md](AUTOSCALING.md).
@@ -156,10 +156,11 @@ dashboards, traces and logs, and MongoDB for HyperDX's own state. Off by default
 | `ocrEngine.env` | (TUZKAOCR_*) | Engine tuning env (`OCR_THREADS=1`, `LINE_WORKERS=1`, `PAGE_WORKERS=1`, `MAX_QUEUE=2`) |
 | `ocrEngine.storage.{results,spool}` | memory `128Mi`/`256Mi` | Scratch volumes (`memory`/`emptyDir`) |
 | `ocrEngine.resources` | req cpu 1 / mem 1500Mi, limits cpu 1 / mem 2Gi | Per-pod resources |
-| `ocrEngine.autoscaling.mode` | `hpa` | `none` (static `ocrEngine.replicas`) / `hpa` (CPU) / `keda` (Redis queue length) |
+| `ocrEngine.autoscaling.mode` | `hpa` | `none` (static `ocrEngine.replicas`) / `hpa` (CPU) / `keda` (queued work from `GET /load`) |
 | `ocrEngine.autoscaling.{minReplicas,maxReplicas}` | `1` / `16` | Replica bounds; `maxReplicas` = number of backends pre-registered |
 | `ocrEngine.autoscaling.hpa.*` | 70% / 300s | HPA CPU target + scale-down stabilization window |
-| `ocrEngine.autoscaling.keda.*` | — | KEDA Redis trigger (`redisAddress`, `listName`, `listLength`) when `mode: keda` |
+| `ocrEngine.autoscaling.keda.*` | — | KEDA `metrics-api` trigger (`loadFilter`, `targetBacklogSeconds`, `activationBacklogSeconds`, `pollingInterval`, `cooldownPeriod`) when `mode: keda` |
+| `ocrEngine.declaredDomains` | the four TuzkaOCR domains | Capabilities registered for each engine before it has run (scale from zero) |
 
 ### Off-cluster boxes via reverse tunnel (`tunnel.*`, `tunnelBoxes`)
 
@@ -210,7 +211,7 @@ worker — it is neither a Helm value nor a DB config key.
 
 ### Secrets (`secrets.*`)
 
-`keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
+`loadToken` (for `GET /load`; required by `mode: keda`), `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
 `ocrEngineApiKey`; with `clickstack.enabled`, also `clickhousePassword` and `hyperdxApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
 
 ### Exposure (`expose.<api|legacy|minioResults|hyperdx>.*`)

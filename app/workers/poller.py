@@ -37,6 +37,7 @@ from app.services.redis_jobs import (
     job_event_payload,
     job_outputs,
     publish_event,
+    record_page_seconds,
     release_and_requeue,
     set_done,
     set_failed,
@@ -404,6 +405,11 @@ async def main() -> None:
                     await perf.record_service(
                         r, backend_id, job_domain(meta), seconds, float(meta.get("mp") or 1.0)
                     )
+            # Engine-clock run time also feeds /load's seconds-per-page estimate.
+            if engine_started is not None and engine_finished is not None:
+                seconds = (engine_finished - engine_started).total_seconds()
+                if seconds > 0:
+                    await record_page_seconds(r, job_domain(meta), seconds)
             emitter.emit(
                 job_event(
                     "done",

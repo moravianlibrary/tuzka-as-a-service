@@ -10,6 +10,7 @@ import redis.asyncio as aioredis
 
 from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
+from app.services.load import ewma, load_field
 
 settings = Settings()
 
@@ -38,6 +39,14 @@ _POLL_WAKEUP_TTL_SECONDS = 60
 
 # Delayed-retry ZSET: job_id scored by ready-at unix time.
 _DELAYED_KEY = "jobs:delayed"
+
+# Load counters for GET /load: how many jobs are waiting (incl. delayed retries) and in
+# flight, per "{domain}|{sorted,outputs}" field (load_field). Moved only by the state
+# functions below, and only on a real transition, so re-running one is a no-op.
+LOAD_QUEUED_KEY = "load:queued"
+LOAD_INFLIGHT_KEY = "load:inflight"
+# Seconds per page, per domain: an EWMA of engine run time, for /load's backlog_s.
+LOAD_SPP_KEY = "load:spp"
 
 
 async def signal_submit(r: aioredis.Redis) -> None:
@@ -108,6 +117,10 @@ def job_options(meta: dict[str, str]) -> dict[str, Any]:
     raw = meta.get("options")
     options: dict[str, Any] = json.loads(raw) if raw else {}
     return options
+
+
+def _job_load_field(meta: dict[str, str]) -> str:
+    return load_field(job_domain(meta), job_outputs(meta))
 
 
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
@@ -185,8 +198,11 @@ async def enqueue_job(
     key = f"job:{job_id}"
     # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
     # does not upcast; cast around the third-party stub friction (values are all strings).
-    await r.hset(key, mapping=cast("dict[Any, Any]", metadata))
-    await r.expire(key, state_ttl)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hset(key, mapping=cast("dict[Any, Any]", metadata))
+        pipe.expire(key, state_ttl)
+        pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(metadata), 1)
+        await pipe.execute()
     await _add_pending(r, priority, job_id, float(metadata.get("submitted_at", time.time())))
 
 
@@ -254,12 +270,21 @@ async def set_running(
         },
     )
     await r.expire(key, state_ttl)
-    added = await r.sadd("jobs:inflight", job_id)
-    await r.incr(f"backend:{backend_id}:inflight")
-    batch_id = await r.hget(key, "batch_id")
-    if added and batch_id:
-        # Which batches this backend is working on, for dispatch affinity (step 8, D7).
-        await r.hincrby(_backend_batches_key(backend_id), _s(batch_id), 1)
+    # Only a job that really entered the in-flight set moves from queued to inflight,
+    # so a repeated call can't skew the load counters.
+    if await r.sadd("jobs:inflight", job_id):
+        meta = await get_job(r, job_id)
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.incr(f"backend:{backend_id}:inflight")
+            if meta is not None:
+                field = _job_load_field(meta)
+                pipe.hincrby(LOAD_QUEUED_KEY, field, -1)
+                pipe.hincrby(LOAD_INFLIGHT_KEY, field, 1)
+                if meta.get("batch_id"):
+                    # Which batches this backend is working on, for dispatch affinity
+                    # (step 8, D7).
+                    pipe.hincrby(_backend_batches_key(backend_id), _s(meta["batch_id"]), 1)
+            await pipe.execute()
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
@@ -334,6 +359,8 @@ async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> BatchCount
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
     removed = await r.srem("jobs:inflight", job_id)
+    if removed and meta is not None:
+        await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)
@@ -359,6 +386,13 @@ async def set_failed(
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
     removed = await r.srem("jobs:inflight", job_id)
+    if meta is not None:
+        # A job that never ran (failed at dispatch, timed out in the queue) leaves the
+        # queued count; one that ran leaves inflight. Already failed/done: nothing.
+        if removed:
+            await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
+        elif meta.get("status") == "queued":
+            await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(meta), -1)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)
@@ -393,6 +427,12 @@ async def release_and_requeue(
     meta = await get_job(r, job_id)
     backend_id = meta.get("backend_id") if meta else None
     removed = await r.srem("jobs:inflight", job_id)
+    if removed and meta is not None:
+        field = _job_load_field(meta)
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.hincrby(LOAD_INFLIGHT_KEY, field, -1)
+            pipe.hincrby(LOAD_QUEUED_KEY, field, 1)
+            await pipe.execute()
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)
@@ -405,6 +445,62 @@ async def release_and_requeue(
     else:
         priority = int(meta.get("priority", 0)) if meta else 0
         await _add_pending(r, priority, job_id, score)
+
+
+async def rebuild_load_counters(r: aioredis.Redis) -> None:
+    """Recount the load counters from the queues themselves and swap them in (D3).
+
+    The counters move in separate steps from the queues, so a crash between the two
+    leaves them off for good; this repairs it. Sources: every pending ZSET (via the
+    levels set, no SCAN), the delayed-retry ZSET and the in-flight set. A transition that
+    lands mid-rebuild, or a job the submit worker holds between dequeue and dispatch,
+    can be off by one until the next rebuild, which is fine for an autoscaling signal.
+    """
+    levels = await r.smembers(_PENDING_LEVELS_KEY)
+    queued_ids: list[str] = []
+    for level in levels:
+        prio = int(level.decode() if isinstance(level, bytes) else level)
+        queued_ids += [_s(m) for m in await r.zrange(_pending_key(prio), 0, -1)]
+    queued_ids += [_s(m) for m in await r.zrange(_DELAYED_KEY, 0, -1)]
+    inflight_ids = [_s(m) for m in await r.smembers("jobs:inflight")]
+
+    async def count(job_ids: list[str]) -> dict[str, int]:
+        async with r.pipeline(transaction=False) as pipe:
+            for job_id in job_ids:
+                pipe.hgetall(f"job:{job_id}")
+            hashes = await pipe.execute()
+        counts: dict[str, int] = {}
+        for raw in hashes:
+            if raw:
+                field = _job_load_field({_s(k): _s(v) for k, v in raw.items()})
+                counts[field] = counts.get(field, 0) + 1
+        return counts
+
+    for key, counts in (
+        (LOAD_QUEUED_KEY, await count(queued_ids)),
+        (LOAD_INFLIGHT_KEY, await count(inflight_ids)),
+    ):
+        if not counts:
+            await r.delete(key)
+            continue
+        tmp = f"{key}:rebuild"
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.delete(tmp)
+            pipe.hset(tmp, mapping=cast("dict[Any, Any]", counts))
+            pipe.rename(tmp, key)  # atomic swap: readers never see a half-built hash
+            await pipe.execute()
+
+
+def _s(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) -> None:
+    """Fold one finished page's engine run time into the domain's seconds-per-page
+    average. Two pollers racing can drop a sample; for an average that's harmless."""
+    prev = await r.hget(LOAD_SPP_KEY, domain)
+    value = ewma(float(prev) if prev is not None else None, seconds)
+    await r.hset(LOAD_SPP_KEY, domain, str(value))
 
 
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:
