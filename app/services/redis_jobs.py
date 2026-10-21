@@ -523,8 +523,8 @@ async def rebuild_load_counters(r: aioredis.Redis) -> None:
     The counters move in separate steps from the queues, so a crash between the two
     leaves them off for good; this repairs it. Sources: every pending ZSET (via the
     levels set, no SCAN), the delayed-retry ZSET and the in-flight set. A transition that
-    lands mid-rebuild, or a job the submit worker holds between dequeue and dispatch,
-    can be off by one until the next rebuild, which is fine for an autoscaling signal.
+    lands mid-rebuild, or a job the submit worker holds between claim and dispatch, can
+    be off by one until the next rebuild, which is fine for an autoscaling signal.
     """
     levels = await r.smembers(_PENDING_LEVELS_KEY)
     queued_ids: list[str] = []
@@ -561,6 +561,51 @@ async def rebuild_load_counters(r: aioredis.Redis) -> None:
             pipe.hset(tmp, mapping=cast("dict[Any, Any]", counts))
             pipe.rename(tmp, key)  # atomic swap: readers never see a half-built hash
             await pipe.execute()
+
+
+# Recount every backend's in-flight jobs and batch pages from the in-flight set, in one
+# script so no dispatch or harvest lands between the count and the write.
+# ARGV: the backend ids that have counters now (zeroed unless something is in flight).
+_REBUILD_BACKEND_COUNTERS_LUA = """
+local inflight, batches = {}, {}
+for _, id in ipairs(redis.call('SMEMBERS', 'jobs:inflight')) do
+  local f = redis.call('HMGET', 'job:' .. id, 'backend_id', 'batch_id')
+  if f[1] then
+    inflight[f[1]] = (inflight[f[1]] or 0) + 1
+    if f[2] and f[2] ~= '' then
+      batches[f[1]] = batches[f[1]] or {}
+      batches[f[1]][f[2]] = (batches[f[1]][f[2]] or 0) + 1
+    end
+  end
+end
+for _, b in ipairs(ARGV) do
+  if not inflight[b] then inflight[b] = 0 end
+end
+local fixed = 0
+for b, n in pairs(inflight) do
+  local key = 'backend:' .. b .. ':inflight'
+  if tonumber(redis.call('GET', key) or '0') ~= n then fixed = fixed + 1 end
+  redis.call('SET', key, n)
+  local bkey = 'backend:' .. b .. ':batches'
+  redis.call('DEL', bkey)
+  for batch, count in pairs(batches[b] or {}) do redis.call('HSET', bkey, batch, count) end
+end
+return fixed
+"""
+
+
+async def rebuild_backend_counters(r: aioredis.Redis) -> int:
+    """Recount each backend's in-flight slots (and batch pages, for affinity) from the
+    in-flight jobs. The counters move in their own steps, so a crash or a duplicated
+    dispatch leaves one off, and nothing else ever corrects it: a count too high loses
+    that backend a slot for good, one too low over-dispatches into 503s. Returns how many
+    backends were off."""
+    backend_ids: set[str] = set()
+    async for key in r.scan_iter(match="backend:*:inflight", count=500):
+        backend_ids.add(_s(key).split(":")[1])
+    sha = await r.script_load(_REBUILD_BACKEND_COUNTERS_LUA)
+    fixed = await r.evalsha(sha, 0, *sorted(backend_ids))
+    return int(fixed)
 
 
 async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) -> None:

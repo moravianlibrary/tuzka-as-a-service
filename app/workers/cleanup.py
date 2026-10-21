@@ -20,7 +20,11 @@ from app.services import batch_store, live_metrics
 from app.services.config import get_storage_ttl_minutes
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
-from app.services.redis_jobs import rebuild_load_counters, requeue_orphans
+from app.services.redis_jobs import (
+    rebuild_backend_counters,
+    rebuild_load_counters,
+    requeue_orphans,
+)
 from app.services.retention import (
     delete_expired_batches,
     delete_finished_jobs,
@@ -140,6 +144,11 @@ async def main() -> None:
                     await rebuild_load_counters(r)
                 except Exception:
                     logger.exception("Load counter rebuild failed")
+                try:
+                    if fixed := await rebuild_backend_counters(r):
+                        logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
+                except Exception:
+                    logger.exception("Backend counter rebuild failed")
 
             tick += 1
             await sleep_unless_stopped(stop, REAP_TICK_SECONDS)

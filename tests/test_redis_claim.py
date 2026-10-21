@@ -11,7 +11,10 @@ import redis.asyncio as aioredis
 from app.services.redis_jobs import (
     claim_pending,
     enqueue_job,
+    get_backend_batches,
+    get_backend_inflight,
     peek_pending,
+    rebuild_backend_counters,
     requeue_orphans,
     schedule_retry,
     set_running,
@@ -74,3 +77,25 @@ async def test_requeue_orphans_puts_back_only_lost_jobs(redis_client: aioredis.R
     assert [e[0] for e in await peek_pending(redis_client, 10)] == ["lost", "waiting"]
     # Already back on its queue: a second sweep leaves it alone.
     assert await requeue_orphans(redis_client, ids, now) == []
+
+
+@pytest.mark.asyncio
+async def test_rebuild_backend_counters_matches_the_inflight_jobs(
+    redis_client: aioredis.Redis,
+) -> None:
+    for job_id in ("a", "b", "c"):
+        await _enqueue(redis_client, job_id, 0, 100.0)
+        await claim_pending(redis_client, job_id, 0)
+    await redis_client.hset("job:c", "batch_id", "B1")
+    await set_running(redis_client, "a", "e1", "http://e1", 1, TTL)
+    await set_running(redis_client, "b", "e2", "http://e2", 2, TTL)
+    await set_running(redis_client, "c", "e3", "http://e2", 2, TTL)
+    # A job dispatched twice: counted on backend 1, recorded (and later released) on 2.
+    await redis_client.set("backend:1:inflight", 3)
+    await redis_client.set("backend:2:inflight", -1)
+    await redis_client.set("backend:7:inflight", 2)  # nothing runs there any more
+
+    assert await rebuild_backend_counters(redis_client) == 3
+    assert [await get_backend_inflight(redis_client, b) for b in (1, 2, 7)] == [1, 2, 0]
+    assert await get_backend_batches(redis_client, 2) == {"B1": 1}
+    assert await rebuild_backend_counters(redis_client) == 0  # already right
