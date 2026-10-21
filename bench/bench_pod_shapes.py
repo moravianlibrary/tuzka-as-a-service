@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# NOTE: a pre-0.9 one-off benchmark; it drives the HTTP admin API, which 0.9 removed.
 """Pod-shape bench: best throughput-per-core for the in-cluster TuzkaOCR CPU engine.
 
 Sweeps engine pod shape × BLAS thread policy, holding PAGE_WORKERS = allocated cores
@@ -25,6 +24,7 @@ Does NOT restore docker-compose.yml — afterward run
 
 Usage: venv/bin/python bench/bench_pod_shapes.py [--n 40] [--rounds 3]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,13 +39,14 @@ from pathlib import Path
 
 import httpx
 
+from api.common import UNTHROTTLED_PER_MINUTE, taas_admin
+
 PARENT = Path(__file__).resolve().parent.parent
 IMAGES_DIR = PARENT / "test-data"
 RESULTS_MD = PARENT / "bench" / "RESULTS_POD_SHAPES.md"
 RAW_TSV = PARENT / "bench" / "pod_shapes_raw.tsv"
 
 TAAS_URL = os.environ.get("TAAS_URL", "http://localhost:8080")
-MASTER_KEY = os.environ.get("MASTER_KEY", "test-master-key")
 FMT = "txt"
 SUBMIT_CONCURRENCY = 8
 DRAIN_TIMEOUT_S = 1200
@@ -69,8 +70,9 @@ def sh(cmd: list[str], env: dict | None = None, check: bool = True) -> str:
 
 
 def psql(sql: str) -> str:
-    return sh(["docker", "compose", "exec", "-T", PG_SVC,
-               "psql", "-U", "taas", "-d", "taas", "-tAc", sql])
+    return sh(
+        ["docker", "compose", "exec", "-T", PG_SVC, "psql", "-U", "taas", "-d", "taas", "-tAc", sql]
+    )
 
 
 def engine_cid() -> str:
@@ -79,15 +81,22 @@ def engine_cid() -> str:
 
 def recreate_engine(cpuset: str, pw: int, blas: int) -> None:
     print(f"  recreating engine (cpuset={cpuset} pw={pw} blas={blas}) ...", flush=True)
-    sh(["docker", "compose", "up", "-d", "--no-deps", ENGINE_SVC],
-       env={"BENCH_CPUSET": cpuset, "BENCH_PAGE_WORKERS": str(pw), "BENCH_BLAS": str(blas)})
+    sh(
+        ["docker", "compose", "up", "-d", "--no-deps", ENGINE_SVC],
+        env={"BENCH_CPUSET": cpuset, "BENCH_PAGE_WORKERS": str(pw), "BENCH_BLAS": str(blas)},
+    )
     deadline = time.time() + 180
-    probe = ("import urllib.request;"
-             "urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5);print('ok')")
+    probe = (
+        "import urllib.request;"
+        "urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5);print('ok')"
+    )
     while time.time() < deadline:
         r = subprocess.run(
             ["docker", "compose", "exec", "-T", ENGINE_SVC, "python", "-c", probe],
-            cwd=str(PARENT), capture_output=True, text=True)
+            cwd=str(PARENT),
+            capture_output=True,
+            text=True,
+        )
         if r.returncode == 0 and "ok" in r.stdout:
             time.sleep(3)
             print("  engine healthy.", flush=True)
@@ -119,7 +128,10 @@ class RssSampler(threading.Thread):
             try:
                 out = subprocess.run(
                     ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", self._cid],
-                    capture_output=True, text=True, timeout=10)
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
                 used = out.stdout.split("/")[0]
                 if used.strip():
                     self.peak_mib = max(self.peak_mib, self._to_mib(used))
@@ -133,33 +145,40 @@ class RssSampler(threading.Thread):
         return self.peak_mib
 
 
-def make_bench_user(http: httpx.Client) -> tuple[str, str]:
+def make_bench_user() -> tuple[str, str]:
     username = f"shapebench-{uuid.uuid4().hex[:8]}"
-    r = http.post(f"{TAAS_URL}/admin/users",
-                  headers={"X-Master-Key": MASTER_KEY}, json={"username": username})
-    r.raise_for_status()
-    api_key = r.json()["api_key"]
-    http.patch(f"{TAAS_URL}/admin/users/{username}",
-               headers={"X-Master-Key": MASTER_KEY},
-               json={"rate_submit_per_minute": 1_000_000, "burst_submit": 100_000,
-                     "rate_query_per_minute": 1_000_000, "burst_query": 100_000}
-               ).raise_for_status()
+    api_key = taas_admin("user", "create", username).strip()
+    limit = str(UNTHROTTLED_PER_MINUTE)
+    taas_admin(
+        "user",
+        "set-limits",
+        username,
+        "--submit-per-minute",
+        limit,
+        "--submit-burst",
+        limit,
+        "--query-per-minute",
+        limit,
+        "--query-burst",
+        limit,
+    )
     print(f"  bench user: {username}", flush=True)
     return username, api_key
 
 
-def set_backend_inflight(http: httpx.Client, value: int) -> None:
-    http.patch(f"{TAAS_URL}/admin/backends/{BACKEND_ID}",
-               headers={"X-Master-Key": MASTER_KEY},
-               json={"max_inflight": value}).raise_for_status()
+def set_backend_inflight(value: int) -> None:
+    taas_admin("backend", "update", str(BACKEND_ID), "--max-inflight", str(value))
     print(f"  backend {BACKEND_ID} max_inflight -> {value}", flush=True)
 
 
 def submit_one(api_key: str, img: Path) -> int:
     with httpx.Client(timeout=60.0) as c:
-        r = c.post(f"{TAAS_URL}/api/v1/jobs", headers={"X-API-Key": api_key},
-                   files={"image": (img.name, img.read_bytes())},
-                   data={"uuid": str(uuid.uuid4()), "fmt": FMT})
+        r = c.post(
+            f"{TAAS_URL}/api/v1/jobs",
+            headers={"X-API-Key": api_key},
+            files={"image": (img.name, img.read_bytes())},
+            data={"uuid": str(uuid.uuid4()), "fmt": FMT},
+        )
         return r.status_code
 
 
@@ -177,17 +196,21 @@ def drain(username: str, run_start: str, n: int) -> None:
     deadline = time.time() + DRAIN_TIMEOUT_S
     done = 0
     while time.time() < deadline:
-        done = int(psql(
-            f"SELECT count(*) FROM jobs WHERE username='{username}' "
-            f"AND submitted_at >= '{run_start}' AND status IN ('done','failed');"))
+        done = int(
+            psql(
+                f"SELECT count(*) FROM jobs WHERE username='{username}' "
+                f"AND submitted_at >= '{run_start}' AND status IN ('done','failed');"
+            )
+        )
         if done >= n:
             return
         time.sleep(2)
     raise RuntimeError(f"drain timeout: only {done}/{n} finished in {DRAIN_TIMEOUT_S}s")
 
 
-def run_once(username: str, api_key: str, images: list[Path],
-             cores: int, cpuset: str, blas: int) -> dict:
+def run_once(
+    username: str, api_key: str, images: list[Path], cores: int, cpuset: str, blas: int
+) -> dict:
     recreate_engine(cpuset, cores, blas)
     run_start = psql("SELECT now();")
     sampler = RssSampler(engine_cid())
@@ -200,7 +223,8 @@ def run_once(username: str, api_key: str, images: list[Path],
         "SELECT status, requeues, "
         "EXTRACT(EPOCH FROM (finished_at - started_at)), "
         "EXTRACT(EPOCH FROM started_at), EXTRACT(EPOCH FROM finished_at) "
-        f"FROM jobs WHERE username='{username}' AND submitted_at >= '{run_start}';")
+        f"FROM jobs WHERE username='{username}' AND submitted_at >= '{run_start}';"
+    )
 
     run_s, starts, finishes = [], [], []
     failed = requeues = 0
@@ -222,9 +246,18 @@ def run_once(username: str, api_key: str, images: list[Path],
 
     wall = (max(finishes) - min(starts)) if (finishes and starts) else 0.0
     thr = (len(run_s) / wall) if wall > 0 else 0.0
-    return {"cores": cores, "blas": blas, "run_s": run_s, "throughput": thr,
-            "thr_per_core": thr / cores, "wall": wall, "done": len(run_s),
-            "failed": failed, "requeues": requeues, "peak_mib": peak_mib}
+    return {
+        "cores": cores,
+        "blas": blas,
+        "run_s": run_s,
+        "throughput": thr,
+        "thr_per_core": thr / cores,
+        "wall": wall,
+        "done": len(run_s),
+        "failed": failed,
+        "requeues": requeues,
+        "peak_mib": peak_mib,
+    }
 
 
 def pct(xs: list[float], p: float) -> float:
@@ -252,7 +285,7 @@ def write_report(results: dict[str, list[dict]], order: list[str], n: int, round
     for key in order:
         runs = results[key]
         cores = runs[0]["cores"]
-        blas = key.split("-", 1)[1]   # from the config key; on 1 core capped==uncapped
+        blas = key.split("-", 1)[1]  # from the config key; on 1 core capped==uncapped
         thr = statistics.median([r["throughput"] for r in runs])
         tpc = statistics.median([r["thr_per_core"] for r in runs])
         p95 = pct([x for r in runs for x in r["run_s"]], 0.95)
@@ -260,22 +293,30 @@ def write_report(results: dict[str, list[dict]], order: list[str], n: int, round
         done = sum(r["done"] for r in runs)
         failed = sum(r["failed"] for r in runs)
         rq = sum(r["requeues"] for r in runs)
-        lines.append(f"| {cores}-core | {blas} | {thr:.3f} | **{tpc:.3f}** | {p95:.1f} | "
-                     f"{peak:.0f} | {done} | {failed} | {rq} |")
+        lines.append(
+            f"| {cores}-core | {blas} | {thr:.3f} | **{tpc:.3f}** | {p95:.1f} | "
+            f"{peak:.0f} | {done} | {failed} | {rq} |"
+        )
 
     lines.append("\n## Per-round raw\n")
     lines.append("| config | round | done | failed | wall s | pg/s | pg/s/core | peak MiB |")
     lines.append("|---|---|---|---|---|---|---|---|")
     with RAW_TSV.open("w") as tsv:
-        tsv.write("config\tround\tcores\tblas\tdone\tfailed\trequeues\twall_s\t"
-                  "throughput\tthr_per_core\tpeak_mib\n")
+        tsv.write(
+            "config\tround\tcores\tblas\tdone\tfailed\trequeues\twall_s\t"
+            "throughput\tthr_per_core\tpeak_mib\n"
+        )
         for key in order:
             for i, r in enumerate(results[key], 1):
-                lines.append(f"| {key} | {i} | {r['done']} | {r['failed']} | {r['wall']:.1f} | "
-                             f"{r['throughput']:.3f} | {r['thr_per_core']:.3f} | {r['peak_mib']:.0f} |")
-                tsv.write(f"{key}\t{i}\t{r['cores']}\t{r['blas']}\t{r['done']}\t{r['failed']}\t"
-                          f"{r['requeues']}\t{r['wall']:.1f}\t{r['throughput']:.3f}\t"
-                          f"{r['thr_per_core']:.3f}\t{r['peak_mib']:.0f}\n")
+                lines.append(
+                    f"| {key} | {i} | {r['done']} | {r['failed']} | {r['wall']:.1f} | "
+                    f"{r['throughput']:.3f} | {r['thr_per_core']:.3f} | {r['peak_mib']:.0f} |"
+                )
+                tsv.write(
+                    f"{key}\t{i}\t{r['cores']}\t{r['blas']}\t{r['done']}\t{r['failed']}\t"
+                    f"{r['requeues']}\t{r['wall']:.1f}\t{r['throughput']:.3f}\t"
+                    f"{r['thr_per_core']:.3f}\t{r['peak_mib']:.0f}\n"
+                )
 
     RESULTS_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\nwrote {RESULTS_MD}\nwrote {RAW_TSV}", flush=True)
@@ -299,24 +340,25 @@ def main() -> None:
     order = [c[0] for c in configs]
     print(f"corpus: {len(images)} pages · configs={order} · rounds={args.rounds}", flush=True)
 
-    http = httpx.Client(timeout=60.0)
-    username, api_key = make_bench_user(http)
-    set_backend_inflight(http, BENCH_MAX_INFLIGHT)
+    username, api_key = make_bench_user()
+    set_backend_inflight(BENCH_MAX_INFLIGHT)
     results: dict[str, list[dict]] = {c[0]: [] for c in configs}
     try:
         for r in range(args.rounds):
-            rot = configs[r % len(configs):] + configs[: r % len(configs)]
+            rot = configs[r % len(configs) :] + configs[: r % len(configs)]
             print(f"\n=== round {r + 1}/{args.rounds} ===", flush=True)
             for key, cores, cpuset, blas in rot:
                 res = run_once(username, api_key, images, cores, cpuset, blas)
                 results[key].append(res)
-                print(f"  [{key}] thr={res['throughput']:.3f} pg/s  "
-                      f"per-core={res['thr_per_core']:.3f}  done={res['done']} "
-                      f"failed={res['failed']} rq={res['requeues']} "
-                      f"peak={res['peak_mib']:.0f}MiB", flush=True)
+                print(
+                    f"  [{key}] thr={res['throughput']:.3f} pg/s  "
+                    f"per-core={res['thr_per_core']:.3f}  done={res['done']} "
+                    f"failed={res['failed']} rq={res['requeues']} "
+                    f"peak={res['peak_mib']:.0f}MiB",
+                    flush=True,
+                )
     finally:
-        set_backend_inflight(http, 4)   # restore registered value
-        http.close()
+        set_backend_inflight(4)  # restore registered value
 
     write_report(results, order, args.n, args.rounds)
 
