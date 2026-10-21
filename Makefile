@@ -223,12 +223,12 @@ bench-up: ## Cold-start k3d (engines, cluster, chart) then bench (SKIP_BENCH=1, 
 	bash $(BENCH_API_DIR)/bench-up.sh $(if $(ONLY),ONLY=$(ONLY)) $(if $(N),N=$(N))
 
 .PHONY: bench
-bench: ## Run the API benchmark scenarios (TARGET=compose|k3d, ONLY=, N=, IMAGES=, DRY_RUN=1)
+bench: ## Run the API benchmark scenarios (TARGET=compose|k3d, ONLY=, N=, IMAGES=, DRY_RUN=1, ALL_DEVICES=1)
 	@# Unbuffered: piped to a log or tee, Python block-buffers its own progress output
 	@# while subprocess output streams straight through, so the log reads out of order.
 	PYTHONUNBUFFERED=1 $(UV) python $(BENCH_API_DIR)/run_scenarios.py --target $(TARGET) \
 	  $(if $(ONLY),--only $(ONLY)) $(if $(N),--n $(N)) $(if $(IMAGES),--images $(IMAGES)) \
-	  $(if $(DRY_RUN),--dry-run)
+	  $(if $(DRY_RUN),--dry-run) $(if $(ALL_DEVICES),--all-devices)
 
 .PHONY: check
 check: lint typecheck version-check test ## Run the full quality gate (lint + types + version + unit tests)

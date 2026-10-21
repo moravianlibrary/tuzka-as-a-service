@@ -439,6 +439,12 @@ def main() -> None:
     parser.add_argument("--images", type=Path, default=None, help="override the corpus dir")
     parser.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     parser.add_argument(
+        "--all-devices",
+        action="store_true",
+        help="don't pin dispatch to the target's only_device: measure mixed backends "
+        "(e.g. scored dispatch across a GPU and a CPU engine)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -511,7 +517,9 @@ def main() -> None:
     # Per-target (the deployment decides what engines exist), defaults as fallback.
     target_cfg = config.get("targets", {}).get(args.target, {})
     only_device = target_cfg.get("only_device") or config.get("defaults", {}).get("only_device")
-    if only_device:
+    if args.all_devices:
+        print("\nNot pinning dispatch (--all-devices): every enabled backend takes pages")
+    elif only_device:
         print(f"\nPinning dispatch to device={only_device} with taas-admin")
         print("  (priority is moot with a single enabled backend)")
         for line in pin_backends(str(only_device)):
