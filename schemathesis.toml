@@ -1,0 +1,13 @@
+# Schemathesis config for `make test-contract` (picked up from the working directory).
+
+# The two upload endpoints: Schemathesis sometimes sends a multipart body whose boundary
+# doesn't match its own Content-Type header, so the server sees no file and rightly
+# answers 422; the check then reports a "schema-compliant" request as rejected. Every
+# other check still runs on them.
+[[operations]]
+include-name = "POST /api/v1/jobs"
+checks.positive_data_acceptance.enabled = false
+
+[[operations]]
+include-name = "POST /api/v1/batches"
+checks.positive_data_acceptance.enabled = false
