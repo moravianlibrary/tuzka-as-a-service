@@ -1,46 +1,56 @@
 {
-  "version": "0.1.0",
   "name": "taas",
+  "tags": [
+    "taas"
+  ],
   "tiles": [
     {
-      "id": "taas-1",
+      "name": "Pages done per domain",
       "x": 0,
       "y": 0,
       "w": 12,
       "h": 10,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "where": "event:done",
-        "whereLanguage": "lucene",
-        "name": "Pages done per domain",
-        "source": "Job Events",
         "displayType": "stacked_bar",
+        "sourceId": "Job Events",
         "select": [
           {
             "aggFn": "count",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": ""
+            "where": "event:done",
+            "whereLanguage": "lucene"
           }
         ],
         "groupBy": "domain"
       }
     },
     {
-      "id": "taas-2",
+      "name": "Total time p50 / p95 per domain (s)",
       "x": 12,
       "y": 0,
       "w": 12,
       "h": 10,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "where": "event:done",
-        "whereLanguage": "lucene",
-        "name": "Total time p50 / p95 per domain (s)",
-        "source": "Job Events",
         "displayType": "line",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "valueExpression": "total_s",
+            "level": 0.5,
+            "alias": "p50",
+            "where": "event:done",
+            "whereLanguage": "lucene"
+          },
+          {
+            "aggFn": "quantile",
+            "valueExpression": "total_s",
+            "level": 0.95,
+            "alias": "p95",
+            "where": "event:done",
+            "whereLanguage": "lucene"
+          }
+        ],
+        "groupBy": "domain",
         "numberFormat": {
           "output": "number",
           "mantissa": 2,
@@ -49,64 +59,46 @@
           "decimalBytes": false,
           "factor": 1
         },
-        "select": [
-          {
-            "aggFn": "quantile",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": "total_s",
-            "level": 0.5
-          },
-          {
-            "aggFn": "quantile",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": "total_s",
-            "level": 0.95
-          }
-        ],
-        "groupBy": "domain"
+        "alignDateRangeToGranularity": true
       }
     },
     {
-      "id": "taas-3",
+      "name": "Failures by error class",
       "x": 0,
       "y": 10,
       "w": 12,
       "h": 10,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "where": "event:failed",
-        "whereLanguage": "lucene",
-        "name": "Failures by error class",
-        "source": "Job Events",
         "displayType": "stacked_bar",
+        "sourceId": "Job Events",
         "select": [
           {
             "aggFn": "count",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": ""
+            "where": "event:failed",
+            "whereLanguage": "lucene"
           }
         ],
         "groupBy": "error_class"
       }
     },
     {
-      "id": "taas-4",
+      "name": "Engine run time per backend (s, avg)",
       "x": 12,
       "y": 10,
       "w": 12,
       "h": 10,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "where": "event:done",
-        "whereLanguage": "lucene",
-        "name": "Engine run time per backend (s, avg)",
-        "source": "Job Events",
         "displayType": "line",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "avg",
+            "valueExpression": "run_s",
+            "where": "event:done",
+            "whereLanguage": "lucene"
+          }
+        ],
+        "groupBy": "backend_id",
         "numberFormat": {
           "output": "number",
           "mantissa": 2,
@@ -115,31 +107,27 @@
           "decimalBytes": false,
           "factor": 1
         },
-        "select": [
-          {
-            "aggFn": "avg",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": "run_s"
-          }
-        ],
-        "groupBy": "backend_id"
+        "alignDateRangeToGranularity": true
       }
     },
     {
-      "id": "taas-5",
+      "name": "Queue depth",
       "x": 0,
       "y": 20,
-      "w": 24,
+      "w": 12,
       "h": 8,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "where": "metric:queued",
-        "whereLanguage": "lucene",
-        "name": "Queue depth",
-        "source": "Live Metrics",
         "displayType": "line",
+        "sourceId": "Live Metrics",
+        "select": [
+          {
+            "aggFn": "max",
+            "valueExpression": "value",
+            "where": "metric:queued",
+            "whereLanguage": "lucene"
+          }
+        ],
+        "groupBy": "labels['domain']",
         "numberFormat": {
           "output": "number",
           "mantissa": 0,
@@ -148,28 +136,47 @@
           "decimalBytes": false,
           "factor": 1
         },
-        "select": [
-          {
-            "aggFn": "max",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": "value"
-          }
-        ],
-        "groupBy": ""
+        "alignDateRangeToGranularity": true
       }
     },
     {
-      "id": "taas-maps-georef",
+      "name": "Backend in-flight",
+      "x": 12,
+      "y": 20,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "displayType": "line",
+        "sourceId": "Live Metrics",
+        "alignDateRangeToGranularity": true,
+        "select": [
+          {
+            "aggFn": "max",
+            "valueExpression": "value",
+            "where": "metric:backend_inflight",
+            "whereLanguage": "lucene"
+          }
+        ],
+        "groupBy": "labels['backend']"
+      }
+    },
+    {
+      "name": "Maps: georef status share",
       "x": 0,
       "y": 28,
       "w": 12,
       "h": 8,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "whereLanguage": "lucene",
-        "source": "Job Events",
+        "displayType": "stacked_bar",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "count",
+            "where": "event:done AND domain:maps",
+            "whereLanguage": "lucene"
+          }
+        ],
+        "groupBy": "extra['georef.status']",
         "numberFormat": {
           "output": "number",
           "mantissa": 2,
@@ -177,32 +184,28 @@
           "average": false,
           "decimalBytes": false,
           "factor": 1
-        },
-        "where": "event:done AND domain:maps",
-        "name": "Maps: georef status share",
-        "displayType": "stacked_bar",
-        "select": [
-          {
-            "aggFn": "count",
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": ""
-          }
-        ],
-        "groupBy": "extra['georef.status']"
+        }
       }
     },
     {
-      "id": "taas-maps-residual",
+      "name": "Maps: median georef residual (m)",
       "x": 12,
       "y": 28,
       "w": 12,
       "h": 8,
       "config": {
-        "granularity": "auto",
-        "alignDateRangeToGranularity": true,
-        "whereLanguage": "lucene",
-        "source": "Job Events",
+        "displayType": "line",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "valueExpression": "toFloat64OrNull(extra['georef.residual_m'])",
+            "level": 0.5,
+            "alias": "p50",
+            "where": "event:done AND domain:maps",
+            "whereLanguage": "lucene"
+          }
+        ],
         "numberFormat": {
           "output": "number",
           "mantissa": 2,
@@ -211,22 +214,8 @@
           "decimalBytes": false,
           "factor": 1
         },
-        "where": "event:done AND domain:maps",
-        "name": "Maps: median georef residual (m)",
-        "displayType": "line",
-        "select": [
-          {
-            "aggFn": "quantile",
-            "level": 0.5,
-            "aggCondition": "",
-            "aggConditionLanguage": "sql",
-            "valueExpression": "toFloat64OrNull(extra['georef.residual_m'])"
-          }
-        ],
-        "groupBy": ""
+        "alignDateRangeToGranularity": true
       }
     }
-  ],
-  "filters": [],
-  "containers": []
+  ]
 }

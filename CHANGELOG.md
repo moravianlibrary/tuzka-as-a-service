@@ -45,9 +45,11 @@ All notable changes to this project are documented here. The format is based on
   with `CLICKHOUSE_URL` unset it's off. Every 15 s the cleanup worker also writes the
   queue depth (`queued`, `inflight` per domain) and each backend's in-flight count to
   `taas.live_metrics`. The Helm chart deploys ClickHouse, HyperDX and
-  MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword` and
-  `secrets.hyperdxApiKey`), applies the schema on every install/upgrade, and imports
-  the HyperDX dashboards from `files/clickstack/dashboard.json`. docker-compose has a
+  MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword`), applies the
+  schema on every install/upgrade, gives HyperDX its ClickHouse connection and sources
+  (`files/clickstack/sources.json`) when the first user signs up, and imports the
+  dashboards from `files/clickstack/dashboard.json` once a HyperDX user's API key is
+  set in `secrets.hyperdxApiKey`. docker-compose has a
   `clickstack` profile (`make up-clickstack`). `python -m app.ops.backfill_clickstack`
   copies the history in `job_analytics` into ClickHouse once.
 - **Traces and logs (OpenTelemetry).** With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the api

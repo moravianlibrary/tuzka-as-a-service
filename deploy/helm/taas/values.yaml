@@ -338,8 +338,8 @@ metrics:
 
 # -- ClickStack: ClickHouse (job events, step 5) + HyperDX (dashboards, traces, logs) +
 #    MongoDB (HyperDX's own state). When enabled, the api and workers send every job
-#    state change to ClickHouse's taas.job_events. Needs secrets.clickhousePassword and
-#    secrets.hyperdxApiKey.
+#    state change to ClickHouse's taas.job_events. Needs secrets.clickhousePassword;
+#    secrets.hyperdxApiKey (a HyperDX user's API key) enables the dashboard import.
 clickstack:
   enabled: false
   clickhouse:
@@ -433,8 +433,9 @@ secrets:
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "replaceMe"
   ocrEngineApiKey: "replaceMe"
-  # ClickStack (clickstack.enabled): the ClickHouse user's password, and the HyperDX API
-  # key the dashboard importer uses.
+  # ClickStack (clickstack.enabled): the ClickHouse user's password, and the API key of a
+  # HyperDX user (Team Settings, after the first sign-up) the dashboard importer uses;
+  # empty skips the import.
   clickhousePassword: ""
   hyperdxApiKey: ""
   # Shared secret authenticating frpc (GPU box) to the in-cluster frps. Must match

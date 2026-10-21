@@ -50,8 +50,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "app.ops.import_dashboard", "/dashboards/dashboard.json"]
           env:
+            # The app proxies /api to its API server; the external API is under it.
             - name: HYPERDX_URL
-              value: {{ printf "http://%s-hyperdx:8080" $full | quote }}
+              value: {{ printf "http://%s-hyperdx:8080/api" $full | quote }}
             - name: HYPERDX_API_KEY
               valueFrom:
                 secretKeyRef:

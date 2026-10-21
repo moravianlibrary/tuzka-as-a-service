@@ -109,26 +109,16 @@ spec:
           env:
             - name: MONGO_URI
               value: {{ printf "mongodb://%s:27017/hyperdx" $mongo | quote }}
-            - name: CLICKHOUSE_HOST
-              value: {{ printf "%s-clickhouse" $full | quote }}
-            - name: CLICKHOUSE_PORT
-              value: "9000"
-            - name: CLICKHOUSE_PROTOCOL
-              value: "native"
-            - name: CLICKHOUSE_USER
-              value: {{ .Values.clickstack.clickhouse.user | quote }}
-            - name: CLICKHOUSE_PASSWORD
+            # The ClickHouse connection and the sources (files/clickstack/sources.json:
+            # job events, live metrics, OTel logs and traces) HyperDX gives the team it
+            # creates at the first sign-up. They're defaults: edits in the UI stick.
+            - name: DEFAULT_CONNECTIONS
               valueFrom:
                 secretKeyRef:
                   name: {{ $full }}-secret
-                  key: CLICKHOUSE_PASSWORD
-            - name: CLICKHOUSE_DB
-              value: "taas"
-            - name: HYPERDX_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $full }}-secret
-                  key: HYPERDX_API_KEY
+                  key: HYPERDX_DEFAULT_CONNECTIONS
+            - name: DEFAULT_SOURCES
+              value: {{ .Files.Get "files/clickstack/sources.json" | fromJsonArray | toJson | quote }}
             - name: FRONTEND_URL
               value: {{ $frontendUrl | quote }}
             - name: NEXT_PUBLIC_SERVER_URL

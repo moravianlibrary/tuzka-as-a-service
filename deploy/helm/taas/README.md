@@ -134,6 +134,15 @@ ClickHouse for job events (one row per job state change, `taas.job_events`; the 
 in `files/clickstack/schema.sql` is applied by a post-install/upgrade Job), HyperDX for
 dashboards, traces and logs, and MongoDB for HyperDX's own state. Off by default.
 
+**First use.** HyperDX has no users after the install. The first person to sign up
+creates the team, which gets the chart's ClickHouse connection and sources
+(`files/clickstack/sources.json`: Job Events, Live Metrics, Logs, Traces). The
+dashboards (`files/clickstack/dashboard.json`) are imported through HyperDX's API,
+which takes a user's API key: copy it from HyperDX's Team Settings into
+`secrets.hyperdxApiKey` and upgrade the release. Until then the import Job logs that
+it's skipping and the deploy succeeds; afterwards every upgrade re-imports the
+dashboards (updated in place, by name).
+
 | Key | Default | Description |
 |---|---|---|
 | `clickstack.enabled` | `false` | Deploy ClickStack; the api and workers then emit job events to it |
@@ -231,7 +240,7 @@ worker — it is neither a Helm value nor a DB config key.
 ### Secrets (`secrets.*`)
 
 `loadToken` (for `GET /load`; required by `mode: keda` and `tuzkam`), `tuzkamApiKey` (`tuzkam.enabled`), `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
-`ocrEngineApiKey`; with `clickstack.enabled`, also `clickhousePassword` and `hyperdxApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
+`ocrEngineApiKey`; with `clickstack.enabled`, also `clickhousePassword` (and, once someone signed up in HyperDX, `hyperdxApiKey` for the dashboard import). **Override all for non-dev deployments**, ideally from an external secret manager.
 
 ### Exposure (`expose.<api|legacy|minioResults|hyperdx>.*`)
 
