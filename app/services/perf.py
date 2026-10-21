@@ -16,6 +16,8 @@ from collections.abc import Iterable
 
 import redis.asyncio as aioredis
 
+from app.services.load import ewma
+
 ALPHA = 0.2  # weight of the newest page in the average
 COLD_SAMPLES = 5  # below this, a backend borrows the other backends' median (D3)
 PENALTY = 1.5  # per failed attempt (D6)
@@ -27,12 +29,6 @@ Scores = dict[tuple[int, str], tuple[float, int, float]]  # (spp, samples, penal
 
 def _key(backend_id: int) -> str:
     return f"perf:{backend_id}"
-
-
-def ewma(prev: float | None, sample: float, alpha: float = ALPHA) -> float:
-    if prev is None:
-        return sample
-    return alpha * sample + (1 - alpha) * prev
 
 
 def penalize(penalty: float) -> float:
@@ -81,7 +77,7 @@ async def record_service(
     sample = seconds / max(megapixels, MIN_MEGAPIXELS)
     prev, pen = await r.hmget(_key(backend_id), [domain, f"{domain}:pen"])
     async with r.pipeline(transaction=False) as pipe:
-        pipe.hset(_key(backend_id), domain, ewma(_f(prev), sample))
+        pipe.hset(_key(backend_id), domain, ewma(_f(prev), sample, ALPHA))
         pipe.hincrby(_key(backend_id), f"{domain}:n", 1)
         if pen is not None:
             pipe.hset(_key(backend_id), f"{domain}:pen", ease(float(pen)))
