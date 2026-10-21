@@ -8,6 +8,41 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Batches.** `POST /api/v1/batches` takes one archive of pages (`.tar`, `.tar.gz`,
+  `.tar.zst` or `.zip`, read one page at a time) with one domain, set of outputs and
+  options; every image becomes a job, other files are skipped and listed. Watch it with
+  `GET /api/v1/batches/{id}` (counts, ETA, `?pages=1`) or the WebSocket's
+  `{"type": "batch", …}` progress events, and download every page's output plus a
+  `manifest.json` as one `.tar.zst` from `GET /api/v1/batches/{id}/results`
+  (`?partial=1` before it's finished). `POST /api/v1/batches/{id}/retry` reruns the
+  failed pages. Limits: `BATCH_MAX_UPLOAD_BYTES` (2 GiB) and `BATCH_MAX_PAGES` (2000).
+  A batch costs one submit from the rate limit. `make test-batch` runs it end to end.
+- `GET /api/v1/jobs?external_id=…` finds your jobs by their label.
+- **`taas-admin`**, the admin CLI, replaces the HTTP admin API and the dashboard. It ships
+  in the api image and writes to Postgres directly: `user` (create, rotate-key, set-key,
+  enable/disable, set-priority, set-limits, set-scopes), `backend` (upsert, update,
+  enable/disable, delete), `domain` (set-label, set-legacy-id), `config` (get/set) and
+  `job` (list-failed, show with attempts). Run it with
+  `docker compose exec -T api taas-admin …` or `kubectl exec deploy/<release>-api -- taas-admin …`;
+  `--json` for scripts; secrets come from a named env var, never argv. The Helm register
+  hook and every script use it (`scripts/lib/taas-admin.sh`).
+- **Scoped API keys**: `taas-admin user set-scopes <user> --domains a,b --outputs alto,txt`.
+  A submit outside the key's scope is a `403`. Existing keys keep full access.
+- **ClickStack analytics.** Every job state change (`submitted`, `dispatched`, `retried`,
+  `done`, `failed`) is sent to ClickHouse's `taas.job_events`, with durations, OCR
+  metrics and an error flag and class, but no error text (that stays in Postgres). The
+  emitter is fire-and-forget: a job never fails or waits because analytics did, and
+  with `CLICKHOUSE_URL` unset it's off. The Helm chart deploys ClickHouse, HyperDX and
+  MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword` and
+  `secrets.hyperdxApiKey`), applies the schema on every install/upgrade, and imports
+  the HyperDX dashboards from `files/clickstack/dashboard.json`. docker-compose has a
+  `clickstack` profile (`make up-clickstack`). `python -m app.ops.backfill_clickstack`
+  copies the history in `job_analytics` into ClickHouse once.
+- **Traces and logs (OpenTelemetry).** With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the api
+  and workers export traces and logs over OTLP; each job is one trace from submit
+  through dispatch, engine polls and harvest, across processes. Workers trace nothing
+  outside a job; the API skips `/healthz` and `/load`. The chart runs an OTel collector
+  into ClickHouse for HyperDX (`clickstack.otel.*`) and sets the endpoint on the pods.
 - API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
   flight, a new connection per page, 3 s polling) against the taas client (all pages
   submitted up front, results pushed over one WebSocket). Same corpus, same stack, so the
@@ -68,6 +103,25 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Dispatch by measured speed.** Each page goes to the backend that would finish it
+  first, from the backend's measured engine seconds per megapixel (the API now reads
+  each image's size at submit; Pillow joins the api image) and its pages in flight,
+  instead of round-robin. Backend priority tiers still come first. Failures that are a
+  backend's fault make it look slower until its pages succeed again. Pages of a batch
+  stick to a backend already running it when that's within `dispatch.affinity_tolerance`
+  (default 0.15) of the fastest.
+- **`external_id` is now an optional string** (≤ 255 characters, e.g. a PID like
+  `uuid:…`), your own label, no longer a required UUID. **Breaking:** the submit field
+  is `external_id` (`uuid` is gone), and WebSocket events carry `job_id` and
+  `external_id` instead of `uuid`: match them on the `job_id` that submit returns. The
+  engine upload is named by job id. The compat API is unaffected.
+- **Retention.** Postgres keeps live state only; job history is in ClickHouse.
+  Finished job rows (with their results) are deleted `jobs.done_ttl_seconds` (1 day) after
+  a `done` job finished and `jobs.failed_ttl_seconds` (7 days) after a `failed` one,
+  instead of after 30 days. Result objects go after `storage.results_max_age_seconds`
+  (1 day), or earlier, oldest first, when `storage.results_max_bytes` is set and
+  exceeded; their endpoints then answer **410 Gone**. **First deploy:** the existing
+  rows past their TTL are deleted gradually, ~20 000 a minute, by the cleanup worker.
 - The retry policy is now uniform across dispatch, poll, and engine-reported failures:
   transport errors, HTTP 5xx, 408, and 429 are retried at all three stages; on poll,
   HTTP 404 (engine lost the job) is also retried. Engine-reported failures with
@@ -107,6 +161,17 @@ All notable changes to this project are documented here. The format is based on
   from `GET /api/v1/domains` with the caller's key, cached for 60 s per key. The
   `ENGINES` setting (compose, `.env.compat`, Helm `compat.engines`) is gone. A legacy
   engine is only listed while some enabled backend serves its domain.
+
+### Removed
+
+- **External URLs** (`users.external_url_template`, `external_url` in job status).
+- **The admin API** (`/admin/*`), **the dashboard** (`/dashboard`, `/static`), the
+  **master key** (`MASTER_KEY`, Helm `secrets.masterKey`, the `X-Master-Key` header) and
+  the `adminDashboard` expose target. Use `taas-admin` instead; job history and
+  dashboards are in ClickStack (HyperDX). `/` now redirects to `/docs`.
+- **`job_analytics`** and `engine_versions` (migration 018). **Run the ClickHouse
+  backfill (`python -m app.ops.backfill_clickstack`) before upgrading**: it reads the
+  table this release drops. `make local-deploy-bench-db` is gone with it.
 
 ### Fixed
 

@@ -13,7 +13,9 @@
 set -euo pipefail
 
 API="${TAAS_URL:-http://localhost:8080}"
-MASTER="${MASTER_KEY:-test-master-key}"
+# shellcheck source=../../scripts/lib/taas-admin.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/lib/taas-admin.sh"
+export TAAS_ADMIN_MODE="${TAAS_ADMIN_MODE:-k3d}"
 DB_POD="${DB_POD:-taas-db-1}"
 N="${N:-6}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,16 +69,14 @@ set_backend_priorities() {
   while IFS='|' read -r id device; do
     [ -z "$id" ] && continue
     prio=0; [ "$device" = "gpu" ] && prio=10
-    curl -sf -X PATCH "$API/admin/backends/$id" \
-      -H "X-Master-Key: $MASTER" -H "Content-Type: application/json" \
-      -d "{\"priority\":$prio}" >/dev/null
+    taas_admin backend update "$id" --priority "$prio" >/dev/null
     printf '  backend #%s (%s) -> priority %s\n' "$id" "$device" "$prio"
   done < <(kubectl exec "$DB_POD" -c postgres -- psql -U postgres -d taas -tAc \
     "SELECT id, device FROM backends WHERE enabled ORDER BY id")
 }
 
 echo "============================================================"
-echo "Setting backend priorities via admin API (gpu=10, cpu=0)"
+echo "Setting backend priorities with taas-admin (gpu=10, cpu=0)"
 echo "============================================================"
 set_backend_priorities
 
@@ -113,5 +113,5 @@ psql "SELECT j.username, u.priority AS user_prio,
 echo "  (alice's started_at window should precede carol's despite carol submitting first.)"
 
 echo
-echo "Done. Inspect live in the dashboard (Backends + Analytics tabs):"
-echo "  http://localhost:8080/   master key: test-master-key"
+echo "Done. Inspect live in HyperDX (job events by user and backend), or:"
+echo "  taas_admin backend list   (TAAS_ADMIN_MODE=k3d)"

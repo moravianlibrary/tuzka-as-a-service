@@ -22,3 +22,16 @@ data:
   ZSTD_COMPRESSION_LEVEL: {{ .Values.config.zstdCompressionLevel | quote }}
   WS_CATCH_UP_SECONDS: {{ .Values.config.wsCatchUpSeconds | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  {{- if .Values.clickstack.enabled }}
+  # Job events to ClickStack (the password comes from the Secret).
+  CLICKHOUSE_URL: {{ printf "http://%s-clickhouse:8123" (include "taas.fullname" .) | quote }}
+  CLICKHOUSE_USER: {{ .Values.clickstack.clickhouse.user | quote }}
+  CLICKHOUSE_DATABASE: "taas"
+  {{- if .Values.clickstack.otel.enabled }}
+  # Traces and logs (app/telemetry.py); service names default per process (taas-api, …).
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s-otel-collector:4318" (include "taas.fullname" .) | quote }}
+  {{- with .Values.clickstack.otel.resourceAttributes }}
+  OTEL_RESOURCE_ATTRIBUTES: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}

@@ -1,5 +1,6 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
+import json
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -23,13 +24,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.config import Settings
-from app.deps import get_redis, get_settings, rate_limit_query, rate_limit_submit
+from app.deps import (
+    get_redis,
+    get_settings,
+    rate_limit_query,
+    rate_limit_submit,
+    require_principal,
+)
 from app.engines.outputs import ext_for
-from app.exceptions import BadRequest, Conflict, NotFound, NotReady, Unprocessable
-from app.models.backend import Backend
-from app.models.backend_domain import BackendDomain
+from app.exceptions import (
+    BadRequest,
+    Conflict,
+    Forbidden,
+    Gone,
+    NotFound,
+    NotReady,
+    Unprocessable,
+)
 from app.models.db import get_db
-from app.models.domain import Domain
 from app.models.job import Job, JobResult
 from app.models.user import User
 from app.schemas.job import (
@@ -40,10 +52,21 @@ from app.schemas.job import (
     JobResultResponse,
     JobStatus,
     JobSubmitResponse,
-    render_external_url,
 )
 from app.services import config as config_service
 from app.services import redis_jobs, storage
+from app.services.event_emitter import get_emitter
+from app.services.events import JobEvent
+from app.services.imageinfo import image_megapixels
+from app.services.job_spec import (
+    DEFAULT_DOMAIN,
+    fmt_label,
+    parse_external_id,
+    parse_outputs,
+    resolve_job_spec,
+)
+from app.services.scopes import Principal, check_scope
+from app.telemetry import inject_trace_context
 
 router = APIRouter()
 
@@ -56,17 +79,36 @@ router = APIRouter()
     responses={
         400: {"description": "Unsupported extension or file too large"},
         401: {"description": "Missing or invalid X-API-Key header"},
-        422: {"description": "Invalid UUID or unsupported fmt"},
+        403: {"description": "The API key isn't allowed this domain or these outputs"},
+        422: {
+            "description": "Invalid external_id or fmt; unknown domain; outputs the domain can't "
+            "produce; or options that don't match the domain's options schema"
+        },
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
 async def submit_job(
     request: Request,
     image: UploadFile = File(...),
-    uuid: UUID = Form(...),
+    external_id: str | None = Form(
+        None,
+        description="Your own label for this page (any string up to 255 characters, e.g. "
+        "its PID); echoed back on its status and events. Optional, not unique.",
+    ),
     fmt: Literal["alto", "txt", "multi"] = Form("multi"),
     domain: str | None = Form(None),
+    outputs: str | None = Form(
+        None,
+        description="Comma-separated outputs, e.g. `alto,txt`. Overrides `fmt`; see "
+        "GET /api/v1/domains for what each domain offers.",
+    ),
+    options: str | None = Form(
+        None,
+        description="Engine options as a JSON object, validated against the domain's "
+        "`options_schema` (GET /api/v1/domains).",
+    ),
     username: str = Depends(rate_limit_submit()),
+    principal: Principal = Depends(require_principal),
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
@@ -76,15 +118,18 @@ async def submit_job(
     Requires a valid API key in the ``X-API-Key`` header. The upload is stored and the job
     is queued, returning ``202 Accepted`` with a job id immediately; poll the status and
     result endpoints to retrieve output once processing finishes.
+
+    A job without a ``domain`` runs in the ``default`` domain. ``outputs`` (or, without
+    it, ``fmt``) picks the results to produce, and ``options`` passes engine options; all
+    three are checked against ``GET /api/v1/domains`` before the upload is accepted.
     """
-    # uuid and fmt are parsed and validated at the boundary (UUID / Literal), so the
-    # body below trusts them.
-    #
-    # external_id is a caller-chosen label, echoed back in status/events/external URLs so the
-    # client can correlate — it is NOT unique and may repeat (e.g. re-running OCR on the same
-    # document). The storage key is job.id (the server-generated PK, globally unique); we mint
-    # it here so the upload can use it before the row is inserted.
-    external_id = uuid
+    # external_id is the caller's label, echoed back in status and events — not unique,
+    # never parsed. The storage key is job.id (the server-generated PK); we mint it here
+    # so the upload can use it before the row is inserted.
+    try:
+        label = parse_external_id(external_id)
+    except ValueError as exc:
+        raise Unprocessable(str(exc)) from exc
     job_id = uuid4()
 
     # Validate extension
@@ -98,17 +143,18 @@ async def submit_job(
     if len(image_bytes) > settings.max_upload_bytes:
         raise BadRequest(f"File too large. Max: {settings.max_upload_bytes} bytes")
 
-    # Validate domain: if specified, at least one enabled backend must serve it.
-    if domain:
-        serves_domain = await db.scalar(
-            select(func.count())
-            .select_from(Domain)
-            .join(BackendDomain, Domain.id == BackendDomain.domain_id)
-            .join(Backend, BackendDomain.backend_id == Backend.id)
-            .where(Domain.name == domain, Backend.enabled.is_(True))
-        )
-        if not serves_domain:
-            raise Unprocessable(f"No backend serves domain '{domain}' — check available domains")
+    # Domain, outputs, options: validated against what the enabled backends serve (D7).
+    try:
+        requested = parse_outputs(outputs, fmt)
+    except ValueError as exc:
+        raise Unprocessable(str(exc)) from exc
+    # The key's scope first, so an out-of-scope domain isn't probed for existence.
+    denied = check_scope(principal, domain or DEFAULT_DOMAIN, requested)
+    if denied is not None:
+        raise Forbidden(denied)
+    spec = await resolve_job_spec(db, domain, requested, options)
+    job_fmt = fmt_label(spec.outputs)
+    megapixels = image_megapixels(image_bytes)
 
     # Upload to MinIO incoming
     incoming_client = request.app.state.incoming_client
@@ -125,11 +171,14 @@ async def submit_job(
     job = Job(
         id=job_id,
         username=username,
-        external_id=external_id,
+        external_id=label,
         status="queued",
-        fmt=fmt,
-        domain=domain,
+        fmt=job_fmt,
+        domain=spec.domain,
+        outputs=sorted(spec.outputs),
+        options=spec.options,
         file_size_bytes=len(image_bytes),
+        megapixels=megapixels,
     )
     db.add(job)
     await db.commit()
@@ -144,17 +193,33 @@ async def submit_job(
         str(job.id),
         {
             "username": username,
-            "external_id": str(external_id),
-            "fmt": fmt,
-            "domain": domain or "",
+            "external_id": label or "",
+            "fmt": job_fmt,
+            "domain": spec.domain,
+            "outputs": ",".join(sorted(spec.outputs)),
+            "options": json.dumps(spec.options),
             "ext": ext,
+            "mp": str(megapixels),
             "submitted_at": str(time.time()),
             "priority": str(user_priority),
+            # The workers continue this request's trace from here (empty when off).
+            **inject_trace_context(),
         },
         state_ttl,
     )
 
-    return JobSubmitResponse(job_id=job.id, external_id=external_id, status="queued")
+    get_emitter().emit(
+        JobEvent(
+            ts=utcnow(),
+            event="submitted",
+            job_id=str(job.id),
+            username=username,
+            domain=spec.domain,
+            outputs=sorted(spec.outputs),
+            file_size_bytes=len(image_bytes),
+        )
+    )
+    return JobSubmitResponse(job_id=job.id, external_id=label, status="queued")
 
 
 @router.get(
@@ -178,15 +243,9 @@ async def get_job_status(
     authenticated user. The status reflects the asynchronous lifecycle (``queued``,
     ``running``, ``done``, ``failed``); fetch the result endpoint once it is ``done``.
     """
-    result = await db.execute(
-        select(Job, User.external_url_template)
-        .outerjoin(User, Job.username == User.username)
-        .where(Job.id == job_id, Job.username == username)
-    )
-    row = result.first()
-    if not row:
+    job = await db.scalar(select(Job).where(Job.id == job_id, Job.username == username))
+    if job is None:
         raise NotFound("Job not found")
-    job, url_template = row
 
     return JobStatus(
         job_id=job.id,
@@ -194,11 +253,11 @@ async def get_job_status(
         status=job.status,
         fmt=job.fmt,
         domain=job.domain,
+        outputs=job.outputs,
         submitted_at=job.submitted_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         error=job.error,
-        external_url=render_external_url(url_template, job.external_id),
     )
 
 
@@ -210,6 +269,7 @@ async def get_job_status(
         202: {"description": "Job accepted but not finished yet; retry later"},
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found for the authenticated user"},
+        410: {"description": "The results expired (max age or the storage cap)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
@@ -241,6 +301,8 @@ async def get_job_result(
     # Get results
     res = await db.execute(select(JobResult).where(JobResult.job_id == job_id))
     job_results = res.scalars().all()
+    if job_results and all(jr.evicted_at is not None for jr in job_results):
+        raise Gone("Results expired")
 
     results_client = request.app.state.results_public_client
     entries = []
@@ -272,6 +334,7 @@ async def get_job_result(
         202: {"description": "Job accepted but not finished yet; retry later"},
         401: {"description": "Missing or invalid X-API-Key header"},
         404: {"description": "Job not found, or no result in the requested format"},
+        410: {"description": "The result expired (max age or the storage cap)"},
         409: {"description": "Job processing failed (no artifact to download)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
@@ -305,8 +368,11 @@ async def download_job_result(
     res = await db.execute(
         select(JobResult).where(JobResult.job_id == job_id, JobResult.fmt == fmt)
     )
-    if not res.scalar_one_or_none():
+    stored = res.scalar_one_or_none()
+    if not stored:
         raise NotFound(f"No {fmt} result available")
+    if stored.evicted_at is not None:
+        raise Gone(f"The {fmt} result expired")
 
     obj_path = f"{username}/{job.id}.{ext_for(fmt)}.zst"
     results_client = request.app.state.results_client
@@ -325,6 +391,9 @@ async def download_job_result(
 )
 async def list_jobs(
     status: Literal["queued", "running", "done", "failed"] | None = None,
+    external_id: str | None = Query(
+        None, max_length=255, description="Only jobs submitted with this external_id."
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     username: str = Depends(rate_limit_query()),
@@ -333,8 +402,8 @@ async def list_jobs(
     """List the authenticated user's jobs, newest first.
 
     Requires a valid API key in the ``X-API-Key`` header and returns only jobs owned by that
-    user. Results can be filtered by ``status`` and are paginated with ``limit`` and
-    ``offset``; ``total`` reports the full count matching the filter.
+    user. Results can be filtered by ``status`` and ``external_id`` and are paginated with
+    ``limit`` and ``offset``; ``total`` reports the full count matching the filter.
     """
     query = select(Job).where(Job.username == username)
     count_query = select(func.count()).select_from(Job).where(Job.username == username)
@@ -342,6 +411,9 @@ async def list_jobs(
     if status:
         query = query.where(Job.status == status)
         count_query = count_query.where(Job.status == status)
+    if external_id is not None:
+        query = query.where(Job.external_id == external_id)
+        count_query = count_query.where(Job.external_id == external_id)
 
     query = query.order_by(Job.submitted_at.desc()).limit(limit).offset(offset)
 
@@ -351,11 +423,6 @@ async def list_jobs(
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    # All jobs belong to the authenticated user, so resolve their URL template once.
-    url_template = await db.scalar(
-        select(User.external_url_template).where(User.username == username)
-    )
-
     return JobListResponse(
         jobs=[
             JobStatus(
@@ -364,11 +431,11 @@ async def list_jobs(
                 status=j.status,
                 fmt=j.fmt,
                 domain=j.domain,
+                outputs=j.outputs,
                 submitted_at=j.submitted_at,
                 started_at=j.started_at,
                 finished_at=j.finished_at,
                 error=j.error,
-                external_url=render_external_url(url_template, j.external_id),
             )
             for j in jobs
         ],

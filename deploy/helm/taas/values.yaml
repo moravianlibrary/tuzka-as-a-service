@@ -6,7 +6,7 @@ image:
 
 imagePullSecrets: []
 
-# -- API (FastAPI: jobs, admin, dashboard, websocket)
+# -- API (FastAPI: jobs, websocket; the image also carries the taas-admin CLI)
 api:
   replicaCount: 1
   image:
@@ -233,8 +233,8 @@ tunnelBoxesDefaults:
   maxInflight: 8
   # Engine hardware class registered for this backend: "cpu" or "gpu".
   device: cpu
-  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only (set it in
-  # the dashboard Backends tab / PATCH /admin/backends); the deploy never writes it, so an
+  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only
+  # (`taas-admin backend update <id> --priority N`); the deploy never writes it, so an
   # admin-set priority survives redeploys. Newly registered backends start at priority 0.
 
 # -- Off-cluster boxes reached via the tunnel above. Empty = none. One box can run N
@@ -262,7 +262,7 @@ tunnelBoxes: []
 #     engines:
 #       - name: gpu0
 #         remotePort: 8000
-#         device: gpu       # set priority afterwards in the dashboard Backends tab
+#         device: gpu       # set priority afterwards: taas-admin backend update
 #       - name: gpu1
 #         remotePort: 8001
 #         device: gpu
@@ -291,6 +291,70 @@ metrics:
     # { release: kube-prometheus-stack }).
     labels: {}
 
+# -- ClickStack: ClickHouse (job events, step 5) + HyperDX (dashboards, traces, logs) +
+#    MongoDB (HyperDX's own state). When enabled, the api and workers send every job
+#    state change to ClickHouse's taas.job_events. Needs secrets.clickhousePassword and
+#    secrets.hyperdxApiKey.
+clickstack:
+  enabled: false
+  clickhouse:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "24.8"
+    user: taas
+    storage:
+      size: 50Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  hyperdx:
+    image:
+      repository: hyperdx/hyperdx
+      tag: "latest"   # pin to a release for production
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  # OTel collector: the api's and workers' traces and logs (app/telemetry.py) into
+  # ClickHouse for HyperDX. When on, the app pods get OTEL_EXPORTER_OTLP_ENDPOINT.
+  otel:
+    enabled: true
+    image:
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.104.0"
+    retentionDays: 30   # TTL of otel_traces / otel_logs
+    # Extra OTEL_RESOURCE_ATTRIBUTES for the app, e.g. "deployment.environment=prod".
+    resourceAttributes: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  mongodb:
+    image:
+      repository: mongo
+      tag: "7"
+    storage:
+      size: 1Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
   allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
@@ -307,11 +371,10 @@ config:
   wsCatchUpSeconds: "120"
   logLevel: "INFO"
   # NOTE: rate limits are runtime config in the DB `config` table (rate_limit.*),
-  # editable via the dashboard / PUT /admin/config — not env/Helm values.
+  # editable with `taas-admin config set` — not env/Helm values.
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:
-  masterKey: "replaceMe"
   # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   keyEncryptionSecret: "replace-with-a-fernet-key"
   postgresPassword: "replaceMe"
@@ -320,6 +383,10 @@ secrets:
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "replaceMe"
   ocrEngineApiKey: "replaceMe"
+  # ClickStack (clickstack.enabled): the ClickHouse user's password, and the HyperDX API
+  # key the dashboard importer uses.
+  clickhousePassword: ""
+  hyperdxApiKey: ""
   # Shared secret authenticating frpc (GPU box) to the in-cluster frps. Must match
   # the box's frpc auth.token. Only used when tunnel.enabled.
   frpToken: "replaceMe"
@@ -328,7 +395,6 @@ secrets:
 #    or not at all  (kind: ingress | gateway | none):
 #      api            -> API service          (job API at /api/v1, WebSocket at /ws)
 #      legacy         -> compat service       (path prefix stripped before forwarding)
-#      adminDashboard -> API service          (/admin, /dashboard, /static)
 #      minioResults   -> minio-results service (so external clients can fetch presigned
 #                        result URLs; use a dedicated host served at root — the bucket is
 #                        in the path, so nothing is stripped)
@@ -353,17 +419,18 @@ expose:
     annotations: {}
     tls: []
     gateway: { name: "", namespace: "", sectionName: "" }
-  adminDashboard:
+  # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
+  # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
+  minioResults:
     kind: none
     host: ""
-    paths: ["/admin", "/dashboard", "/static"]
+    paths: ["/"]
     ingressClassName: ""
     annotations: {}
     tls: []
     gateway: { name: "", namespace: "", sectionName: "" }
-  # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
-  # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
-  minioResults:
+  # HyperDX UI (only with clickstack.enabled). Serve at root on its own host.
+  hyperdx:
     kind: none
     host: ""
     paths: ["/"]

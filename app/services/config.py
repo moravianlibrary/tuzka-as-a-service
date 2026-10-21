@@ -23,6 +23,13 @@ JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS = 900
 JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
 JOB_MAX_REQUEUES_DEFAULT = 5
 PRESIGNED_TTL_DEFAULT_MINUTES = 60
+# Retention (step 6): finished job rows, and result data.
+JOB_DONE_TTL_DEFAULT_SECONDS = 86_400
+JOB_FAILED_TTL_DEFAULT_SECONDS = 604_800
+RESULTS_MAX_AGE_DEFAULT_SECONDS = 86_400
+# Dispatch: a backend already running a batch's pages wins its next page when it would
+# finish within this fraction of the fastest one (step 8, D7).
+AFFINITY_TOLERANCE_DEFAULT = 0.15
 STATE_TTL_MARGIN_SECONDS = 60
 
 
@@ -166,6 +173,32 @@ async def get_job_running_timeout_seconds(db: AsyncSession) -> int:
 async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
     value = await get_value(db, "presigned.ttl_minutes")
     return int(value) if value is not None else PRESIGNED_TTL_DEFAULT_MINUTES
+
+
+async def get_done_ttl_seconds(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.done_ttl_seconds")
+    return int(value) if value is not None else JOB_DONE_TTL_DEFAULT_SECONDS
+
+
+async def get_failed_ttl_seconds(db: AsyncSession) -> int:
+    value = await get_value(db, "jobs.failed_ttl_seconds")
+    return int(value) if value is not None else JOB_FAILED_TTL_DEFAULT_SECONDS
+
+
+async def get_results_max_age_seconds(db: AsyncSession) -> int:
+    value = await get_value(db, "storage.results_max_age_seconds")
+    return int(value) if value is not None else RESULTS_MAX_AGE_DEFAULT_SECONDS
+
+
+async def get_results_max_bytes(db: AsyncSession) -> int | None:
+    """The results storage cap; None (unset) = no cap, results go by age only."""
+    value = await get_value(db, "storage.results_max_bytes")
+    return int(value) if value is not None else None
+
+
+async def get_affinity_tolerance(db: AsyncSession) -> float:
+    value = await get_value(db, "dispatch.affinity_tolerance")
+    return float(value) if value is not None else AFFINITY_TOLERANCE_DEFAULT
 
 
 async def get_max_requeues(db: AsyncSession) -> int:

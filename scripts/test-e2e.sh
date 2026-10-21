@@ -9,15 +9,14 @@ IMAGE="${IMAGE:?Set IMAGE to path of a test TIFF/JPG file}"
 echo "=== taas Direct API Test ==="
 
 echo "1. Submitting job..."
-UUID=$(python -c "import uuid; print(uuid.uuid4())")
 RESPONSE=$(curl -sf -X POST "$TAAS_URL/api/v1/jobs" \
   -H "X-API-Key: $API_KEY" \
   -F "image=@$IMAGE" \
-  -F "uuid=$UUID" \
+  -F "external_id=test-e2e-$(basename "$IMAGE")" \
   -F "fmt=multi")
 echo "$RESPONSE" | python -m json.tool
 JOB_ID=$(echo "$RESPONSE" | python -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-echo "   job_id=$JOB_ID, uuid=$UUID"
+echo "   job_id=$JOB_ID"
 
 echo "2. Polling status..."
 while true; do

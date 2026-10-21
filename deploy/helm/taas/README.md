@@ -20,7 +20,6 @@ for the topology and request flow.
 helm install taas ./deploy/helm/taas \
   --set image.registry=registry.example.com \
   --set image.tag=0.5.0 \
-  --set secrets.masterKey=$(openssl rand -hex 16) \
   --set secrets.keyEncryptionSecret=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \
   --set secrets.postgresPassword=$(openssl rand -hex 16) \
   --set secrets.minioIncomingSecretKey=$(openssl rand -hex 16) \
@@ -51,7 +50,7 @@ ocrEngine:
 ```
 
 When `ocrEngine.enabled: false`, no engine is deployed — register external backends (e.g. a
-remote GPU box) via `POST /admin/backends`, or reverse-tunnel an off-cluster engine in (see
+remote GPU box) with `taas-admin backend upsert` (in the api pod), or reverse-tunnel an off-cluster engine in (see
 the next section).
 
 **Scaling:** `hpa` scales on CPU; `keda` scales on the Redis job-queue length
@@ -74,7 +73,6 @@ Each target is exposed independently — `kind: ingress | gateway | none`:
 |---|---|---|---|
 | `api` | API | `/api` (jobs at `/api/v1`), `/ws` | none |
 | `legacy` | compat | `/legacy` | prefix **stripped** |
-| `adminDashboard` | API | `/admin`, `/dashboard`, `/static` | none |
 
 ```bash
 helm upgrade --install taas ./deploy/helm/taas \
@@ -130,6 +128,24 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `minio.results.bucket` | `results` | Results bucket |
 | `minio.{incoming,results}.storage.size` | `20Gi` | MinIO PVC sizes |
 
+### ClickStack (`clickstack.*`)
+
+ClickHouse for job events (one row per job state change, `taas.job_events`; the schema
+in `files/clickstack/schema.sql` is applied by a post-install/upgrade Job), HyperDX for
+dashboards, traces and logs, and MongoDB for HyperDX's own state. Off by default.
+
+| Key | Default | Description |
+|---|---|---|
+| `clickstack.enabled` | `false` | Deploy ClickStack; the api and workers then emit job events to it |
+| `clickstack.clickhouse.user` | `taas` | ClickHouse user (password: `secrets.clickhousePassword`) |
+| `clickstack.clickhouse.storage.size` | `50Gi` | ClickHouse PVC size |
+| `clickstack.hyperdx.image.tag` | `latest` | Pin a release for production |
+| `clickstack.mongodb.storage.size` | `1Gi` | MongoDB PVC size |
+| `clickstack.otel.enabled` | `true` | OTel collector for the app's traces and logs; sets `OTEL_EXPORTER_OTLP_ENDPOINT` on the app pods |
+| `clickstack.otel.retentionDays` | `30` | TTL of `otel_traces` / `otel_logs` |
+| `clickstack.otel.resourceAttributes` | `""` | Extra `OTEL_RESOURCE_ATTRIBUTES` for the app |
+| `expose.hyperdx.*` | `kind: none` | The HyperDX UI, on its own host |
+
 ### OCR engine
 
 | Key | Default | Description |
@@ -182,7 +198,7 @@ Without the Prometheus Operator, scrape the exporter Services directly:
 Non-secret `app/config.Settings` fields — `allowedExtensions`, `maxUploadBytes`, worker ticks
 (`submitTickSeconds`, `pollerTickSeconds`, `pollerHarvestConcurrency`, `pollBackoff*`),
 `zstdCompressionLevel`, `wsCatchUpSeconds`, `logLevel`. Job timeouts and the presigned-URL TTL
-are runtime config in the DB `config` table (see the dashboard / `PUT /admin/config`), not Helm
+are runtime config in the DB `config` table (set with `taas-admin config set`), not Helm
 values.
 
 **Two config sources, no overlap.** Settings (env/Helm) carry *infrastructure* and process
@@ -194,10 +210,10 @@ worker — it is neither a Helm value nor a DB config key.
 
 ### Secrets (`secrets.*`)
 
-`masterKey`, `keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
-`ocrEngineApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
+`keyEncryptionSecret` (Fernet), `postgresPassword`, `minio{Incoming,Results}{Access,Secret}Key`,
+`ocrEngineApiKey`; with `clickstack.enabled`, also `clickhousePassword` and `hyperdxApiKey`. **Override all for non-dev deployments**, ideally from an external secret manager.
 
-### Exposure (`expose.<api|legacy|adminDashboard>.*`)
+### Exposure (`expose.<api|legacy|minioResults|hyperdx>.*`)
 
 `kind` (`ingress`|`gateway`|`none`), `host`, `paths` / `pathPrefix`, `ingressClassName`,
 `annotations`, `tls`, `gateway.{name,namespace,sectionName}`.

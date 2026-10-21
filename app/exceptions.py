@@ -28,6 +28,26 @@ class Conflict(HTTPException):
         super().__init__(status_code=409, detail=detail)
 
 
+class Forbidden(HTTPException):
+    def __init__(self, detail: str = "Forbidden") -> None:
+        super().__init__(status_code=403, detail=detail)
+
+
+class Gone(HTTPException):
+    def __init__(self, detail: str = "Gone") -> None:
+        super().__init__(status_code=410, detail=detail)
+
+
+class PayloadTooLarge(HTTPException):
+    def __init__(self, detail: str = "Payload too large") -> None:
+        super().__init__(status_code=413, detail=detail)
+
+
+class UnsupportedMediaType(HTTPException):
+    def __init__(self, detail: str = "Unsupported media type") -> None:
+        super().__init__(status_code=415, detail=detail)
+
+
 class Unprocessable(HTTPException):
     def __init__(self, detail: str = "Unprocessable entity") -> None:
         super().__init__(status_code=422, detail=detail)

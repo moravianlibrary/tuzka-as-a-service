@@ -13,7 +13,6 @@
 #   IMAGE   test image          (default: test-data/_e2e.jpg)
 #   TAAS_URL host taas API       (default: http://localhost:8080)
 #   COMPAT_URL host compat API   (default: http://localhost:8001)
-#   MASTER_KEY admin master key  (default: test-master-key)
 #   OCR_ENGINE_URL / OCR_ENGINE_API_KEY  (for idempotent backend registration)
 #   JOB_TIMEOUT seconds          (default: 900)
 set -euo pipefail
@@ -22,7 +21,8 @@ cd "$(dirname "$0")/.."
 IMAGE="${IMAGE:-test-data/sample.jpg}"
 TAAS_URL="${TAAS_URL:-http://localhost:8080}"
 COMPAT_URL="${COMPAT_URL:-http://localhost:8001}"
-MASTER_KEY="${MASTER_KEY:-test-master-key}"
+# shellcheck source=lib/taas-admin.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/taas-admin.sh"
 OCR_ENGINE_URL="${OCR_ENGINE_URL:-http://ocr-engine:8000}"
 OCR_ENGINE_API_KEY="${OCR_ENGINE_API_KEY:-test-engine-key}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-900}"
@@ -54,20 +54,14 @@ for i in $(seq 1 30); do
 done
 
 say "Ensuring OCR backend is registered"
-existing="$(curl -sf "$TAAS_URL/admin/backends" -H "X-Master-Key: $MASTER_KEY" \
-  | "$PY" -c 'import sys,json; print(any(b["url"]=="'"$OCR_ENGINE_URL"'" for b in json.load(sys.stdin)))')"
-if [ "$existing" != "True" ]; then
-  curl -sf -X POST "$TAAS_URL/admin/backends" \
-    -H "X-Master-Key: $MASTER_KEY" -H "Content-Type: application/json" \
-    -d "{\"url\":\"$OCR_ENGINE_URL\",\"label\":\"tuzka-cpu\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":4}" >/dev/null
-fi
+TAAS_ADMIN_ENV=OCR_ENGINE_API_KEY taas_admin backend upsert --url "$OCR_ENGINE_URL" \
+  --label tuzka-cpu --api-key-env OCR_ENGINE_API_KEY --max-inflight 4 >/dev/null \
+  || die "backend upsert failed"
 ok "backend ready"
 
 say "Creating a fresh taas user (its key is the legacy api-key)"
 USERNAME="compat-test-$(date +%s)"
-API_KEY="$(curl -sf -X POST "$TAAS_URL/admin/users" \
-  -H "X-Master-Key: $MASTER_KEY" -H "Content-Type: application/json" \
-  -d "{\"username\":\"$USERNAME\"}" | jget '["api_key"]')"
+API_KEY="$(taas_admin user create "$USERNAME")"
 [ -n "$API_KEY" ] || die "could not create user"
 ok "user=$USERNAME"
 

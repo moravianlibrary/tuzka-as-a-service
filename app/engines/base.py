@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from pydantic import BaseModel
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
 class DomainInfo:
     outputs: frozenset[str]
+    # JSON Schema of the per-job options; None = the engine didn't describe any.
+    options_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -50,9 +49,8 @@ class EngineAdapter(Protocol):
         filename: str,
         domain: str | None,
         outputs: frozenset[str],
-        options: BaseModel,
+        options: dict[str, Any],
     ) -> str: ...
     async def status(self, engine_job_id: str) -> EngineStatus: ...
     async def fetch(self, engine_job_id: str, output: str) -> Result: ...
-    def options_schema(self, domain: str) -> type[BaseModel]: ...
     async def version(self) -> str | None: ...

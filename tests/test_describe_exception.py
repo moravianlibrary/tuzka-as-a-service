@@ -2,7 +2,7 @@
 
 Pure (no I/O), so runs without redis/DB. Pins the one behavior that matters: a
 message-less exception (e.g. an httpx transport error) still yields a non-empty
-string, so the stored ``error`` and the dashboard are never blank.
+string, so the stored ``error`` is never blank.
 """
 
 import httpx

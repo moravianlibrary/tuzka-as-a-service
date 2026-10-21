@@ -13,6 +13,6 @@ description = "Designated throwaway dev/example secrets — not real credentials
 paths = [
   # Local Helm overrides: explicitly labelled "Throwaway test secrets" in the file itself.
   '''deploy/local/values\.local\.yaml''',
-  # Committed env templates carry placeholder values (e.g. MASTER_KEY=test-master-key).
+  # Committed env templates carry placeholder values (e.g. KEY_ENCRYPTION_SECRET=change-me…).
   '''\.env(\.[a-z]+)?\.example''',
 ]

@@ -1,6 +1,9 @@
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+# The package is installed before its code is copied in (dependency layer caching), so
+# the `taas-admin` console script finds `app` through the path, not site-packages.
+ENV PYTHONPATH=/app
 
 WORKDIR /app
 COPY pyproject.toml .

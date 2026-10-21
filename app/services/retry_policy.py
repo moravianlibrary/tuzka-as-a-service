@@ -26,7 +26,7 @@ def describe_exception(exc: Exception) -> str:
 
     Some transport errors (notably httpx connect/read errors) carry no message, so
     ``str(exc)`` is empty — which previously stored a blank ``error`` and left the
-    dashboard's error box (shown only for a truthy error) hidden. Fall back to
+    job's error (clients show it only when truthy) empty. Fall back to
     ``repr`` so the exception type always survives to the DB and the UI.
     """
     return str(exc) or repr(exc)

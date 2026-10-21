@@ -68,11 +68,10 @@ up() {
 
   cat <<EOF
 
-Forwards running in the background. Master key: test-master-key
-  Dashboard UI   http://localhost:${API_PORT}/
+Forwards running in the background.
   Swagger docs   http://localhost:${API_PORT}/docs
   Job API        http://localhost:${API_PORT}/api/v1
-  Admin API      http://localhost:${API_PORT}/admin       (header X-Master-Key: test-master-key)
+  Admin          kubectl -n taas exec deploy/taas-api -- taas-admin --help
   Legacy compat  http://localhost:${COMPAT_PORT}
   MinIO results  http://localhost:${RESULTS_PORT}         (presigned result downloads)
 

@@ -14,7 +14,16 @@ dependencies = [
   "cryptography>=42",
   "pydantic-settings>=2.2",
   "zstandard>=0.22",
+  # OpenTelemetry: off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (app/telemetry.py)
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+  "opentelemetry-instrumentation-httpx>=0.48b0",
+  "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+  "opentelemetry-instrumentation-redis>=0.48b0",
 ]
+
+[project.scripts]
+taas-admin = "app.cli.main:app"
 
 [project.optional-dependencies]
 # Web/HTTP stack + migrations — only the api image needs these.
@@ -24,8 +33,14 @@ api = [
   "alembic>=1.13",
   "python-multipart>=0.0.9",
   "jinja2>=3.1",
+  "jsonschema>=4.18",
+  "opentelemetry-instrumentation-fastapi>=0.48b0",
+  # taas-admin, the admin CLI: the api image is the admin image
+  "typer>=0.12",
+  # Image size at submit (header only), for dispatch scoring
+  "pillow>=10.0",
 ]
-dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "xmlschema"]
+dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "types-jsonschema", "xmlschema"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

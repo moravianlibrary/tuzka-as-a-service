@@ -1,66 +1,50 @@
-"""Cleanup worker: reaps stale jobs and purges expired storage objects and old job rows."""
+"""Cleanup worker: reaps stale jobs, applies retention (job TTLs, results eviction) and
+purges expired storage objects."""
 
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any, cast
 
 import redis.asyncio as aioredis
-from sqlalchemy import CursorResult, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
 from app.models.db import make_engine
 from app.services.config import get_storage_ttl_minutes
+from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
+from app.services.retention import (
+    delete_expired_batches,
+    delete_finished_jobs,
+    evict_results,
+)
 from app.services.storage import (
     delete_objects,
     get_incoming_client,
     get_results_client,
     list_expired_objects,
 )
+from app.telemetry import setup_telemetry
 
 logger = logging.getLogger("cleanup-worker")
 
-# Raw jobs are deleted after this many days; analytics rows in job_analytics are permanent.
-RETENTION_DAYS = 30
 # Max objects per remove_objects call when purging expired storage objects.
 DELETE_BATCH_SIZE = 1000
-
-
-async def delete_expired_jobs(db: AsyncSession) -> None:
-    """Delete raw job rows (and their results) older than RETENTION_DAYS.
-
-    job_analytics rows are permanent and are NOT deleted here."""
-    cutoff = (utcnow() - timedelta(days=RETENTION_DAYS)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    await db.execute(
-        text(
-            "DELETE FROM job_results WHERE job_id IN "
-            "(SELECT id FROM jobs WHERE finished_at < :cutoff)"
-        ),
-        {"cutoff": cutoff},
-    )
-    result = cast(
-        "CursorResult[Any]",
-        await db.execute(text("DELETE FROM jobs WHERE finished_at < :cutoff"), {"cutoff": cutoff}),
-    )
-    await db.commit()
-    if result.rowcount:
-        logger.info(f"Deleted {result.rowcount} raw job records older than {cutoff:%Y-%m-%d}")
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = make_engine(settings)
+    setup_telemetry("taas-cleanup", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
+    emitter = get_emitter(settings)  # the reaper's failed events
+    await emitter.start()
 
     bucket_clients = {
         settings.minio_incoming_bucket: incoming_client,
@@ -79,6 +63,17 @@ async def main() -> None:
             except Exception:
                 logger.exception("Reaper failed")
 
+            # Retention every tick: job rows past their TTL, results past their age or
+            # over the storage cap (each bounded per tick).
+            try:
+                async with session_factory() as db:
+                    bucket = settings.minio_results_bucket
+                    await delete_finished_jobs(db, results_client, bucket)
+                    await delete_expired_batches(db, results_client, bucket)
+                    await evict_results(db, results_client, bucket)
+            except Exception:
+                logger.exception("Retention sweep failed")
+
             if tick % HEAVY_EVERY == 0:
                 try:
                     async with session_factory() as db:
@@ -95,13 +90,13 @@ async def main() -> None:
                                         f"Deleted {len(batch)} expired objects from {bucket}"
                                     )
 
-                        await delete_expired_jobs(db)
                 except Exception:
                     logger.exception("Cleanup worker failed")
 
             tick += 1
             await asyncio.sleep(REAP_TICK_SECONDS)
     finally:
+        await emitter.aclose()
         await r.aclose()
         await db_engine.dispose()
 

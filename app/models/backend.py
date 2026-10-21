@@ -23,6 +23,6 @@ class Backend(Base):
         default="tuzkaocr", nullable=False, server_default="tuzkaocr"
     )
     # True for backends owned by the Helm register hook (declarative, upserted on every
-    # deploy). The dashboard flags these so operators know manual edits are transient.
+    # deploy). `taas-admin backend list` shows the flag, so operators know manual edits are transient.
     managed: Mapped[bool] = mapped_column(default=False, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -37,12 +37,14 @@ class Settings(BaseSettings):
     minio_region: str = "eu-central-1"
 
     # Auth
-    master_key: str = ""
     key_encryption_secret: str = ""
 
     # Upload constraints
     allowed_extensions: list[str] = [".tif", ".tiff", ".jpg", ".jpeg", ".png"]
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
+    # Batches (POST /api/v1/batches): the archive, and the pages in it.
+    batch_max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+    batch_max_pages: int = 2000
 
     # Workers. Ticks tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps
     # backend slots turning over near the job time. Backoff still adapts upward
@@ -60,6 +62,14 @@ class Settings(BaseSettings):
     backend_refresh_seconds: float = 30.0
     health_cache_seconds: float = 10.0
     domain_sync_seconds: float = 300.0
+
+    # ClickHouse (ClickStack): job events for analytics. Empty URL = events are dropped
+    # at the source (the emitter is a no-op), e.g. local dev without the clickstack
+    # profile. HTTP interface, e.g. http://clickhouse:8123.
+    clickhouse_url: str = ""
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "taas"
 
     # Compression
     zstd_compression_level: int = 3

@@ -56,7 +56,7 @@ async def _failed_job(session, username: str = "alice", error: str = "engine boo
             "INSERT INTO jobs (id, username, external_id, status, error, finished_at) "
             "VALUES (:id, :u, :ext, 'failed', :err, now())"
         ),
-        {"id": job_id, "u": username, "ext": uuid.uuid4(), "err": error},
+        {"id": job_id, "u": username, "ext": f"ext-{uuid.uuid4()}", "err": error},
     )
     await session.commit()
     return job_id

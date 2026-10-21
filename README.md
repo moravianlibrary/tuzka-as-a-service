@@ -42,7 +42,7 @@ The Python package / CLI is named `taas`.
 
 | Service | Role |
 |---|---|
-| `api` | REST + WebSocket API (jobs, admin, dashboard) — published on `:8080` |
+| `api` | REST + WebSocket API (jobs); its image also carries the `taas-admin` CLI — published on `:8080` |
 | `worker-submit` | pulls queued jobs, dispatches to a healthy OCR backend |
 | `worker-poller` | polls engine job status, harvests + stores results |
 | `worker-cleanup` | TTL cleanup of buckets and old DB rows |
@@ -67,7 +67,8 @@ make up              # build + start the whole stack (first run is slow: TuzkaOC
 make test-integration  # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
 ```
 
-Dashboard: <http://localhost:8080/dashboard> (master key from `.env.app`).
+Administration: `docker compose exec -T api taas-admin --help` (users, backends, config).
+Job history and dashboards: ClickStack/HyperDX (`make up-clickstack`).
 
 ### Interactive API docs
 
@@ -78,8 +79,8 @@ Both services serve auto-generated OpenAPI docs (Swagger UI, ReDoc, raw schema):
 | taas API | <http://localhost:8080/docs> | <http://localhost:8080/redoc> | <http://localhost:8080/openapi.json> |
 | compat | <http://localhost:8001/docs> | <http://localhost:8001/redoc> | <http://localhost:8001/openapi.json> |
 
-> The shipped `MASTER_KEY` and generated `KEY_ENCRYPTION_SECRET` are for local
-> development. **Change them for any real deployment.**
+> The generated `KEY_ENCRYPTION_SECRET` is for local development. **Use your own for any
+> real deployment.**
 
 ## Configuration
 
@@ -170,7 +171,6 @@ compat, Redis, PostgreSQL via CloudNativePG, MinIO, optional TuzkaOCR engine). R
 
 ```bash
 helm install taas ./deploy/helm/taas \
-  --set secrets.masterKey=$(openssl rand -hex 16) \
   --set secrets.keyEncryptionSecret=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \
   --set secrets.postgresPassword=$(openssl rand -hex 16) \
   --set secrets.minioIncomingSecretKey=$(openssl rand -hex 16) \

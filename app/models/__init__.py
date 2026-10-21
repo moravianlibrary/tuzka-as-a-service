@@ -8,6 +8,7 @@ missing here is a table autogenerate would propose to DROP.
 
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
+from app.models.batch import Batch
 from app.models.config import ConfigEntry
 from app.models.db import Base
 from app.models.domain import Domain
@@ -17,6 +18,7 @@ from app.models.user import User
 __all__ = [
     "Backend",
     "BackendDomain",
+    "Batch",
     "Base",
     "ConfigEntry",
     "Domain",

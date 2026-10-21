@@ -3,31 +3,39 @@
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineFullError
-from app.engines.outputs import fmt_to_outputs
-from app.engines.tuzkaocr import NoOptions
 from app.models.backend import Backend
-from app.models.backend_domain import BackendDomain
 from app.models.db import make_engine
-from app.models.domain import Domain
 from app.models.job import Job
+from app.services import batch_store, perf
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
+from app.services.domain_sync import apply_domain_sync, served_capabilities
+from app.services.event_emitter import get_emitter
+from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     dequeue_jobs,
+    get_backend_batches,
     get_backend_inflight,
     get_job,
+    job_domain,
+    batch_event,
+    job_event_payload,
+    job_options,
+    job_outputs,
     parse_avoid,
     promote_due_retries,
     publish_event,
@@ -45,6 +53,7 @@ from app.services.retry_policy import (
     is_retryable_dispatch_error,
 )
 from app.services.storage import get_incoming_client, get_object
+from app.telemetry import job_span, setup_telemetry
 
 logger = logging.getLogger("submit-worker")
 
@@ -55,17 +64,34 @@ class PendingJob:
 
     job_id: str
     score: float
-    domain: str | None
+    domain: str
+    outputs: frozenset[str]
     avoid: frozenset[int] = field(default_factory=frozenset)
+    megapixels: float = 1.0
+    batch_id: str | None = None
 
 
 @dataclass
 class BackendSlot:
-    """A healthy backend, its remaining free capacity (may be 0) and the domains it serves."""
+    """A healthy backend, its remaining free capacity (may be 0) and what it serves:
+    domain → the outputs it produces for that domain. For scoring: its pages in flight,
+    the batches among them (batch id → pages), and what this tick assigned it."""
 
     backend: Backend
     free: int
-    domains: set[str]
+    domains: dict[str, frozenset[str]]
+    inflight: int = 0
+    batches: dict[str, int] = field(default_factory=dict)
+    assigned: int = 0
+
+
+def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
+    """Whether a backend serving ``domains`` can run a ``domain`` job wanting ``outputs``."""
+    return domain in domains and outputs <= domains[domain]
+
+
+def can_serve(slot: BackendSlot, job: PendingJob) -> bool:
+    return serves(slot.domains, job.domain, job.outputs)
 
 
 def allocate_jobs(
@@ -75,12 +101,12 @@ def allocate_jobs(
 
     Spreads jobs evenly rather than filling the first backend to capacity, so results
     come back with more parallelism across comparable backends. Respects each slot's
-    free capacity and served domains: a job with a domain only lands on a backend that
-    serves it. A retried job skips the backends in its ``avoid`` set; it falls back to
-    an avoided one only when no other backend in the tier serves its domain at all
-    (D7). If the alternatives are merely full, the job waits for them instead of going
-    back to the backend that just failed it. Pure apart from decrementing the passed
-    slots' ``free`` counters.
+    free capacity and capabilities: a job only lands on a backend that serves its domain
+    with all the outputs it wants (``can_serve``). A retried job skips the backends in
+    its ``avoid`` set; it falls back to an avoided one only when no other backend in the
+    tier can serve it at all (D7). If the alternatives are merely full, the job waits for
+    them instead of going back to the backend that just failed it. Pure apart from
+    decrementing the passed slots' ``free`` counters.
 
     Returns ``(assignments, leftovers)``; leftovers are jobs no slot in this tier can
     take right now (full, or their domain is served only by a lower tier) and should
@@ -91,12 +117,12 @@ def allocate_jobs(
     count = len(slots)
     start = 0
     for job in jobs:
-        serving = [s for s in slots if job.domain is None or job.domain in s.domains]
+        serving = [s for s in slots if can_serve(s, job)]
         allow_avoided = all(s.backend.id in job.avoid for s in serving)
         placed = False
         for step in range(count):
             slot = slots[(start + step) % count]
-            if slot.free <= 0 or (job.domain is not None and job.domain not in slot.domains):
+            if slot.free <= 0 or not can_serve(slot, job):
                 continue
             if slot.backend.id in job.avoid and not allow_avoided:
                 continue
@@ -110,6 +136,83 @@ def allocate_jobs(
     return assignments, leftovers
 
 
+# Seconds per megapixel for a domain nothing has been measured on: step 4's measured
+# seconds per page (load:spp) taken as one megapixel a page, else this.
+DEFAULT_SECONDS_PER_MP = 10.0
+
+
+async def _fallback_spp(r: aioredis.Redis, domains: Iterable[str]) -> dict[str, float]:
+    names = sorted(set(domains))
+    values = await r.hmget("load:spp", names) if names else []
+    return {
+        name: float(value) if value is not None else DEFAULT_SECONDS_PER_MP
+        for name, value in zip(names, values)
+    }
+
+
+def expected_finish(slot: BackendSlot, job: PendingJob, seconds_per_mp: float) -> float:
+    """When the job would finish on the backend, in seconds from now (D4): the pages
+    ahead of it plus itself, at the backend's measured speed for the job's size,
+    spread over its parallel slots."""
+    queue = slot.inflight + slot.assigned + 1
+    return queue * seconds_per_mp * job.megapixels / max(1, slot.backend.max_inflight)
+
+
+def allocate_scored(
+    slots: list[BackendSlot],
+    jobs: list[PendingJob],
+    spp: Callable[[int, str], float],
+    tolerance: float,
+) -> tuple[list[tuple[PendingJob, BackendSlot]], list[PendingJob]]:
+    """Give each job, in queue order, to the backend that would finish it first.
+
+    ``spp(backend_id, domain)`` is the backend's seconds per megapixel (``perf``). A
+    retried job's ``avoid`` set is applied before scoring, so a retry overrides affinity
+    (D8), falling back to an avoided backend only when nothing else serves it. Among the
+    backends within ``tolerance`` of the best, one already running pages of the job's
+    batch wins (D7). Exact ties rotate, so equal backends share a burst evenly. Only
+    backends with a free slot are chosen, so affinity can't overfill one (D9). Pure apart
+    from updating the slots' ``free``, ``assigned`` and ``batches``.
+
+    Returns ``(assignments, leftovers)`` like ``allocate_jobs``.
+    """
+    assignments: list[tuple[PendingJob, BackendSlot]] = []
+    leftovers: list[PendingJob] = []
+    order = {id(slot): i for i, slot in enumerate(slots)}
+    start = 0
+    for job in jobs:
+        serving = [s for s in slots if can_serve(s, job)]
+        allow_avoided = all(s.backend.id in job.avoid for s in serving)
+        candidates = [
+            s
+            for s in serving
+            if s.free > 0 and (allow_avoided or s.backend.id not in job.avoid)
+        ]
+        if not candidates:
+            leftovers.append(job)
+            continue
+        finish = {
+            id(s): expected_finish(s, job, spp(s.backend.id, job.domain)) for s in candidates
+        }
+        best = min(finish.values())
+        near = [s for s in candidates if finish[id(s)] <= best * (1 + tolerance)]
+        affine = [s for s in near if job.batch_id and s.batches.get(job.batch_id, 0) > 0]
+        if affine:
+            pool_best = min(finish[id(s)] for s in affine)
+            pool = [s for s in affine if finish[id(s)] == pool_best]
+        else:
+            pool = [s for s in candidates if finish[id(s)] == best]
+        # Rotate among exact ties, starting after the last backend chosen.
+        slot = min(pool, key=lambda s: (order[id(s)] - start) % len(slots))
+        start = (order[id(slot)] + 1) % len(slots)
+        slot.free -= 1
+        slot.assigned += 1
+        if job.batch_id:
+            slot.batches[job.batch_id] = slot.batches.get(job.batch_id, 0) + 1
+        assignments.append((job, slot))
+    return assignments, leftovers
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     # httpx emits one INFO line per request; at dispatch volume it floods the log and
@@ -117,10 +220,13 @@ async def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     engine = make_engine(settings)
+    setup_telemetry("taas-submit", db_engine=engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     incoming_client = get_incoming_client(settings)
     http = httpx.AsyncClient(timeout=60.0)
+    emitter = get_emitter(settings)
+    await emitter.start()
     # backend id -> (what it was built from, adapter); rebuilt when any of that changes.
     adapters: dict[int, tuple[tuple[str, str, str | None], EngineAdapter]] = {}
 
@@ -163,39 +269,22 @@ async def main() -> None:
         logger.info(f"Loaded {len(backends)} backend(s)")
 
     async def sync_domains(backend: Backend) -> None:
-        """Fetch selectable_via_domain from the engine and rebuild backend_domains."""
+        """Fetch the engine's domains, outputs and options schema; rebuild backend_domains."""
         try:
             info = await adapter_for(backend).describe()
-            domain_names = list(info.domains)
         except Exception as exc:
             logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
+        if not info.domains:
+            # describe() reports nothing on a failed /models call; keep the last good
+            # mapping rather than unlink the backend, and retry on the next tick.
+            logger.warning("Domain sync for %s: engine advertised no domains", backend.url)
+            return
         async with session_factory() as db:
-            # Upsert domain names
-            domain_ids: list[int] = []
-            for name in domain_names:
-                await db.execute(
-                    text("INSERT INTO domains (name) VALUES (:n) ON CONFLICT (name) DO NOTHING"),
-                    {"n": name},
-                )
-                row = await db.execute(text("SELECT id FROM domains WHERE name = :n"), {"n": name})
-                domain_ids.append(row.scalar_one())
-
-            # Rebuild backend_domains for this backend (remove stale, add new)
-            await db.execute(delete(BackendDomain).where(BackendDomain.backend_id == backend.id))
-            # outputs: fixed {alto,txt} until domain sync reads engine capabilities
-            for did in domain_ids:
-                await db.execute(
-                    text(
-                        "INSERT INTO backend_domains (backend_id, domain_id, outputs) "
-                        "VALUES (:b, :d, '{alto,txt}') "
-                        "ON CONFLICT DO NOTHING"
-                    ),
-                    {"b": backend.id, "d": did},
-                )
+            await apply_domain_sync(db, backend.id, info)
             await db.commit()
-            domains_synced_at[backend.id] = time.time()
-            logger.debug("Synced %d domain(s) for backend %s", len(domain_ids), backend.url)
+        domains_synced_at[backend.id] = time.time()
+        logger.debug("Synced %d domain(s) for backend %s", len(info.domains), backend.url)
 
     def spawn_domain_sync(backend: Backend) -> None:
         """Kick off a background domain sync at most once per interval per backend.
@@ -218,15 +307,10 @@ async def main() -> None:
 
         task.add_done_callback(_done)
 
-    async def served_domains(backend_id: int) -> set[str]:
-        """Domain names ``backend_id`` currently serves (from the synced mapping)."""
+    async def served_domains(backend_id: int) -> dict[str, frozenset[str]]:
+        """Domain → outputs ``backend_id`` currently serves (from the synced mapping)."""
         async with session_factory() as db:
-            rows = await db.execute(
-                select(Domain.name)
-                .join(BackendDomain, BackendDomain.domain_id == Domain.id)
-                .where(BackendDomain.backend_id == backend_id)
-            )
-        return {name for (name,) in rows.all()}
+            return await served_capabilities(db, backend_id)
 
     async def check_health(backend: Backend) -> bool:
         now = time.time()
@@ -245,23 +329,50 @@ async def main() -> None:
         return healthy
 
     async def dispatch(
-        job_id: str, original_score: float, backend: Backend, backend_domains: set[str]
+        job_id: str,
+        original_score: float,
+        backend: Backend,
+        backend_domains: dict[str, frozenset[str]],
     ) -> None:
         meta = await get_job(r, job_id)
         if not meta:
             logger.warning(f"Job {job_id} not found in Redis, skipping")
             return
+        # A child of the job's submit trace, so the engine calls below land in it.
+        with job_span("dispatch", job_id, meta, backend_id=backend.id):
+            await dispatch_job(job_id, original_score, backend, backend_domains, meta)
 
+    async def dispatch_job(
+        job_id: str,
+        original_score: float,
+        backend: Backend,
+        backend_domains: dict[str, frozenset[str]],
+        meta: dict[str, str],
+    ) -> None:
         username = meta["username"]
-        external_id = meta["external_id"]
+        external_id = meta.get("external_id") or None
         ext = meta.get("ext", ".jpg")
-        fmt = meta.get("fmt", "multi")
-        domain = meta.get("domain", "") or None
+        domain = job_domain(meta)
+        outputs = job_outputs(meta)
 
-        # Skip if this backend does not serve the requested domain. Checked against the
-        # set loaded once per tick (no per-job DB round-trip); the job goes back on the
-        # queue for a backend that does serve it.
-        if domain and domain not in backend_domains:
+        def event(name: EventName, **fields: Any) -> JobEvent:
+            return JobEvent(
+                ts=utcnow(),
+                event=name,
+                job_id=job_id,
+                username=username,
+                domain=domain,
+                outputs=sorted(outputs),
+                backend_id=backend.id,
+                adapter=backend.adapter,
+                device=backend.device,
+                **fields,
+            )
+
+        # Skip if this backend does not serve the job's domain + outputs. Checked against
+        # the capabilities loaded once per tick (no per-job DB round-trip); the job goes
+        # back on the queue for a backend that does serve it.
+        if not serves(backend_domains, domain, outputs):
             await requeue_job(r, job_id, original_score)
             return
 
@@ -279,7 +390,7 @@ async def main() -> None:
             )
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_failed(r, job_id, msg, state_ttl)
+                batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
@@ -287,19 +398,26 @@ async def main() -> None:
                         status="failed", error=msg, finished_at=utcnow(), **append_attempt(attempt)
                     )
                 )
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
+            emitter.emit(event("failed", **failure("dispatch", None)))
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": msg},
+                job_event_payload(
+                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                ),
             )
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
             return
 
-        filename = f"{external_id}{ext}"
+        # Named by job id: the external id is the caller's free text, not a file name.
+        filename = f"{job_id}{ext}"
         try:
             adapter = adapter_for(backend)
             engine_job_id = await adapter.submit(
-                image_bytes, filename, domain, fmt_to_outputs(fmt), NoOptions()
+                image_bytes, filename, domain, outputs, job_options(meta)
             )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
             engine_version = await adapter.version()
@@ -319,6 +437,14 @@ async def main() -> None:
                     )
                 )
                 await db.commit()
+            submitted_at = float(meta.get("submitted_at") or time.time())
+            emitter.emit(
+                event(
+                    "dispatched",
+                    engine_version=engine_version or "",
+                    queue_s=max(time.time() - submitted_at, 0.0),
+                )
+            )
 
         except EngineFullError:
             logger.info(f"Engine {backend.url} full, requeuing job {job_id}")
@@ -328,6 +454,7 @@ async def main() -> None:
             msg = describe_exception(e)
             transient = is_retryable_dispatch_error(e)
             http_st = http_status_of(e)
+            failed_fields = failure("dispatch", http_st, isinstance(e, httpx.TransportError))
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -351,6 +478,7 @@ async def main() -> None:
                 health_cache[backend.id] = (False, time.time())
                 await r.hincrby(f"job:{job_id}", "requeues", 1)
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
+                await perf.record_failure(r, backend.id, domain)
                 attempt = attempt_entry(
                     "dispatch", backend.id, http_st, msg, retry=True, at=utcnow().isoformat()
                 )
@@ -364,6 +492,7 @@ async def main() -> None:
                         )
                     )
                     await db.commit()
+                emitter.emit(event("retried", **failed_fields))
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -380,8 +509,10 @@ async def main() -> None:
             attempt = attempt_entry(
                 "dispatch", backend.id, http_st, msg, retry=False, at=utcnow().isoformat()
             )
+            if perf.counts_against_backend(http_st):
+                await perf.record_failure(r, backend.id, domain)
             async with session_factory() as db:
-                await set_failed(r, job_id, msg, state_ttl)
+                batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
@@ -392,12 +523,18 @@ async def main() -> None:
                         **append_attempt(attempt),
                     )
                 )
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
+            emitter.emit(event("failed", **failed_fields))
             await publish_event(
                 r,
                 username,
-                {"status": "failed", "uuid": external_id, "error": msg},
+                job_event_payload(
+                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                ),
             )
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
 
     logger.info("Submit worker started")
     try:
@@ -417,9 +554,17 @@ async def main() -> None:
                 for backend in backends:
                     if not await check_health(backend):
                         continue
-                    free = backend.max_inflight - await get_backend_inflight(r, backend.id)
+                    inflight = await get_backend_inflight(r, backend.id)
                     domains = await served_domains(backend.id)
-                    eligible.append(BackendSlot(backend, max(free, 0), domains))
+                    eligible.append(
+                        BackendSlot(
+                            backend,
+                            max(backend.max_inflight - inflight, 0),
+                            domains,
+                            inflight=inflight,
+                            batches=await get_backend_batches(r, backend.id),
+                        )
+                    )
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.
@@ -432,14 +577,35 @@ async def main() -> None:
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
-                    jobs_with_domain: list[PendingJob] = []
+                    pending: list[PendingJob] = []
                     for job_id, score in entries:
-                        meta = await get_job(r, job_id)
-                        domain = meta.get("domain") if meta else None
-                        avoid = parse_avoid(meta) if meta else frozenset()
-                        jobs_with_domain.append(PendingJob(job_id, score, domain or None, avoid))
+                        meta = await get_job(r, job_id) or {}
+                        domain, outputs = job_domain(meta), job_outputs(meta)
+                        pending.append(
+                            PendingJob(
+                                job_id,
+                                score,
+                                domain,
+                                outputs,
+                                parse_avoid(meta),
+                                megapixels=float(meta.get("mp") or 1.0),
+                                batch_id=meta.get("batch_id") or None,
+                            )
+                        )
 
-                    assignments, leftovers = allocate_jobs(tier, jobs_with_domain)
+                    # Speed scores for this tier's backends and these jobs' domains, once.
+                    job_domains = {job.domain for job in pending}
+                    scores = await perf.load_scores(
+                        r, [slot.backend.id for slot in tier], job_domains
+                    )
+                    fallback = await _fallback_spp(r, job_domains)
+                    async with session_factory() as db:
+                        tolerance = await config_service.get_affinity_tolerance(db)
+
+                    def spp(backend_id: int, domain: str) -> float:
+                        return perf.effective_spp(backend_id, domain, scores, fallback[domain])
+
+                    assignments, leftovers = allocate_scored(tier, pending, spp, tolerance)
                     for job in leftovers:
                         # a lower tier may serve its domain, or a full backend frees up
                         await requeue_job(r, job.job_id, job.score)
@@ -470,6 +636,7 @@ async def main() -> None:
             # and slow jobs don't busy-poll.
             await wait_for_submit_signal(r, settings.submit_tick_seconds)
     finally:
+        await emitter.aclose()
         await http.aclose()
         await r.aclose()
         await engine.dispose()

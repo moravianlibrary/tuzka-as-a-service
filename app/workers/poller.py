@@ -18,17 +18,24 @@ from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineStatus
-from app.engines.outputs import ext_for, fmt_to_outputs
+from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
+from app.services import batch_store, perf
 from app.services import config as config_service
-from app.services.analytics import parse_alto, write_analytics_row
+from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
+from app.services.event_emitter import get_emitter
+from app.services.events import EventName, JobEvent, attempt_failure, durations
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     get_inflight_ids,
     get_job,
+    job_domain,
+    batch_event,
+    job_event_payload,
+    job_outputs,
     publish_event,
     release_and_requeue,
     set_done,
@@ -50,6 +57,7 @@ from app.services.storage import (
     presign_get,
     put_object,
 )
+from app.telemetry import job_span, setup_telemetry
 
 logger = logging.getLogger("poller-worker")
 
@@ -182,12 +190,15 @@ async def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     db_engine = make_engine(settings)
+    setup_telemetry("taas-poller", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     http = httpx.AsyncClient(timeout=60.0)
     results_client = get_results_client(settings)
     results_public_client = get_results_public_client(settings)
     cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
+    emitter = get_emitter(settings)
+    await emitter.start()
 
     # backend id -> (adapter id, decrypted key), read from the DB once per backend.
     backend_info: dict[int, tuple[str, str | None]] = {}
@@ -213,11 +224,33 @@ async def main() -> None:
             adapters[cache_key] = make_adapter(adapter_id, url, key, http)
         return adapters[cache_key]
 
+    def job_event(
+        name: EventName, job_id: str, meta: dict[str, str], job_rec: Job | None, **fields: Any
+    ) -> JobEvent:
+        """An event for a job the poller is finishing, from its hash and DB row."""
+        backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
+        adapter = backend_info[backend_id][0] if backend_id in backend_info else ""
+        return JobEvent(
+            ts=utcnow(),
+            event=name,
+            job_id=job_id,
+            username=meta.get("username", ""),
+            domain=job_domain(meta),
+            outputs=sorted(job_outputs(meta)),
+            backend_id=backend_id,
+            adapter=adapter,
+            engine_version=(job_rec.engine_version if job_rec else None) or "",
+            file_size_bytes=job_rec.file_size_bytes if job_rec else None,
+            **fields,
+        )
+
     async def check_one(job_id: str, meta: dict[str, str]) -> PollOutcome:
         try:
             adapter = await adapter_for(meta)
             engine_job_id = meta["engine_job_id"]
-            status_resp = await adapter.status(engine_job_id)
+            # In the job's trace, so its polls show up there instead of as stray traces.
+            with job_span("poll", job_id, meta, backend_id=meta.get("backend_id")):
+                status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))
@@ -255,13 +288,12 @@ async def main() -> None:
 
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         username = meta["username"]
-        external_id = meta["external_id"]
-        fmt = meta.get("fmt", "multi")
+        external_id = meta.get("external_id") or None
         engine_job_id = meta["engine_job_id"]
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
 
         adapter = await adapter_for(meta)
-        outputs = fmt_to_outputs(fmt)
+        outputs = job_outputs(meta)
         try:
             results_to_store: list[tuple[str, str, bytes]] = []
             alto_bytes_for_analytics: bytes | None = None
@@ -294,10 +326,9 @@ async def main() -> None:
             if isinstance(times.get("mean_conf"), (int, float)):
                 mean_conf = float(times["mean_conf"])
 
-            event_data: dict[str, str] = {
-                "status": "done",
-                "uuid": external_id,
-            }
+            event_data = job_event_payload(
+                job_id, external_id, "done", batch_id=meta.get("batch_id")
+            )
 
             async with session_factory() as db:
                 # Read the raw job to pick up submitted_at, engine_version, device, file_size.
@@ -333,6 +364,7 @@ async def main() -> None:
                         fmt=result_fmt,
                         presigned_url=presigned_url,
                         presigned_until=utcnow() + timedelta(minutes=presigned_ttl),
+                        size_bytes=len(compressed),  # what the results storage cap counts
                     )
                     db.add(jr)
 
@@ -360,37 +392,42 @@ async def main() -> None:
                 finished_at: datetime = engine_finished or utcnow()
                 done_values["finished_at"] = finished_at
                 await db.execute(update(Job).where(Job.id == job_id).values(**done_values))
-
-                # Write permanent analytics row
-                if job_rec is not None:
-                    await write_analytics_row(
-                        db,
-                        job_id=job_id,
-                        external_id=job_rec.external_id,
-                        submitted_at=job_rec.submitted_at,
-                        username=username,
-                        engine_version=job_rec.engine_version,
-                        engine_device=backend_device or "cpu",
-                        backend_id=backend_id,
-                        domain=job_rec.domain,
-                        fmt=fmt,
-                        status="done",
-                        file_size_bytes=job_rec.file_size_bytes,
-                        dispatched_at=job_rec.dispatched_at,
-                        engine_received_at=engine_created,
-                        started_at=engine_started,
-                        finished_at=finished_at,
-                        stored_at=stored_at,
-                        alto_lines=alto_lines,
-                        alto_blocks=alto_blocks,
-                        alto_chars=alto_chars,
-                        mean_conf=mean_conf,
-                    )
+                await batch_store.finish_if_done(db, meta.get("batch_id"))
 
                 await db.commit()
 
-            await set_done(r, job_id, state_ttl)
+            batch = await set_done(r, job_id, state_ttl)
+            # Engine-clock run time per megapixel scores this backend for dispatch.
+            if backend_id is not None and engine_started and engine_finished:
+                seconds = (engine_finished - engine_started).total_seconds()
+                if seconds > 0:
+                    await perf.record_service(
+                        r, backend_id, job_domain(meta), seconds, float(meta.get("mp") or 1.0)
+                    )
+            emitter.emit(
+                job_event(
+                    "done",
+                    job_id,
+                    meta,
+                    job_rec,
+                    device=backend_device or "",
+                    lines=alto_lines,
+                    blocks=alto_blocks,
+                    chars=alto_chars,
+                    mean_conf=mean_conf,
+                    **durations(
+                        job_rec.submitted_at if job_rec else None,
+                        job_rec.dispatched_at if job_rec else None,
+                        engine_created,
+                        engine_started,
+                        finished_at,
+                        stored_at,
+                    ),
+                )
+            )
             await publish_event(r, username, event_data)
+            if batch is not None:
+                await publish_event(r, username, batch_event(batch))
             logger.info(f"Published done event for {username}")
 
         except Exception as e:
@@ -412,11 +449,14 @@ async def main() -> None:
         job_id: str, meta: dict[str, str], error: str, attempt: dict[str, Any] | None = None
     ) -> None:
         username = meta.get("username", "")
-        external_id = meta.get("external_id", "")
+        external_id = meta.get("external_id") or None
         failed_at = utcnow()
         async with session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
-            await set_failed(r, job_id, error, state_ttl)
+            batch = await set_failed(r, job_id, error, state_ttl)
+            if attempt and attempt.get("backend_id") is not None:
+                if perf.counts_against_backend(attempt.get("http_status")):
+                    await perf.record_failure(r, int(attempt["backend_id"]), job_domain(meta))
             values: dict[str, Any] = {
                 "status": "failed",
                 "error": error,
@@ -426,46 +466,50 @@ async def main() -> None:
                 values.update(append_attempt(attempt))
             await db.execute(update(Job).where(Job.id == job_id).values(**values))
 
-            # Read current job state for analytics
+            # The job as it ended, for its failed event.
             job_row = await db.execute(
                 select(Job, Backend.device)
                 .outerjoin(Backend, Job.backend_id == Backend.id)
                 .where(Job.id == job_id)
             )
             job_rec, backend_device = job_row.first() or (None, None)
-            if job_rec is not None:
-                await write_analytics_row(
-                    db,
-                    job_id=job_id,
-                    external_id=job_rec.external_id,
-                    submitted_at=job_rec.submitted_at,
-                    username=username,
-                    engine_version=job_rec.engine_version,
-                    engine_device=backend_device or "cpu",
-                    backend_id=job_rec.backend_id,
-                    domain=job_rec.domain,
-                    fmt=job_rec.fmt,
-                    status="failed",
-                    file_size_bytes=job_rec.file_size_bytes,
-                    dispatched_at=job_rec.dispatched_at,
-                    engine_received_at=job_rec.engine_received_at,
-                    started_at=job_rec.started_at,
-                    finished_at=failed_at,
-                    stored_at=None,
-                )
+            await batch_store.finish_if_done(db, meta.get("batch_id"))
 
             await db.commit()
+        emitter.emit(
+            job_event(
+                "failed",
+                job_id,
+                meta,
+                job_rec,
+                device=backend_device or "",
+                **attempt_failure(attempt),
+                **durations(
+                    job_rec.submitted_at if job_rec else None,
+                    job_rec.dispatched_at if job_rec else None,
+                    job_rec.engine_received_at if job_rec else None,
+                    job_rec.started_at if job_rec else None,
+                    failed_at,
+                    None,
+                ),
+            )
+        )
         await publish_event(
             r,
             username,
-            {"status": "failed", "uuid": external_id, "error": error},
+            job_event_payload(
+                job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=error
+            ),
         )
+        if batch is not None:
+            await publish_event(r, username, batch_event(batch))
 
     sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
 
     async def harvest_with_sem(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
         async with sem:
-            await harvest(job_id, meta, times)
+            with job_span("harvest", job_id, meta, backend_id=meta.get("backend_id")):
+                await harvest(job_id, meta, times)
 
     logger.info("Poller worker started")
     try:
@@ -565,7 +609,8 @@ async def main() -> None:
 
                     # Mark failed jobs
                     for job_id, meta, error, attempt in failed_jobs:
-                        await mark_failed(job_id, meta, error, attempt=attempt)
+                        with job_span("fail", job_id, meta, backend_id=meta.get("backend_id")):
+                            await mark_failed(job_id, meta, error, attempt=attempt)
 
                     # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
                     # another backend picks them up after a jittered backoff. Redis is
@@ -583,6 +628,8 @@ async def main() -> None:
                                 avoid_backend_id=avoid_id,
                             )
                             await r.hincrby(f"job:{job_id}", "requeues", 1)
+                            if avoid_id is not None:  # retryable: the backend's fault
+                                await perf.record_failure(r, avoid_id, job_domain(meta))
                             logger.info(
                                 f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})"
                             )
@@ -601,6 +648,10 @@ async def main() -> None:
                                     )
                                 )
                             await db.commit()
+                        for job_id, meta, _delay, _avoid, attempt in requeue_jobs:
+                            emitter.emit(
+                                job_event("retried", job_id, meta, None, **attempt_failure(attempt))
+                            )
 
                 # Wake at the soonest scheduled poll, capped by the idle ceiling.
                 wait_timeout = next_poll_timeout(
@@ -613,6 +664,7 @@ async def main() -> None:
 
             await wait_for_poll_signal(r, wait_timeout)
     finally:
+        await emitter.aclose()
         await http.aclose()
         await r.aclose()
         await db_engine.dispose()

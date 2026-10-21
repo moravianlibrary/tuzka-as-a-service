@@ -18,13 +18,16 @@ class Job(Base):
         primary_key=True, server_default=text("gen_random_uuid()")
     )
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=False)
-    # Caller-chosen correlation label, echoed back in status/events/external URLs. NOT unique:
-    # a caller may reuse it (e.g. re-running OCR on the same document). The unique per-job
-    # identity and storage key is `id` (the server PK).
-    external_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    # The caller's own label for the job (any string, not unique); None = none given.
+    external_id: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="queued", nullable=False)
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)
+    # A page of a batch: the batch, and the page's path inside the uploaded archive.
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), default=None
+    )
+    source_name: Mapped[str | None] = mapped_column(default=None)
     outputs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=None)
     options: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     engine_job_id: Mapped[str | None] = mapped_column(default=None)
@@ -36,6 +39,8 @@ class Job(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
     )
     file_size_bytes: Mapped[int | None] = mapped_column(default=None)
+    # Image size, for dispatch scoring (seconds per megapixel); None before 0.9.
+    megapixels: Mapped[float | None] = mapped_column(default=None)
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     # dispatched_at is on the taas clock (submit worker POST); engine_received_at /
     # started_at / finished_at are on the engine clock (adopted from GET /status). Keeping
@@ -55,6 +60,7 @@ class Job(Base):
         Index("ix_jobs_username_submitted", "username", submitted_at.desc()),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_backend_id", "backend_id"),
+        Index("ix_jobs_batch_status", "batch_id", "status"),
         CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"),
     )
 
@@ -66,5 +72,10 @@ class JobResult(Base):
     fmt: Mapped[str] = mapped_column(primary_key=True)
     presigned_url: Mapped[str | None] = mapped_column(default=None)
     presigned_until: Mapped[datetime | None] = mapped_column(default=None)
+    # Compressed size as stored; the results storage cap sums it (None: before 0.9).
+    size_bytes: Mapped[int | None] = mapped_column(default=None)
+    # Set when the object was evicted (max age or the storage cap); the row stays until
+    # the job's TTL so its result endpoints can answer 410 instead of 404.
+    evicted_at: Mapped[datetime | None] = mapped_column(default=None)
 
     job: Mapped["Job"] = relationship(back_populates="results", lazy="raise")
