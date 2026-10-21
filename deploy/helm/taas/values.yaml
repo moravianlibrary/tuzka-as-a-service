@@ -236,13 +236,15 @@ tuzkam:
     TUZKAM_BUILTIN_GAZETTEER_DIR: /app/builtin
   storage:
     size: 2Gi
+  # A 166-megapixel sheet peaked at ~3.9 GiB and was OOM-killed under a 4Gi limit;
+  # TuzkaM accepts up to 400 MP (TUZKAM_MAX_IMAGE_PIXELS), so the limit has headroom.
   resources:
     requests:
       cpu: "2"
       memory: 4Gi
     limits:
       cpu: "2"
-      memory: 4Gi
+      memory: 8Gi
 
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
