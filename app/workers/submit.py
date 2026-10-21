@@ -19,7 +19,7 @@ from app.engines.base import EngineAdapter, EngineFullError
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
-from app.services import batch_store, perf
+from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import all_served_capabilities, apply_domain_sync
@@ -57,6 +57,7 @@ from app.services.retry_policy import (
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
 from app.workers.shutdown import install_stop
+from app.workers.stages import StageTimer, stage_metric_rows
 
 logger = logging.getLogger("submit-worker")
 
@@ -228,6 +229,8 @@ async def main() -> None:
     # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
+    timer = StageTimer()
+    stages_flushed_at = time.monotonic()
     engine = make_engine(settings)
     setup_telemetry("taas-submit", db_engine=engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -404,9 +407,10 @@ async def main() -> None:
         # Read image from MinIO — keyed by job_id (the server PK), matching the submit upload.
         object_path = f"{username}/{job_id}{ext}"
         try:
-            image_bytes = await get_object(
-                incoming_client, settings.minio_incoming_bucket, object_path
-            )
+            with timer.stage("image_get"):
+                image_bytes = await get_object(
+                    incoming_client, settings.minio_incoming_bucket, object_path
+                )
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
@@ -441,27 +445,31 @@ async def main() -> None:
         filename = f"{job_id}{ext}"
         try:
             adapter = adapter_for(backend)
-            engine_job_id = await adapter.submit(
-                image_bytes, filename, domain, outputs, job_options(meta)
-            )
+            with timer.stage("engine_submit"):
+                engine_job_id = await adapter.submit(
+                    image_bytes, filename, domain, outputs, job_options(meta)
+                )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
-            engine_version = await adapter.version()
+            with timer.stage("engine_version"):
+                engine_version = await adapter.version()
 
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                await set_running(r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
-                await db.execute(
-                    update(Job)
-                    .where(Job.id == job_id)
-                    .values(
-                        status="running",
-                        dispatched_at=utcnow(),
-                        engine_job_id=engine_job_id,
-                        engine_version=engine_version,
-                        backend_id=backend.id,
+                with timer.stage("set_running"):
+                    await set_running(r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
+                with timer.stage("db_update"):
+                    await db.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            status="running",
+                            dispatched_at=utcnow(),
+                            engine_job_id=engine_job_id,
+                            engine_version=engine_version,
+                            backend_id=backend.id,
+                        )
                     )
-                )
-                await db.commit()
+                    await db.commit()
             submitted_at = float(meta.get("submitted_at") or time.time())
             emitter.emit(
                 event(
@@ -566,10 +574,12 @@ async def main() -> None:
     try:
         while not stop.is_set():
             try:
-                await refresh_backends()
+                with timer.stage("refresh"):
+                    await refresh_backends()
 
                 # Promote delayed retries that are now due.
-                promoted = await promote_due_retries(r, time.time())
+                with timer.stage("promote"):
+                    promoted = await promote_due_retries(r, time.time())
                 if promoted:
                     logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
 
@@ -578,17 +588,21 @@ async def main() -> None:
                 # waits for them rather than falling back to the backend it avoids.
                 eligible: list[BackendSlot] = []
                 for backend in backends:
-                    if not await check_health(backend):
+                    with timer.stage("health"):
+                        healthy = await check_health(backend)
+                    if not healthy:
                         continue
-                    inflight = await get_backend_inflight(r, backend.id)
-                    domains = await served_domains(backend.id)
+                    with timer.stage("backend_state"):
+                        inflight = await get_backend_inflight(r, backend.id)
+                        domains = await served_domains(backend.id)
+                        batches = await get_backend_batches(r, backend.id)
                     eligible.append(
                         BackendSlot(
                             backend,
                             max(backend.max_inflight - inflight, 0),
                             domains,
                             inflight=inflight,
-                            batches=await get_backend_batches(r, backend.id),
+                            batches=batches,
                         )
                     )
 
@@ -602,11 +616,13 @@ async def main() -> None:
                     # Peeked, not popped: a job leaves its queue only once claimed below,
                     # so one no backend serves yet, or one in hand when this worker dies,
                     # stays queued.
-                    entries = await peek_pending(r, capacity)
+                    with timer.stage("peek"):
+                        entries = await peek_pending(r, capacity)
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
-                    metas = await get_jobs(r, [job_id for job_id, _, _ in entries])
+                    with timer.stage("meta"):
+                        metas = await get_jobs(r, [job_id for job_id, _, _ in entries])
                     priorities = {job_id: prio for job_id, _, prio in entries}
                     pending: list[PendingJob] = []
                     for job_id, score, _ in entries:
@@ -626,12 +642,13 @@ async def main() -> None:
 
                     # Speed scores for this tier's backends and these jobs' domains, once.
                     job_domains = {job.domain for job in pending}
-                    scores = await perf.load_scores(
-                        r, [slot.backend.id for slot in tier], job_domains
-                    )
-                    fallback = await _fallback_spp(r, job_domains)
-                    async with session_factory() as db:
-                        tolerance = await config_service.get_affinity_tolerance(db)
+                    with timer.stage("scores"):
+                        scores = await perf.load_scores(
+                            r, [slot.backend.id for slot in tier], job_domains
+                        )
+                        fallback = await _fallback_spp(r, job_domains)
+                        async with session_factory() as db:
+                            tolerance = await config_service.get_affinity_tolerance(db)
 
                     def spp(
                         backend_id: int,
@@ -642,14 +659,16 @@ async def main() -> None:
                         return perf.effective_spp(backend_id, domain, scores, fallback[domain])
 
                     # Leftovers stay queued for a lower tier or a backend that frees up.
-                    assignments, _ = allocate_scored(tier, pending, spp, tolerance)
+                    with timer.stage("allocate"):
+                        assignments, _ = allocate_scored(tier, pending, spp, tolerance)
                     # Another submit worker (two run during a rollout) may have claimed a
                     # job first; it's dispatched there, not twice.
-                    assignments = [
-                        (job, slot)
-                        for job, slot in assignments
-                        if await claim_pending(r, job.job_id, priorities[job.job_id])
-                    ]
+                    with timer.stage("claim"):
+                        assignments = [
+                            (job, slot)
+                            for job, slot in assignments
+                            if await claim_pending(r, job.job_id, priorities[job.job_id])
+                        ]
                     if not assignments:
                         continue
 
@@ -657,21 +676,47 @@ async def main() -> None:
                         f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "
                         f"at priority {priority}"
                     )
-                    results = await asyncio.gather(
-                        *[
-                            dispatch(
-                                job.job_id, job.score, slot.backend, slot.domains, metas[job.job_id]
-                            )
-                            for job, slot in assignments
-                        ],
-                        return_exceptions=True,
-                    )
+                    with timer.stage("dispatch"):
+                        results = await asyncio.gather(
+                            *[
+                                dispatch(
+                                    job.job_id,
+                                    job.score,
+                                    slot.backend,
+                                    slot.domains,
+                                    metas[job.job_id],
+                                )
+                                for job, slot in assignments
+                            ],
+                            return_exceptions=True,
+                        )
                     for result in results:
                         if isinstance(result, Exception):
                             logger.error("Dispatch failed: %s", result)
 
             except Exception:
                 logger.exception("Submit worker failed")
+
+            if time.monotonic() - stages_flushed_at >= 60:
+                stages_flushed_at = time.monotonic()
+                p95 = timer.p95()
+                totals = timer.flush()
+                for stage, (count, total, maximum) in sorted(totals.items()):
+                    logger.info(
+                        "stage=%s n=%d total_s=%.6f max_s=%.6f p95_s=%.6f",
+                        stage,
+                        count,
+                        total,
+                        maximum,
+                        p95[stage],
+                    )
+                if settings.clickhouse_url and totals:
+                    try:
+                        await live_metrics.insert_rows(
+                            http, settings, stage_metric_rows("submit", totals)
+                        )
+                    except Exception as exc:
+                        logger.warning("Stage metrics dropped: %s", exc)
 
             # Block until new work / a freed slot signals (signal_submit), with the tick
             # as an idle-wait floor. Event-driven so fast jobs refill slots immediately

@@ -22,7 +22,7 @@ from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
-from app.services import batch_store, perf
+from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
@@ -67,6 +67,7 @@ from app.services.storage import (
 )
 from app.telemetry import job_span, setup_telemetry
 from app.workers.shutdown import install_stop
+from app.workers.stages import StageTimer, stage_metric_rows
 
 logger = logging.getLogger("poller-worker")
 
@@ -226,6 +227,8 @@ async def main() -> None:
     # rotates real errors out of `kubectl logs`.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
+    timer = StageTimer()
+    stages_flushed_at = time.monotonic()
     db_engine = make_engine(settings)
     setup_telemetry("taas-poller", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -285,9 +288,7 @@ async def main() -> None:
         try:
             adapter = await adapter_for(meta)
             engine_job_id = meta["engine_job_id"]
-            # In the job's trace, so its polls show up there instead of as stray traces.
-            with job_span("poll", job_id, meta, backend_id=meta.get("backend_id")):
-                status_resp = await adapter.status(engine_job_id)
+            status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))
@@ -336,7 +337,9 @@ async def main() -> None:
             alto_bytes_for_analytics: bytes | None = None
             txt_bytes_for_analytics: bytes | None = None
 
-            for output, content in (await fetch_outputs(adapter, engine_job_id, outputs)).items():
+            with timer.stage("fetch_outputs"):
+                fetched = await fetch_outputs(adapter, engine_job_id, outputs)
+            for output, content in fetched.items():
                 obj_key = f"{username}/{job_id}.{ext_for(output)}.zst"
                 results_to_store.append((output, obj_key, content))
                 if output == "alto":
@@ -350,7 +353,8 @@ async def main() -> None:
             # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
             alto_blocks = alto_chars = None
             if alto_bytes_for_analytics:
-                alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
+                with timer.stage("parse_alto"):
+                    alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
             # Prefer counting characters from the txt output (present for txt/multi jobs) so
             # the metric is populated regardless of fmt; count non-whitespace to match ALTO's
             # char semantics (sum of String CONTENT). ALTO's count stays for alto-only jobs.
@@ -378,22 +382,25 @@ async def main() -> None:
                 presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 for result_fmt, obj_path, raw_bytes in results_to_store:
-                    compressed = cctx.compress(raw_bytes)
-                    await put_object(
-                        results_client,
-                        settings.minio_results_bucket,
-                        obj_path,
-                        compressed,
-                        "application/octet-stream",
-                    )
+                    with timer.stage("compress"):
+                        compressed = cctx.compress(raw_bytes)
+                    with timer.stage("store_put"):
+                        await put_object(
+                            results_client,
+                            settings.minio_results_bucket,
+                            obj_path,
+                            compressed,
+                            "application/octet-stream",
+                        )
                     logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
 
-                    presigned_url = await presign_get(
-                        results_public_client,
-                        settings.minio_results_bucket,
-                        obj_path,
-                        presigned_ttl,
-                    )
+                    with timer.stage("presign"):
+                        presigned_url = await presign_get(
+                            results_public_client,
+                            settings.minio_results_bucket,
+                            obj_path,
+                            presigned_ttl,
+                        )
 
                     # An upsert: a second harvest of the job (another poller during a
                     # rollout, or a re-run after a crash) rewrote the same object.
@@ -403,11 +410,12 @@ async def main() -> None:
                         "size_bytes": len(compressed),  # what the results storage cap counts
                         "evicted_at": None,
                     }
-                    await db.execute(
-                        pg_insert(JobResult)
-                        .values(job_id=job_id, fmt=result_fmt, **row)
-                        .on_conflict_do_update(index_elements=["job_id", "fmt"], set_=row)
-                    )
+                    with timer.stage("db_write"):
+                        await db.execute(
+                            pg_insert(JobResult)
+                            .values(job_id=job_id, fmt=result_fmt, **row)
+                            .on_conflict_do_update(index_elements=["job_id", "fmt"], set_=row)
+                        )
 
                     event_data[f"{result_fmt}_url"] = presigned_url  # alto_url, geojson_url, …
 
@@ -425,15 +433,18 @@ async def main() -> None:
                 done_values["finished_at"] = finished_at
                 # Only the first harvest marks it done; a second one (another poller
                 # got there first) must not report the job, its events or its timing again.
-                claimed = await db.execute(
-                    update(Job).where(Job.id == job_id, Job.status != "done").values(**done_values)
-                )
-                first_harvest = getattr(claimed, "rowcount", 1) == 1
-                await batch_store.finish_if_done(db, meta.get("batch_id"))
+                with timer.stage("db_write"):
+                    claimed = await db.execute(
+                        update(Job)
+                        .where(Job.id == job_id, Job.status != "done")
+                        .values(**done_values)
+                    )
+                    first_harvest = getattr(claimed, "rowcount", 1) == 1
+                    await batch_store.finish_if_done(db, meta.get("batch_id"))
+                    await db.commit()
 
-                await db.commit()
-
-            batch = await set_done(r, job_id, state_ttl)  # idempotent
+            with timer.stage("set_done"):
+                batch = await set_done(r, job_id, state_ttl)  # idempotent
             if not first_harvest:
                 logger.info("Job %s was already harvested; not reporting it again", job_id)
                 if batch is not None:  # the first harvest died before its set_done
@@ -451,31 +462,32 @@ async def main() -> None:
                 seconds = (engine_finished - engine_started).total_seconds()
                 if seconds > 0:
                     await record_page_seconds(r, job_domain(meta), seconds)
-            emitter.emit(
-                job_event(
-                    "done",
-                    job_id,
-                    meta,
-                    job_rec,
-                    device=backend_device or "",
-                    lines=alto_lines,
-                    blocks=alto_blocks,
-                    chars=alto_chars,
-                    mean_conf=mean_conf,
-                    extra=extra_metrics(times),
-                    **durations(
-                        job_rec.submitted_at if job_rec else None,
-                        job_rec.dispatched_at if job_rec else None,
-                        engine_created,
-                        engine_started,
-                        finished_at,
-                        stored_at,
+            with timer.stage("events"):
+                emitter.emit(
+                    job_event(
+                        "done",
+                        job_id,
+                        meta,
+                        job_rec,
+                        device=backend_device or "",
+                        lines=alto_lines,
+                        blocks=alto_blocks,
+                        chars=alto_chars,
+                        mean_conf=mean_conf,
+                        extra=extra_metrics(times),
+                        **durations(
+                            job_rec.submitted_at if job_rec else None,
+                            job_rec.dispatched_at if job_rec else None,
+                            engine_created,
+                            engine_started,
+                            finished_at,
+                            stored_at,
+                        ),
                     ),
                 )
-            )
-            await publish_event(r, username, event_data)
-            if batch is not None:
-                await publish_event(r, username, batch_event(batch))
+                await publish_event(r, username, event_data)
+                if batch is not None:
+                    await publish_event(r, username, batch_event(batch))
             logger.info(f"Published done event for {username}")
 
         except OutputUnavailable as e:
@@ -586,13 +598,22 @@ async def main() -> None:
     poll_sem = asyncio.Semaphore(settings.poller_poll_concurrency)
 
     async def check_with_sem(job_id: str, meta: dict[str, str]) -> PollOutcome:
-        async with poll_sem:
-            return await check_one(job_id, meta)
+        with job_span("poll", job_id, meta, backend_id=meta.get("backend_id")), timer.stage("poll"):
+            with timer.stage("poll_wait"):
+                await poll_sem.acquire()
+            try:
+                return await check_one(job_id, meta)
+            finally:
+                poll_sem.release()
 
     async def harvest_with_sem(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
-        async with sem:
+        with timer.stage("harvest_wait"):
+            await sem.acquire()
+        try:
             with job_span("harvest", job_id, meta, backend_id=meta.get("backend_id")):
                 await harvest(job_id, meta, times)
+        finally:
+            sem.release()
 
     stop = install_stop()
     logger.info("Poller worker started")
@@ -604,12 +625,13 @@ async def main() -> None:
             # heal ceiling. A dispatch (signal_poll from set_running) wakes us sooner still.
             wait_timeout = settings.poller_tick_seconds
             try:
-                job_ids = await get_inflight_ids(r)
+                with timer.stage("inflight_scan"):
+                    job_ids = await get_inflight_ids(r)
+                    metas_by_id: dict[str, dict[str, str]] = {}
+                    if job_ids:
+                        metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
+                        metas_by_id = {jid: m for jid, m in zip(job_ids, metas, strict=True) if m}
                 now = time.time()
-                metas_by_id: dict[str, dict[str, str]] = {}
-                if job_ids:
-                    metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
-                    metas_by_id = {jid: m for jid, m in zip(job_ids, metas, strict=True) if m}
 
                 due = [
                     jid for jid, m in metas_by_id.items() if float(m.get("next_poll_at", 0)) <= now
@@ -644,9 +666,10 @@ async def main() -> None:
                     for outcome in statuses:
                         meta = outcome.meta
                         requeues = int(meta.get("requeues", 0))
-                        action = classify_poll_result(
-                            outcome.status, outcome.retryable, requeues, max_requeues
-                        )
+                        with timer.stage("classify"):
+                            action = classify_poll_result(
+                                outcome.status, outcome.retryable, requeues, max_requeues
+                            )
                         if action == "harvest":
                             done_jobs.append((outcome.job_id, meta, outcome.times))
                         elif action == "fail":
@@ -695,7 +718,10 @@ async def main() -> None:
 
                     # Mark failed jobs
                     for job_id, meta, error, attempt, times in failed_jobs:
-                        with job_span("fail", job_id, meta, backend_id=meta.get("backend_id")):
+                        with (
+                            job_span("fail", job_id, meta, backend_id=meta.get("backend_id")),
+                            timer.stage("fail"),
+                        ):
                             await mark_failed(job_id, meta, error, attempt=attempt, times=times)
 
                     # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
@@ -705,17 +731,18 @@ async def main() -> None:
                     # recorded, in one batched session.
                     if requeue_jobs:
                         for job_id, meta, delay, avoid_id, _attempt in requeue_jobs:
-                            await release_and_requeue(
-                                r,
-                                job_id,
-                                float(meta.get("submitted_at", time.time())),
-                                state_ttl,
-                                delay_s=delay,
-                                avoid_backend_id=avoid_id,
-                            )
-                            await r.hincrby(f"job:{job_id}", "requeues", 1)
-                            if avoid_id is not None:  # retryable: the backend's fault
-                                await perf.record_failure(r, avoid_id, job_domain(meta))
+                            with timer.stage("requeue"):
+                                await release_and_requeue(
+                                    r,
+                                    job_id,
+                                    float(meta.get("submitted_at", time.time())),
+                                    state_ttl,
+                                    delay_s=delay,
+                                    avoid_backend_id=avoid_id,
+                                )
+                                await r.hincrby(f"job:{job_id}", "requeues", 1)
+                                if avoid_id is not None:  # retryable: the backend's fault
+                                    await perf.record_failure(r, avoid_id, job_domain(meta))
                             logger.info(
                                 f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})"
                             )
@@ -747,6 +774,27 @@ async def main() -> None:
             except Exception:
                 logger.exception("Poller worker failed")
                 wait_timeout = settings.poller_tick_seconds
+
+            if time.monotonic() - stages_flushed_at >= 60:
+                stages_flushed_at = time.monotonic()
+                p95 = timer.p95()
+                totals = timer.flush()
+                for stage, (count, total, maximum) in sorted(totals.items()):
+                    logger.info(
+                        "stage=%s n=%d total_s=%.6f max_s=%.6f p95_s=%.6f",
+                        stage,
+                        count,
+                        total,
+                        maximum,
+                        p95[stage],
+                    )
+                if settings.clickhouse_url and totals:
+                    try:
+                        await live_metrics.insert_rows(
+                            http, settings, stage_metric_rows("poller", totals)
+                        )
+                    except Exception as exc:
+                        logger.warning("Stage metrics dropped: %s", exc)
 
             try:
                 await wait_for_poll_signal(r, wait_timeout)

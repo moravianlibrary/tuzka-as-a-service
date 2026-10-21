@@ -79,25 +79,35 @@ async def snapshot(r: aioredis.Redis, db: AsyncSession) -> list[dict[str, Any]]:
     return metric_rows(utcnow(), queued, inflight, backends)
 
 
+async def insert_rows(
+    http: httpx.AsyncClient, settings: Settings, rows: list[dict[str, Any]]
+) -> None:
+    """Write a live-metrics batch through the existing ClickHouse endpoint."""
+    if not rows:
+        return
+    body = "\n".join(json.dumps(row) for row in rows)
+    response = await http.post(
+        f"{settings.clickhouse_url.rstrip('/')}/",
+        params={
+            "query": f"INSERT INTO {settings.clickhouse_database}.live_metrics FORMAT JSONEachRow"
+        },
+        content=body,
+        auth=(settings.clickhouse_user, settings.clickhouse_password),
+    )
+    response.raise_for_status()
+
+
 async def run(
     r: aioredis.Redis, session_factory: async_sessionmaker[AsyncSession], settings: Settings
 ) -> None:
     """Insert a snapshot every ``INTERVAL_SECONDS`` until cancelled."""
-    url = settings.clickhouse_url.rstrip("/")
-    query = f"INSERT INTO {settings.clickhouse_database}.live_metrics FORMAT JSONEachRow"
-    auth = (settings.clickhouse_user, settings.clickhouse_password)
     last_warned = 0.0
     async with httpx.AsyncClient(timeout=10.0) as http:
         while True:
             try:
                 async with session_factory() as db:
                     rows = await snapshot(r, db)
-                if rows:
-                    body = "\n".join(json.dumps(row) for row in rows)
-                    resp = await http.post(
-                        f"{url}/", params={"query": query}, content=body, auth=auth
-                    )
-                    resp.raise_for_status()
+                await insert_rows(http, settings, rows)
             except Exception as exc:
                 now = time.monotonic()
                 if now - last_warned >= _WARN_EVERY_SECONDS:

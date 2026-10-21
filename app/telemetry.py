@@ -142,3 +142,13 @@ def job_span(name: str, job_id: str, meta: Mapping[str, str], **attributes: Any)
         name, context=parent, attributes={k: v for k, v in attrs.items() if v is not None}
     ):
         yield
+
+
+@contextmanager
+def child_span(name: str) -> Iterator[None]:
+    """Record a stage only when work is already inside a job trace."""
+    if trace is None or not trace.get_current_span().get_span_context().is_valid:
+        yield
+        return
+    with trace.get_tracer("taas").start_as_current_span(name):
+        yield

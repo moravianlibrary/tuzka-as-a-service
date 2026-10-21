@@ -6,6 +6,7 @@ Run with `make bench-micro`. Sizes are pinned in the names; record numbers with 
 from app.services.domain_sync import plan_domain_links
 from app.services.job_spec import options_errors
 from app.services.load import compute_load, group_load
+from app.workers.stages import StageTimer
 from app.workers.submit import BackendSlot, allocate_jobs
 
 from .conftest import (
@@ -59,3 +60,23 @@ def test_group_load_by_domain_100_fields(benchmark) -> None:
     queued = make_load_counters(25, 4)
     inflight = make_load_counters(25, 2)
     benchmark(group_load, queued, inflight, {}, 10.0, "domain", {})
+
+
+def test_stage_timer_1000_empty_sections(benchmark) -> None:
+    timer = StageTimer()
+
+    def run() -> None:
+        for _ in range(1000):
+            with timer.stage("poll"):
+                pass
+        timer.flush()
+
+    benchmark(run)
+
+
+def test_stage_timer_baseline_1000_empty_sections(benchmark) -> None:
+    def run() -> None:
+        for _ in range(1000):
+            pass
+
+    benchmark(run)

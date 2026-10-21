@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Submit and poller workers now log per-stage wall-time counts, totals, p95 and maximums
+  every 60 seconds, add child spans inside job traces, and send stage totals to
+  ClickHouse live metrics when configured.
 - **Batches.** `POST /api/v1/batches` takes one archive of pages (`.tar`, `.tar.gz`,
   `.tar.zst` or `.zip`, read one page at a time) with one domain, set of outputs and
   options; every image becomes a job, other files are skipped and listed. Watch it with
