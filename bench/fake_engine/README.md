@@ -37,13 +37,14 @@ Keep taas's `max_inflight` for a fake backend ≤ `FAKE_CAPACITY`, as with the r
 ```bash
 docker compose -f docker-compose.yml -f bench/fake_engine/compose.yaml up -d --build
 for i in 1 2 3; do
-  curl -sf -X PUT http://localhost:8080/admin/backends \
-    -H "X-Master-Key: $MASTER_KEY" -H "Content-Type: application/json" \
-    -d "{\"url\":\"http://fake-engine-$i:8000\",\"label\":\"fake-$i\",\"api_key\":\"test-engine-key\",\"max_inflight\":8}"
+  docker compose exec -T -e ENGINE_KEY=test-engine-key api taas-admin backend upsert \
+    --url "http://fake-engine-$i:8000" --label "fake-$i" --api-key-env ENGINE_KEY \
+    --max-inflight 8
 done
 ```
 
-Disable the real `ocr-engine` backend (or don't start it) so every job goes to the fakes.
+Disable the real `ocr-engine` backend (`taas-admin backend disable <id>`, or don't start
+it) so every job goes to the fakes.
 `FAKE_*` variables in your shell or `.env` apply to all three.
 
 ## k3d

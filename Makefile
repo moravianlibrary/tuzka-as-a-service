@@ -120,8 +120,8 @@ bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make
 	  --benchmark-columns=min,median,mean,stddev,ops
 
 .PHONY: perf-taas
-perf-taas: ## Whole-taas measurement against a fake-engine stack (USERS=, RATE=, DURATION=, OUT=)
-	USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
+perf-taas: ## Whole-taas measurement against a fake-engine stack (TARGET=compose|k3d, USERS=, RATE=, DURATION=, OUT=)
+	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
 
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (TARGET=compose|k3d, IMAGE=)
