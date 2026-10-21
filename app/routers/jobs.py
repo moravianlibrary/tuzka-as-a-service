@@ -403,7 +403,7 @@ async def list_jobs(
         None, max_length=255, description="Only jobs submitted with this external_id."
     ),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=1_000_000),
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
 ) -> JobListResponse:
