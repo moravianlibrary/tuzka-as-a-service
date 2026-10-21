@@ -198,8 +198,11 @@ async def enqueue_job(
     key = f"job:{job_id}"
     # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
     # does not upcast; cast around the third-party stub friction (values are all strings).
+    # The status lets set_failed tell a job that never ran (queued count) from one that
+    # did (inflight count).
+    fields = {"status": "queued", **metadata}
     async with r.pipeline(transaction=True) as pipe:
-        pipe.hset(key, mapping=cast("dict[Any, Any]", metadata))
+        pipe.hset(key, mapping=cast("dict[Any, Any]", fields))
         pipe.expire(key, state_ttl)
         pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(metadata), 1)
         await pipe.execute()
@@ -477,8 +480,10 @@ async def rebuild_load_counters(r: aioredis.Redis) -> None:
     queued_ids: list[str] = []
     for level in levels:
         prio = int(level.decode() if isinstance(level, bytes) else level)
-        queued_ids += [_s(m) for m in await r.zrange(_pending_key(prio), 0, -1)]
-    queued_ids += [_s(m) for m in await r.zrange(_DELAYED_KEY, 0, -1)]
+        queued_ids += [
+            _s(m) for m in cast("list[bytes]", await r.zrange(_pending_key(prio), 0, -1))
+        ]
+    queued_ids += [_s(m) for m in cast("list[bytes]", await r.zrange(_DELAYED_KEY, 0, -1))]
     inflight_ids = [_s(m) for m in await r.smembers("jobs:inflight")]
 
     async def count(job_ids: list[str]) -> dict[str, int]:
@@ -506,10 +511,6 @@ async def rebuild_load_counters(r: aioredis.Redis) -> None:
             pipe.hset(tmp, mapping=cast("dict[Any, Any]", counts))
             pipe.rename(tmp, key)  # atomic swap: readers never see a half-built hash
             await pipe.execute()
-
-
-def _s(value: bytes | str) -> str:
-    return value.decode() if isinstance(value, bytes) else value
 
 
 async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) -> None:
