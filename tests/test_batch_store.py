@@ -1,6 +1,7 @@
 """Tests for batch progress: the pure ETA, and the counting query and the conditional
 finish against a throwaway migrated Postgres (``TEST_DATABASE_URL``; skips otherwise)."""
 
+import asyncio
 import os
 import uuid
 from datetime import datetime
@@ -113,3 +114,38 @@ async def test_a_retried_page_counts_once_with_its_newest_job(session) -> None:
     assert await batch_store.page_counts(session, batch_id) == {"done": 1, "queued": 1}
     listed = {name: status for _, name, status, _ in await batch_store.pages(session, batch_id)}
     assert listed == {"p0.jpg": "done", "retry.jpg": "queued"}
+
+
+@pytest.mark.asyncio
+async def test_last_two_pages_finishing_together_finish_the_batch(session) -> None:
+    """Two workers finish the last two pages at once: each updates its page, then
+    checks. Without the batch row lock both see the other page still running."""
+    batch_id = await _batch(session, ["running", "running"])
+    jobs = (
+        await session.execute(
+            text("SELECT id FROM jobs WHERE batch_id = :b ORDER BY source_name"), {"b": batch_id}
+        )
+    ).scalars()
+    job_a, job_b = list(jobs)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    done = text("UPDATE jobs SET status = 'done' WHERE id = :id")
+    async with factory() as a, factory() as b:
+        await a.execute(done, {"id": job_a})
+        await b.execute(done, {"id": job_b})
+        await batch_store.finish_if_done(a, batch_id)  # sees b's page still running
+        b_check = asyncio.create_task(batch_store.finish_if_done(b, batch_id))
+        await asyncio.sleep(0.2)
+        assert not b_check.done(), "b must wait for a's commit"
+        await a.commit()
+        await b_check
+        await b.commit()
+    assert await _status(session, batch_id) == "finished"
+
+
+@pytest.mark.asyncio
+async def test_finish_stalled_only_finishes_batches_with_nothing_left(session) -> None:
+    stalled = await _batch(session, ["done", "failed"])
+    busy = await _batch(session, ["done", "running"])
+    assert await batch_store.finish_stalled(session) == 1
+    assert await _status(session, stalled) == "finished"
+    assert await _status(session, busy) == "queued"

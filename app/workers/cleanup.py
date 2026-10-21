@@ -12,6 +12,7 @@ from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
 from app.models.db import make_engine
+from app.services import batch_store
 from app.services.config import get_storage_ttl_minutes
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
@@ -72,6 +73,8 @@ async def main() -> None:
                     await delete_finished_jobs(db, results_client, bucket)
                     await delete_expired_batches(db, results_client, bucket)
                     await evict_results(db, results_client, bucket)
+                    if stalled := await batch_store.finish_stalled(db):
+                        logger.warning(f"Finished {stalled} stalled batch(es)")
             except Exception:
                 logger.exception("Retention sweep failed")
 

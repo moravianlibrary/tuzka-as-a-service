@@ -76,6 +76,8 @@ async def stored_results(db: AsyncSession, batch_id: uuid.UUID) -> dict[uuid.UUI
     return stored
 
 
+_LOCK = text("SELECT 1 FROM batches WHERE id = :batch_id FOR UPDATE")
+
 _FINISH = text(
     """
     UPDATE batches SET status = 'finished', finished_at = now()
@@ -88,8 +90,32 @@ _FINISH = text(
 
 
 async def finish_if_done(db: AsyncSession, batch_id: str | uuid.UUID | None) -> None:
-    """Mark the batch finished once none of its pages is queued or running. One
-    conditional UPDATE, so the workers finishing its last pages concurrently can't both
-    do it, and it's a no-op for every page but the last. The caller commits."""
+    """Mark the batch finished once none of its pages is queued or running; a no-op for
+    every page but the last. The caller commits.
+
+    Two workers finishing the last two pages at once would each still see the other's
+    page running (neither has committed) and neither would finish the batch. So the
+    batch row is locked first: the second worker waits for the first to commit, and its
+    check (a new snapshot under READ COMMITTED) sees both pages done."""
     if batch_id:
+        await db.execute(_LOCK, {"batch_id": str(batch_id)})
         await db.execute(_FINISH, {"batch_id": str(batch_id)})
+
+
+_FINISH_STALLED = text(
+    """
+    UPDATE batches b SET status = 'finished', finished_at = now()
+    WHERE b.status = 'queued'
+      AND NOT EXISTS (
+        SELECT 1 FROM jobs j WHERE j.batch_id = b.id AND j.status IN ('queued', 'running')
+      )
+    """
+)
+
+
+async def finish_stalled(db: AsyncSession) -> int:
+    """Safety net for the cleanup worker: finish every queued batch with no page left to
+    run, in case its last page's finish was missed. Commits; returns how many."""
+    result = await db.execute(_FINISH_STALLED)
+    await db.commit()
+    return int(getattr(result, "rowcount", 0) or 0)
