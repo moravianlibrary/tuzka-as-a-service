@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.routers.jobs import list_domains
+from app.services.scopes import Principal
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -86,7 +87,7 @@ async def test_outputs_are_the_union_over_backends(session):
     await _link(session, 2, 1, ["alto", "json"])
     await session.commit()
 
-    resp = await list_domains(username="alice", db=session)
+    resp = await list_domains(username="alice", principal=Principal("alice"), db=session)
 
     assert len(resp.domains) == 1
     entry = resp.domains[0]
@@ -109,7 +110,7 @@ async def test_domain_of_disabled_backend_is_hidden(session):
     await _link(session, 2, 1, ["geojson"])
     await session.commit()
 
-    resp = await list_domains(username="alice", db=session)
+    resp = await list_domains(username="alice", principal=Principal("alice"), db=session)
 
     assert [d.name for d in resp.domains] == ["default"]
     assert resp.domains[0].outputs == ["alto", "txt"]
@@ -121,6 +122,23 @@ async def test_unlinked_domain_is_hidden(session):
     await _domain(session, 1, "default")
     await session.commit()
 
-    resp = await list_domains(username="alice", db=session)
+    resp = await list_domains(username="alice", principal=Principal("alice"), db=session)
 
     assert resp.domains == []
+
+
+@pytest.mark.asyncio
+async def test_scoped_key_sees_only_its_domains_and_outputs(session):
+    await _backend(session, 1)
+    await _domain(session, 1, "default")
+    await _domain(session, 2, "kramarky")
+    await _link(session, 1, 1, ["alto", "txt"])
+    await _link(session, 1, 2, ["alto", "txt"])
+    await session.commit()
+
+    key = Principal(
+        "alice", allowed_domains=frozenset({"default"}), allowed_outputs=frozenset({"txt"})
+    )
+    resp = await list_domains(username="alice", principal=key, db=session)
+
+    assert [(d.name, d.outputs) for d in resp.domains] == [("default", ["txt"])]

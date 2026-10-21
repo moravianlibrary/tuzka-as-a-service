@@ -65,7 +65,7 @@ from app.services.job_spec import (
     parse_outputs,
     resolve_job_spec,
 )
-from app.services.scopes import Principal, check_scope
+from app.services.scopes import Principal, check_scope, visible_outputs
 from app.services.uploads import UploadTooLarge, read_limited
 from app.telemetry import inject_trace_context
 
@@ -485,26 +485,31 @@ _SERVED_DOMAINS_SQL = text(
 )
 async def list_domains(
     username: str = Depends(rate_limit_query()),
+    principal: Principal = Depends(require_principal),
     db: AsyncSession = Depends(get_db),
 ) -> DomainListResponse:
-    """List the domains served by at least one enabled backend.
+    """List the domains served by at least one enabled backend that your key may use.
 
     Requires a valid API key in the ``X-API-Key`` header. For each domain, ``outputs``
-    is what a job may request in ``outputs`` (the union over the backends serving it),
-    and ``options_schema`` is the JSON Schema the submit ``options`` field is validated
-    against, derived from the engine's own OpenAPI.
+    is what a job may request in ``outputs`` (the union over the backends serving it,
+    limited to what your key is allowed), and ``options_schema`` is the JSON Schema the
+    submit ``options`` field is validated against, derived from the engine's own OpenAPI.
+    A domain your key can't use isn't listed.
     """
     rows = (await db.execute(_SERVED_DOMAINS_SQL)).mappings().all()
-    return DomainListResponse(
-        domains=[
+    entries = []
+    for r in rows:
+        outputs = visible_outputs(principal, r["name"], frozenset(r["outputs"]))
+        if not outputs:
+            continue
+        entries.append(
             DomainEntry(
                 name=r["name"],
                 label=r["label"],
                 description=r["description"],
-                outputs=list(r["outputs"]),
+                outputs=[o for o in r["outputs"] if o in outputs],  # keep the SQL's order
                 options_schema=r["options_schema"],
                 legacy_engine_id=r["legacy_engine_id"],
             )
-            for r in rows
-        ]
-    )
+        )
+    return DomainListResponse(domains=entries)

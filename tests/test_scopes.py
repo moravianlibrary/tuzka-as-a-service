@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.scopes import Principal, check_scope, in_scope_outputs
+from app.services.scopes import Principal, check_scope, in_scope_outputs, visible_outputs
 
 ALTO_TXT = frozenset({"alto", "txt"})
 
@@ -30,3 +30,15 @@ def test_denied_outputs_are_named() -> None:
 def test_in_scope_outputs() -> None:
     assert in_scope_outputs(Principal("a"), ALTO_TXT) == ALTO_TXT
     assert in_scope_outputs(Principal("a", None, frozenset({"alto"})), ALTO_TXT) == {"alto"}
+
+
+def test_visible_outputs() -> None:
+    both = frozenset({"alto", "txt"})
+    assert visible_outputs(Principal("u"), "maps", both) == both
+    scoped = Principal("u", allowed_domains=frozenset({"default"}))
+    assert visible_outputs(scoped, "maps", both) == frozenset()
+    assert visible_outputs(scoped, "default", both) == both
+    txt_only = Principal("u", allowed_outputs=frozenset({"txt"}))
+    assert visible_outputs(txt_only, "default", both) == frozenset({"txt"})
+    geo_only = Principal("u", allowed_outputs=frozenset({"geojson"}))
+    assert visible_outputs(geo_only, "default", both) == frozenset()

@@ -34,3 +34,11 @@ def in_scope_outputs(principal: Principal, outputs: frozenset[str]) -> frozenset
     if principal.allowed_outputs is None:
         return outputs
     return outputs & principal.allowed_outputs
+
+
+def visible_outputs(principal: Principal, domain: str, outputs: frozenset[str]) -> frozenset[str]:
+    """What /domains shows this key of a domain: the outputs it may request there. Empty
+    means the domain isn't listed (out of scope, or none of its outputs allowed)."""
+    if principal.allowed_domains is not None and domain not in principal.allowed_domains:
+        return frozenset()
+    return in_scope_outputs(principal, outputs)
