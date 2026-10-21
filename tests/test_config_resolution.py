@@ -56,6 +56,9 @@ class _FakeDB:
                 self.value = v
 
         class _Result:
+            def all(self_inner):
+                return []  # no per-domain limit overrides
+
             def scalar_one_or_none(self_inner):
                 return _Entry(value) if value is not None else None
 

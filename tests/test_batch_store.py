@@ -3,6 +3,7 @@ finish against a throwaway migrated Postgres (``TEST_DATABASE_URL``; skips other
 
 import os
 import uuid
+from datetime import datetime
 
 import pytest
 from sqlalchemy import text
@@ -96,7 +97,10 @@ async def test_finishes_only_when_no_page_is_left(session) -> None:
 @pytest.mark.asyncio
 async def test_a_retried_page_counts_once_with_its_newest_job(session) -> None:
     batch_id = await _batch(session, ["done"])
-    for status, submitted in (("failed", "2026-10-21 10:00"), ("queued", "2026-10-21 11:00")):
+    for status, submitted in (
+        ("failed", datetime(2026, 10, 21, 10)),
+        ("queued", datetime(2026, 10, 21, 11)),
+    ):
         await session.execute(
             text(
                 "INSERT INTO jobs (id, username, status, batch_id, source_name, submitted_at) "

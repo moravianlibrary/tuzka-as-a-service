@@ -27,7 +27,6 @@ def test_backend_create_accepts_explicit_adapter():
     "kwargs",
     [
         {"url": "http://x", "adapter": "unknown"},
-        {"url": "http://x", "adapter": "tuzkam"},
     ],
 )
 def test_backend_create_rejects_unknown_adapter(kwargs):

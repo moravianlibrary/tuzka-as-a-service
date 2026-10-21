@@ -74,9 +74,11 @@ def test_worker_sampler_keeps_only_job_traces() -> None:
     assert exporter.get_finished_spans() == ()
 
     parent = {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}
-    with tracer.start_as_current_span("poll", context=propagate.extract(parent)):
-        with tracer.start_as_current_span("GET /api/v1/status"):  # a call inside a job
-            pass
+    with (
+        tracer.start_as_current_span("poll", context=propagate.extract(parent)),
+        tracer.start_as_current_span("GET /api/v1/status"),  # a call inside a job
+    ):
+        pass
     assert [s.name for s in exporter.get_finished_spans()] == ["GET /api/v1/status", "poll"]
 
 

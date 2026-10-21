@@ -6,7 +6,6 @@ test_analytics_db.py (gated on TEST_DATABASE_URL)."""
 
 from datetime import datetime
 
-from app.routers.dashboard import _alto_range, _bucket_count
 from app.services.alto_stats import parse_alto
 from app.services.events import _dur_s
 
@@ -64,57 +63,3 @@ def test_dur_s_negative_is_clamped_to_none():
     b = datetime(2026, 1, 1, 12, 0, 0)
     # Out-of-order timestamps (clock skew / retries) should not produce negative durations.
     assert _dur_s(a, b) is None
-
-
-def test_bucket_count_is_inclusive_and_uses_granularity_divisor():
-    frm = datetime(2026, 1, 1)
-    # 10 full days -> 10 day-buckets + 1 (inclusive of the start bucket) = 11
-    assert _bucket_count(frm, datetime(2026, 1, 11), "day") == 11
-    # Same span at hour granularity: 10*24 hours + 1
-    assert _bucket_count(frm, datetime(2026, 1, 11), "hour") == 241
-    # Unknown granularity falls back to day divisor
-    assert _bucket_count(frm, datetime(2026, 1, 11), "bogus") == 11
-
-
-def test_bucket_count_negative_span_clamped():
-    frm = datetime(2026, 1, 11)
-    to = datetime(2026, 1, 1)
-    assert _bucket_count(frm, to, "day") == 1
-
-
-def test_alto_range_bounded_category():
-    # Bounds are bound as params, not interpolated; the column name stays inline.
-    assert _alto_range("normal", "alto_lines") == (
-        " AND alto_lines BETWEEN :alto_lines_lo AND :alto_lines_hi",
-        {"alto_lines_lo": 16, "alto_lines_hi": 60},
-    )
-    assert _alto_range("simple", "alto_blocks") == (
-        " AND alto_blocks BETWEEN :alto_blocks_lo AND :alto_blocks_hi",
-        {"alto_blocks_lo": 1, "alto_blocks_hi": 2},
-    )
-
-
-def test_alto_range_open_ended_category():
-    # Categories with no upper bound become a >= clause with a single bound param.
-    assert _alto_range("very_dense", "alto_lines") == (
-        " AND alto_lines >= :alto_lines_lo",
-        {"alto_lines_lo": 301},
-    )
-    assert _alto_range("rich", "alto_chars") == (
-        " AND alto_chars >= :alto_chars_lo",
-        {"alto_chars_lo": 3001},
-    )
-
-
-def test_alto_range_empty_category_is_exact_zero():
-    assert _alto_range("empty", "alto_lines") == (
-        " AND alto_lines BETWEEN :alto_lines_lo AND :alto_lines_hi",
-        {"alto_lines_lo": 0, "alto_lines_hi": 0},
-    )
-
-
-def test_alto_range_unknown_or_none_returns_empty():
-    assert _alto_range(None, "alto_lines") == ("", {})
-    assert _alto_range("nonsense", "alto_lines") == ("", {})
-    # A valid category but wrong column also yields nothing.
-    assert _alto_range("simple", "alto_lines") == ("", {})

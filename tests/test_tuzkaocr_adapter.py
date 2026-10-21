@@ -48,9 +48,7 @@ class TestSubmit:
         """submit with fmt=multi sends fmt=multi (both outputs)."""
         adapter, http = _make_client(self._handler_factory("multi"))
         try:
-            result = await adapter.submit(
-                b"img", "page.jpg", None, frozenset({"alto", "txt"}), {}
-            )
+            result = await adapter.submit(b"img", "page.jpg", None, frozenset({"alto", "txt"}), {})
             assert result == "job-123"
         finally:
             await http.aclose()
@@ -59,9 +57,7 @@ class TestSubmit:
     async def test_submit_alto(self) -> None:
         adapter, http = _make_client(self._handler_factory("alto"))
         try:
-            result = await adapter.submit(
-                b"img", "page.jpg", None, frozenset({"alto"}), {}
-            )
+            result = await adapter.submit(b"img", "page.jpg", None, frozenset({"alto"}), {})
             assert result == "job-123"
         finally:
             await http.aclose()
@@ -85,9 +81,7 @@ class TestSubmit:
 
         adapter, http = _make_client(handler)
         try:
-            await adapter.submit(
-                b"img", "page.jpg", "handwritten", frozenset({"alto", "txt"}), {}
-            )
+            await adapter.submit(b"img", "page.jpg", "handwritten", frozenset({"alto", "txt"}), {})
         finally:
             await http.aclose()
 
@@ -145,9 +139,7 @@ class TestSubmit:
         adapter, http = _make_client(handler)
         try:
             with pytest.raises(EngineFullError):
-                await adapter.submit(
-                    b"img", "page.jpg", None, frozenset({"alto", "txt"}), {}
-                )
+                await adapter.submit(b"img", "page.jpg", None, frozenset({"alto", "txt"}), {})
         finally:
             await http.aclose()
 
