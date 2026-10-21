@@ -160,6 +160,9 @@ async def resolve_job_spec(
     """Validate a submit's domain, outputs and options (D7), in that order; 422 on the
     first that fails. A missing domain is ``default`` (D6)."""
     name = domain or DEFAULT_DOMAIN
+    if not name.isprintable():
+        # No domain has such a name, and Postgres would reject a NUL in the lookup (a 500).
+        raise Unprocessable("domain must be printable text — see GET /api/v1/domains")
     try:
         options = parse_options(raw_options)
     except ValueError as exc:

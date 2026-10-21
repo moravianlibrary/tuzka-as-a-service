@@ -253,3 +253,11 @@ def test_adapter_rejection_none_when_one_adapter_accepts() -> None:
     adapters = {"tuzkam", "tuzkaocr"}
     assert adapter_rejection(adapters, "maps", frozenset({"geojson"}), {"georef": False}) is None
     assert adapter_rejection(set(), "maps", frozenset({"geojson"}), {}) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("domain", ["de\x00fault", "line\nbreak"])
+async def test_unprintable_domain_is_422_before_the_lookup(domain) -> None:
+    with pytest.raises(HTTPException) as exc:
+        await resolve_job_spec(None, domain, frozenset({"alto"}), None)
+    assert exc.value.status_code == 422
