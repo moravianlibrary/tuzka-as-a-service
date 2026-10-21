@@ -1,4 +1,4 @@
-"""TuzkaOCR engine adapter — the only implementation today."""
+"""TuzkaOCR engine adapter (text OCR)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.engines.base import (
     EngineStatus,
     Result,
 )
+from app.engines.openapi import form_value, options_schema_from_openapi
 from app.engines.outputs import outputs_to_fmt
 
 logger = logging.getLogger(__name__)
@@ -23,47 +24,6 @@ _OPENAPI_CACHE_TTL_SECONDS = 300.0
 
 # Outputs assumed for a domain when the engine doesn't advertise `capabilities`.
 _DEFAULT_OUTPUTS = frozenset({"alto", "txt"})
-
-# Form fields of POST /api/v1/process that taas sets itself; the rest are options.
-_RESERVED_FIELDS = frozenset({"image", "domain", "fmt"})
-
-
-def options_schema_from_openapi(spec: dict[str, Any]) -> dict[str, Any] | None:
-    """Derive the per-job options JSON Schema from the engine's OpenAPI document.
-
-    Takes the multipart form body of ``POST /api/v1/process``, drops the fields taas
-    owns (image, domain, fmt) and closes the object, so an unknown option is rejected
-    at submit instead of being silently ignored by the engine. Returns None when the
-    document doesn't describe that body.
-    """
-    try:
-        body = spec["paths"]["/api/v1/process"]["post"]["requestBody"]
-        schema: dict[str, Any] = body["content"]["multipart/form-data"]["schema"]
-        ref = schema.get("$ref")
-        if ref is not None:
-            # FastAPI emits a local ref: #/components/schemas/Body_process_image_...
-            name = ref.removeprefix("#/components/schemas/")
-            schema = spec["components"]["schemas"][name]
-        properties: dict[str, Any] = schema.get("properties", {})
-    except (KeyError, TypeError, AttributeError):
-        return None
-
-    options: dict[str, Any] = {
-        "type": "object",
-        "properties": {k: v for k, v in properties.items() if k not in _RESERVED_FIELDS},
-        "additionalProperties": False,
-    }
-    required = [r for r in schema.get("required", []) if r not in _RESERVED_FIELDS]
-    if required:
-        options["required"] = required
-    return options
-
-
-def _form_value(value: Any) -> str:
-    """Render an option as a form field; booleans the way FastAPI parses them."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
 
 
 class TuzkaOcrAdapter:
@@ -80,6 +40,13 @@ class TuzkaOcrAdapter:
         self._openapi_cached_at: float = 0.0
 
     # ---- public ----
+
+    @classmethod
+    def validate_request(
+        cls, domain: str, outputs: frozenset[str], options: dict[str, Any]
+    ) -> str | None:
+        """Cross-field checks the options schema can't express; TuzkaOCR has none."""
+        return None
 
     async def healthy(self) -> bool:
         try:
@@ -148,7 +115,7 @@ class TuzkaOcrAdapter:
             data["domain"] = domain
         for key, value in options.items():
             if value is not None:
-                data[key] = _form_value(value)
+                data[key] = form_value(value)
 
         resp = await self._http.post(
             f"{self._url}/api/v1/process",

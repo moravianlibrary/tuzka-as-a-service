@@ -1,0 +1,38 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "TuzkaM", "version": "0.4.0"},
+  "paths": {
+    "/api/v1/process": {
+      "post": {
+        "summary": "Process Image",
+        "operationId": "process_image_api_v1_process_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {"$ref": "#/components/schemas/Body_process_image_api_v1_process_post"}
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Successful Response", "content": {"application/json": {"schema": {}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_process_image_api_v1_process_post": {
+        "properties": {
+          "image": {"anyOf": [{"type": "string", "format": "binary"}, {"type": "null"}], "title": "Image"},
+          "georef": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Georef"},
+          "region": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Region"},
+          "alto_profile": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Alto Profile", "default": "ndk"},
+          "source_identifier": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Source Identifier"},
+          "physical_img_nr": {"anyOf": [{"type": "string"}, {"type": "null"}], "title": "Physical Img Nr"}
+        },
+        "type": "object",
+        "title": "Body_process_image_api_v1_process_post"
+      }
+    }
+  }
+}

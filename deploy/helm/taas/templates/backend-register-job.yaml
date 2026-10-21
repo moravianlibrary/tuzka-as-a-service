@@ -1,4 +1,4 @@
-{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes }}
+{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes .Values.tuzkam.enabled }}
 {{- $e := .Values.ocrEngine }}
 {{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
 apiVersion: batch/v1
@@ -62,6 +62,19 @@ spec:
                 --api-key-env OCR_ENGINE_API_KEY --max-inflight {{ $tcfg.maxInflight }} \
                 --device "{{ $tcfg.device }}" --adapter tuzkaocr --managed >/dev/null \
                 || echo "upsert {{ $tname }} failed"
+              {{- end }}
+              {{- end }}
+              {{- if $.Values.tuzkam.enabled }}
+              {{- $m := $.Values.tuzkam }}
+              {{- $mname := printf "%s-tuzkam" (include "taas.fullname" $) }}
+              {{- range $i := until (int $m.maxReplicas) }}
+              URL="http://{{ $mname }}-{{ $i }}.{{ $mname }}:{{ $m.port }}"
+              echo "registering tuzkam-{{ $i }} -> $URL"
+              taas-admin backend upsert --url "$URL" --label "tuzkam-{{ $i }}" \
+                --api-key-env TUZKAM_API_KEY --max-inflight {{ $m.maxInflight }} \
+                --adapter tuzkam --managed \
+                --declared '{"maps": ["json", "geojson", "gcp", "alto", "txt"]}' >/dev/null \
+                || echo "upsert tuzkam-{{ $i }} failed"
               {{- end }}
               {{- end }}
               echo "done"

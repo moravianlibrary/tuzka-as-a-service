@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.clock import utcnow
 from app.config import Settings
 from app.engines import make_adapter
-from app.engines.base import EngineAdapter, EngineStatus
+from app.engines.base import EngineAdapter, EngineStatus, OutputUnavailable
 from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
@@ -76,6 +76,18 @@ def is_transient_harvest_error(exc: Exception) -> bool:
     if isinstance(exc, DBAPIError) and exc.connection_invalidated:
         return True
     return isinstance(exc, httpx.TransportError)
+
+
+async def fetch_outputs(
+    adapter: EngineAdapter, engine_job_id: str, outputs: frozenset[str]
+) -> dict[str, bytes]:
+    """Fetch every requested output, in a stable order, before anything is stored.
+    An output the engine can't produce raises ``OutputUnavailable`` and nothing is kept:
+    a job delivers all it was asked for or fails (no partial results)."""
+    return {
+        output: (await adapter.fetch(engine_job_id, output)).content
+        for output in sorted(outputs)
+    }
 
 
 def _parse_engine_dt(value: str | None) -> datetime | None:
@@ -300,14 +312,13 @@ async def main() -> None:
             alto_bytes_for_analytics: bytes | None = None
             txt_bytes_for_analytics: bytes | None = None
 
-            for output in sorted(outputs):
-                res = await adapter.fetch(engine_job_id, output)
+            for output, content in (await fetch_outputs(adapter, engine_job_id, outputs)).items():
                 obj_key = f"{username}/{job_id}.{ext_for(output)}.zst"
-                results_to_store.append((output, obj_key, res.content))
+                results_to_store.append((output, obj_key, content))
                 if output == "alto":
-                    alto_bytes_for_analytics = res.content
+                    alto_bytes_for_analytics = content
                 elif output == "txt":
-                    txt_bytes_for_analytics = res.content
+                    txt_bytes_for_analytics = content
 
             # Line count comes straight from the engine's status — it reports n_lines for
             # every job (computed during OCR), so lines are populated regardless of fmt.
@@ -369,8 +380,7 @@ async def main() -> None:
                     )
                     db.add(jr)
 
-                    url_key = "alto_url" if result_fmt == "alto" else "txt_url"
-                    event_data[url_key] = presigned_url
+                    event_data[f"{result_fmt}_url"] = presigned_url  # alto_url, geojson_url, …
 
                 stored_at = utcnow()
                 done_values: dict[str, str | datetime] = {
@@ -436,6 +446,14 @@ async def main() -> None:
                 await publish_event(r, username, batch_event(batch))
             logger.info(f"Published done event for {username}")
 
+        except OutputUnavailable as e:
+            # The engine can't produce an output this job asked for (TuzkaM: georeferencing
+            # failed). Retrying gives the same answer, so the job fails for good.
+            logger.warning("Job %s: %s", job_id, e)
+            attempt = attempt_entry(
+                "harvest", backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
+            )
+            await mark_failed(job_id, meta, str(e), attempt=attempt)
         except Exception as e:
             # The engine already finished this job; a transient DB/storage error here is
             # not the job's fault. Leave it inflight so the next poll re-harvests it (the

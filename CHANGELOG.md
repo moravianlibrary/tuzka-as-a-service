@@ -43,6 +43,14 @@ All notable changes to this project are documented here. The format is based on
   through dispatch, engine polls and harvest, across processes. Workers trace nothing
   outside a job; the API skips `/healthz` and `/load`. The chart runs an OTel collector
   into ClickHouse for HyperDX (`clickstack.otel.*`) and sets the endpoint on the pods.
+- Map sheets: domain `maps`, served by the TuzkaM engine through a new `tuzkam` adapter,
+  with outputs `json`, `geojson`, `gcp`, `alto` and `txt` and options `georef`, `region`,
+  `alto_profile`, `source_identifier` and `physical_img_nr`. Asking for `geojson`/`gcp`
+  with `georef: false` is a `422` at submit; when georeferencing fails, a job that asked
+  for them fails (no partial results) and isn't retried. Domains can have their own
+  upload limit and running timeout (`maps`: 150 MiB, 1800 s). Locally with
+  `docker compose --profile maps`; in the chart with `tuzkam.enabled`, scaled from zero
+  by KEDA. See `docs/maps.md`.
 - `GET /load` for autoscalers: `{queued, inflight, backlog_s}`, where `backlog_s` is the
   queued and in-flight pages times the measured seconds per page of their domain (an average of recent
   engine run times, `load.default_seconds_per_page` until there is one). Filter with

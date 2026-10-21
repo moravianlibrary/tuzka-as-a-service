@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.engines import ADAPTERS
 from app.engines.outputs import fmt_to_outputs, outputs_to_fmt
 from app.exceptions import Unprocessable
 from app.models.backend import Backend
@@ -91,6 +92,22 @@ def options_errors(schema: dict[str, Any] | None, options: dict[str, Any]) -> li
     return sorted(messages)
 
 
+def adapter_rejection(
+    adapters: set[str], domain: str, outputs: frozenset[str], options: dict[str, Any]
+) -> str | None:
+    """The engine-specific checks a schema can't express (e.g. TuzkaM: GeoJSON needs
+    georef). The request is fine if any adapter that could take it accepts it; else the
+    first adapter's reason."""
+    reasons = []
+    for adapter in sorted(adapters):
+        cls = ADAPTERS.get(adapter)
+        reason = cls.validate_request(domain, outputs, options) if cls is not None else None
+        if reason is None:
+            return None
+        reasons.append(reason)
+    return reasons[0] if reasons else None
+
+
 async def resolve_job_spec(
     db: AsyncSession,
     domain: str | None,
@@ -107,7 +124,7 @@ async def resolve_job_spec(
 
     rows = (
         await db.execute(
-            select(BackendDomain.outputs, Domain.options_schema)
+            select(BackendDomain.outputs, Domain.options_schema, Backend.adapter)
             .join(Domain, Domain.id == BackendDomain.domain_id)
             .join(Backend, Backend.id == BackendDomain.backend_id)
             .where(Domain.name == name, Backend.enabled.is_(True))
@@ -117,8 +134,8 @@ async def resolve_job_spec(
         raise Unprocessable(f"No backend serves domain '{name}' — see GET /api/v1/domains")
 
     # One backend has to produce all of them: a job isn't split across backends.
-    if not any(outputs <= frozenset(served) for served, _ in rows):
-        offered = sorted({o for served, _ in rows for o in served})
+    if not any(outputs <= frozenset(served) for served, _, _ in rows):
+        offered = sorted({o for served, _, _ in rows for o in served})
         raise Unprocessable(
             f"Domain '{name}' can't produce outputs {', '.join(sorted(outputs))} together; "
             f"its outputs are {', '.join(offered)}"
@@ -128,5 +145,10 @@ async def resolve_job_spec(
     errors = options_errors(schema, options)
     if errors:
         raise Unprocessable(f"Invalid options for domain '{name}': " + "; ".join(errors))
+
+    adapters = {adapter for served, _, adapter in rows if outputs <= frozenset(served)}
+    reason = adapter_rejection(adapters, name, outputs, options)
+    if reason is not None:
+        raise Unprocessable(f"Invalid request for domain '{name}': {reason}")
 
     return JobSpec(domain=name, outputs=outputs, options=options)
