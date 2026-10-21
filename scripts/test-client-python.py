@@ -4,7 +4,6 @@
 import os
 import sys
 from pathlib import Path
-from uuid import uuid4
 
 from taas_client import JobEvent, JobResult, TaasClient
 
@@ -24,14 +23,14 @@ errors_received = 0
 def handle_result(result: JobResult):
     global results_received
     results_received += 1
-    print(f"[{results_received}] Result for {result.uuid}")
+    print(f"[{results_received}] Result for {result.external_id} (job {result.job_id})")
     if result.alto:
-        out = Path(f"output/{result.uuid}.xml")
+        out = Path(f"output/{result.external_id}.xml")
         out.parent.mkdir(exist_ok=True)
         out.write_bytes(result.alto)
         print(f"    ALTO: {len(result.alto)} bytes -> {out}")
     if result.txt:
-        out = Path(f"output/{result.uuid}.txt")
+        out = Path(f"output/{result.external_id}.txt")
         out.parent.mkdir(exist_ok=True)
         out.write_bytes(result.txt)
         print(f"    TXT:  {len(result.txt)} bytes -> {out}")
@@ -40,7 +39,7 @@ def handle_result(result: JobResult):
 def handle_error(event: JobEvent):
     global errors_received
     errors_received += 1
-    print(f"[ERROR] Job {event.uuid} failed: {event.error}")
+    print(f"[ERROR] Job {event.external_id} ({event.job_id}) failed: {event.error}")
 
 
 client = TaasClient(
@@ -57,9 +56,8 @@ images = [p for p in images if p.suffix.lower() in {".tif", ".tiff", ".jpg", ".j
 print(f"Submitting {len(images)} images...")
 
 for img in images:
-    uid = uuid4()
-    client.submit(img, uuid=uid)
-    print(f"  Submitted {img.name} as {uid}")
+    job_id = client.submit(img, external_id=img.stem)
+    print(f"  Submitted {img.name} as job {job_id}")
 
 print("Waiting for all results...")
 client.wait(timeout=300)

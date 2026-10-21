@@ -3,10 +3,12 @@ package cz.osdd.taas.client;
 import java.util.UUID;
 
 /**
- * Decompressed OCR result delivered to ResultHandler callback.
+ * Decompressed OCR result delivered to ResultHandler callback. {@code externalId} is the
+ * label the page was submitted with (null if none).
  */
 public record JobResult(
-    UUID uuid,
+    UUID jobId,
+    String externalId,
     byte[] alto,
     byte[] txt
 ) {}

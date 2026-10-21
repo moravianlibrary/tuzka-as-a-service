@@ -6,10 +6,12 @@ import com.google.gson.JsonParser;
 import java.util.UUID;
 
 /**
- * Raw event received from WebSocket.
+ * Raw event received from WebSocket. {@code externalId} is the label the page was
+ * submitted with (null if none).
  */
 public record JobEvent(
-    UUID uuid,
+    UUID jobId,
+    String externalId,
     String status,
     String altoUrl,
     String txtUrl,
@@ -18,16 +20,17 @@ public record JobEvent(
 ) {
     public static JobEvent fromJson(String json) {
         JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-        UUID uuid = UUID.fromString(obj.get("uuid").getAsString());
-        String status = obj.get("status").getAsString();
-        String altoUrl = obj.has("alto_url") && !obj.get("alto_url").isJsonNull()
-            ? obj.get("alto_url").getAsString() : null;
-        String txtUrl = obj.has("txt_url") && !obj.get("txt_url").isJsonNull()
-            ? obj.get("txt_url").getAsString() : null;
-        String error = obj.has("error") && !obj.get("error").isJsonNull()
-            ? obj.get("error").getAsString() : null;
-        String ts = obj.has("ts") && !obj.get("ts").isJsonNull()
-            ? obj.get("ts").getAsString() : null;
-        return new JobEvent(uuid, status, altoUrl, txtUrl, error, ts);
+        return new JobEvent(
+            UUID.fromString(obj.get("job_id").getAsString()),
+            str(obj, "external_id"),
+            obj.get("status").getAsString(),
+            str(obj, "alto_url"),
+            str(obj, "txt_url"),
+            str(obj, "error"),
+            str(obj, "ts"));
+    }
+
+    private static String str(JsonObject obj, String key) {
+        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : null;
     }
 }
