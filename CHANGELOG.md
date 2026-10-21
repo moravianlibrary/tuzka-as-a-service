@@ -144,7 +144,9 @@ All notable changes to this project are documented here. The format is based on
   a `done` job finished and `jobs.failed_ttl_seconds` (7 days) after a `failed` one,
   instead of after 30 days. Result objects go after `storage.results_max_age_seconds`
   (1 day), or earlier, oldest first, when `storage.results_max_bytes` is set and
-  exceeded; their endpoints then answer **410 Gone**. **First deploy:** the existing
+  exceeded; their endpoints then answer **410 Gone**. A batch's results archive counts
+  toward the cap and ages out the same way; over the cap it goes first, and the next
+  download rebuilds it from the page results still stored. **First deploy:** the existing
   rows past their TTL are deleted gradually, ~20 000 a minute, by the cleanup worker.
 - The retry policy is now uniform across dispatch, poll, and engine-reported failures:
   transport errors, HTTP 5xx, 408, and 429 are retried at all three stages; on poll,

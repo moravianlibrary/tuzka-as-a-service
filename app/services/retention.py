@@ -23,6 +23,7 @@ from app.engines.outputs import ext_for
 from app.models.batch import Batch
 from app.models.job import Job, JobResult
 from app.services import config as config_service
+from app.services.batch_archive import batch_archive_path
 from app.services.storage import delete_objects
 
 logger = logging.getLogger(__name__)
@@ -152,8 +153,8 @@ async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket
         ).all()
         paths = [_object(username, job_id, fmt) for job_id, fmt in results]
         paths += [
-            f"{username}/batches/{batch_id}.tar.zst",
-            f"{username}/batches/{batch_id}.partial.tar.zst",
+            batch_archive_path(username, batch_id),
+            batch_archive_path(username, batch_id, partial=True),
         ]
         for i in range(0, len(paths), DELETE_BATCH):
             await delete_objects(results_client, bucket, paths[i : i + DELETE_BATCH])
@@ -169,45 +170,65 @@ async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket
 async def evict_results(db: AsyncSession, results_client: Minio, bucket: str) -> int:
     """Delete result objects past the max age, then the oldest ones while the results
     stored exceed the cap. Their rows are kept (marked evicted) until the job's TTL, so
-    a download answers 410 instead of 404. Returns how many were evicted."""
+    a download answers 410 instead of 404. Returns how many were evicted.
+
+    A batch's results archive is a copy of its pages' results, so it counts toward the
+    cap and ages out with them. It goes first when over the cap: it's only a cache, and
+    the next download rebuilds it from the page results that are still there."""
     now = utcnow()
+    max_age_cutoff = now - timedelta(seconds=await config_service.get_results_max_age_seconds(db))
+    limit = DELETE_BATCH * MAX_BATCHES_PER_TICK
     live = JobResult.evicted_at.is_(None)
     rows = select(JobResult.job_id, JobResult.fmt, Job.username, JobResult.size_bytes).join(
         Job, Job.id == JobResult.job_id
     )
+    built = Batch.archive_built_at.is_not(None)
+    archives = select(Batch.id, Batch.username, Batch.archive_size_bytes)
 
-    max_age = await config_service.get_results_max_age_seconds(db)
-    aged = (
+    aged = (await db.execute(rows.where(live, Job.stored_at < max_age_cutoff).limit(limit))).all()
+    aged_archives = (
         await db.execute(
-            rows.where(live, Job.stored_at < now - timedelta(seconds=max_age)).limit(
-                DELETE_BATCH * MAX_BATCHES_PER_TICK
-            )
+            archives.where(built, Batch.archive_built_at < max_age_cutoff).limit(limit)
         )
     ).all()
     evict = [(job_id, fmt, user) for job_id, fmt, user, _ in aged]
+    evict_archives = [(batch_id, user) for batch_id, user, _ in aged_archives]
 
     cap = await config_service.get_results_max_bytes(db)
     if cap is not None:
         stored = select(func.coalesce(func.sum(JobResult.size_bytes), 0)).where(live)
-        used = int(await db.scalar(stored) or 0)
+        stored_archives = select(func.coalesce(func.sum(Batch.archive_size_bytes), 0)).where(built)
+        used = int(await db.scalar(stored) or 0) + int(await db.scalar(stored_archives) or 0)
         used -= sum(size or 0 for *_, size in aged)
+        used -= sum(size or 0 for *_, size in aged_archives)
         if used > cap:
-            oldest = (
+            newer_archives = (
                 await db.execute(
-                    rows.where(live, Job.stored_at >= now - timedelta(seconds=max_age))
-                    .order_by(Job.stored_at)
-                    .limit(DELETE_BATCH * MAX_BATCHES_PER_TICK)
+                    archives.where(built, Batch.archive_built_at >= max_age_cutoff)
+                    .order_by(Batch.archive_built_at)
+                    .limit(limit)
                 )
             ).all()
-            evict += plan_eviction(
-                [((job_id, fmt, user), size or 0) for job_id, fmt, user, size in oldest],
-                used,
-                cap,
-            )
+            oldest = (
+                await db.execute(
+                    rows.where(live, Job.stored_at >= max_age_cutoff)
+                    .order_by(Job.stored_at)
+                    .limit(limit)
+                )
+            ).all()
+            candidates: list[tuple[Any, int]] = [
+                (("archive", batch_id, user), size or 0) for batch_id, user, size in newer_archives
+            ] + [(("result", job_id, fmt, user), size or 0) for job_id, fmt, user, size in oldest]
+            for key in plan_eviction(candidates, used, cap):
+                if key[0] == "archive":
+                    evict_archives.append(key[1:])
+                else:
+                    evict.append(key[1:])
 
-    if not evict:
+    if not evict and not evict_archives:
         return 0
     paths = [_object(user, job_id, fmt) for job_id, fmt, user in evict]
+    paths += [batch_archive_path(user, batch_id) for batch_id, user in evict_archives]
     for i in range(0, len(paths), DELETE_BATCH):
         await delete_objects(results_client, bucket, paths[i : i + DELETE_BATCH])
     for job_id, fmt, _ in evict:
@@ -216,6 +237,16 @@ async def evict_results(db: AsyncSession, results_client: Minio, bucket: str) ->
             .where(JobResult.job_id == job_id, JobResult.fmt == fmt)
             .values(evicted_at=now, presigned_url=None)
         )
+    if evict_archives:
+        await db.execute(
+            update(Batch)
+            .where(Batch.id.in_([batch_id for batch_id, _ in evict_archives]))
+            .values(archive_built_at=None, archive_size_bytes=None)
+        )
     await db.commit()
-    logger.info("Evicted %d result object(s) (max age / storage cap)", len(evict))
-    return len(evict)
+    logger.info(
+        "Evicted %d result object(s) and %d batch archive(s) (max age / storage cap)",
+        len(evict),
+        len(evict_archives),
+    )
+    return len(evict) + len(evict_archives)

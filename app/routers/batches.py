@@ -48,7 +48,7 @@ from app.schemas.batch import (
 from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
-from app.services.batch_archive import PageRow, build_results_archive
+from app.services.batch_archive import PageRow, batch_archive_path, build_results_archive
 from app.services.batches import page_score, plan_batch_member
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
@@ -319,11 +319,6 @@ async def get_batch(
         eta_s=eta if batch.status != "finished" else 0.0,
         pages=listed,
     )
-
-
-def batch_archive_path(username: str, batch_id: UUID, partial: bool = False) -> str:
-    suffix = ".partial" if partial else ""
-    return f"{username}/batches/{batch_id}{suffix}.tar.zst"
 
 
 @router.get(

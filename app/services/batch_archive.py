@@ -27,6 +27,12 @@ MANIFEST = "manifest.json"
 SPOOL_MAX_BYTES = 64 * 1024 * 1024
 
 
+def batch_archive_path(username: str, batch_id: uuid.UUID, partial: bool = False) -> str:
+    """Where a batch's results archive lives in the results bucket."""
+    suffix = ".partial" if partial else ""
+    return f"{username}/batches/{batch_id}{suffix}.tar.zst"
+
+
 @dataclass(frozen=True)
 class PageRow:
     job_id: uuid.UUID
