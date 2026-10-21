@@ -216,6 +216,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Empty single-image uploads now return `422` before storage or job creation. Empty
+  image members in batch archives are listed in `skipped` instead of becoming jobs.
 - A queued job could be lost: the submit worker took jobs off the queue every pass and
   put back the ones no backend could take, so a worker that stopped mid-pass (a rollout,
   an OOM kill) dropped them. They stayed `queued` until the queued timeout failed them,

@@ -82,8 +82,8 @@ router = APIRouter()
         401: {"description": "Missing or invalid X-API-Key header"},
         403: {"description": "The API key isn't allowed this domain or these outputs"},
         422: {
-            "description": "Invalid external_id or fmt; unknown domain; outputs the domain can't "
-            "produce; or options that don't match the domain's options schema"
+            "description": "Empty image; invalid external_id or fmt; unknown domain; outputs "
+            "the domain can't produce; or options that don't match the domain's options schema"
         },
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
@@ -150,6 +150,8 @@ async def submit_job(
         image_bytes = await read_limited(image.read, max_bytes)
     except UploadTooLarge as exc:
         raise BadRequest(str(exc)) from exc
+    if not image_bytes:
+        raise Unprocessable("empty image")
 
     # Domain, outputs, options: validated against what the enabled backends serve (D7).
     try:

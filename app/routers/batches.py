@@ -80,7 +80,10 @@ COMMIT_EVERY = 100
         403: {"description": "The API key isn't allowed this domain or these outputs"},
         413: {"description": "Archive, a page in it, or the page count over its limit"},
         415: {"description": "Not a tar, tar.gz, tar.zst or zip archive"},
-        422: {"description": "Bad external_id/outputs/options, or no images in the archive"},
+        422: {
+            "description": "Bad external_id/outputs/options, or no non-empty images in the archive; "
+            "empty image members are listed in skipped"
+        },
         429: {"description": "Rate limit exceeded (one submit per batch)"},
     },
 )
@@ -153,7 +156,10 @@ async def submit_batch(
             member = await asyncio.to_thread(next, members, None)
             if member is None:
                 break
-            if plan_batch_member(member.name, settings.allowed_extensions) == "skip":
+            if (
+                not member.data
+                or plan_batch_member(member.name, settings.allowed_extensions) == "skip"
+            ):
                 skipped.append(member.name)
                 continue
             if len(pages) >= settings.batch_max_pages:
