@@ -7,6 +7,15 @@ metadata:
 spec:
   instances: {{ .Values.cnpg.instances }}
 
+  {{- if .Values.cnpg.pgStatStatements }}
+  # Setting any pg_stat_statements.* parameter makes CNPG preload the library and
+  # create the extension itself (the app user isn't a superuser).
+  postgresql:
+    parameters:
+      pg_stat_statements.max: "10000"
+      pg_stat_statements.track: top
+  {{- end }}
+
   bootstrap:
     initdb:
       database: {{ .Values.cnpg.database }}
