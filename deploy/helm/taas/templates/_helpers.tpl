@@ -148,3 +148,13 @@ Usage: {{ include "taas.image" (dict "image" .Values.api.image "global" .Values.
 {{- printf "%s:%s" $repo $tag -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Pod annotations that change with the app's ConfigMap and Secret, so `helm upgrade`
+restarts the pods reading them (envFrom is read only at start). Call with the root
+context.
+*/}}
+{{- define "taas.configChecksums" -}}
+checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
+checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
+{{- end }}

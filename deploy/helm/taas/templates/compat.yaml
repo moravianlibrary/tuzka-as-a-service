@@ -26,6 +26,9 @@ spec:
       app.kubernetes.io/component: compat
   template:
     metadata:
+      annotations:
+        # Its ConfigMap is rendered from these values (above), so they're the checksum.
+        checksum/config: {{ toYaml .Values.compat | sha256sum }}
       labels:
         {{- include "taas.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: compat
