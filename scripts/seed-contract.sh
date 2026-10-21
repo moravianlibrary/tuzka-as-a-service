@@ -40,9 +40,17 @@ if [ -z "$key" ]; then
   exit 1
 fi
 
+# The fuzzer sends far more requests than a user's rate limits allow; without this
+# most operations just come back 429 and say nothing about the contract.
+taas_admin user set-limits "$FIXTURE_USER" --submit-per-minute 100000 --submit-burst 100000 \
+  --query-per-minute 100000 --query-burst 100000 >/dev/null
+
 # Backend — so /api/v1/domains has something to list once domain sync runs (best-effort).
-taas_admin backend upsert --url http://ocr-engine:8000 --label contract-fixture \
-  --max-inflight 4 >/dev/null 2>&1 || true
+# On k3d the chart registered the real engines; a fake one would just fail dispatches.
+if [ "${TARGET:-compose}" = compose ]; then
+  taas_admin backend upsert --url http://ocr-engine:8000 --label contract-fixture \
+    --max-inflight 4 >/dev/null 2>&1 || true
+fi
 
 # One queued job (no domain → no backend needed) so the job collection endpoints exercise a
 # populated response body, not just the empty case.
@@ -51,4 +59,5 @@ if [ -n "$IMAGE" ] && [ -f "$IMAGE" ]; then
     -F "image=@$IMAGE" -F "external_id=contract-fixture" -F "fmt=multi" >/dev/null 2>&1 || true
 fi
 
+sleep 10  # the API caches a user's limits for ~10 s; let the raised ones land
 echo "API_KEY=$key"

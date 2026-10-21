@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for the taas stack via docker compose.
+# End-to-end smoke test for the taas stack, on docker compose or the local k3d deploy.
 #
-# Brings up the full stack (unless NO_UP=1), registers the TuzkaOCR backend,
-# creates a fresh user, submits an image, polls to completion, then fetches and
-# decompresses the result. Result URLs are presigned with the *public* MinIO
-# endpoint (MINIO_RESULTS_PUBLIC_URL, e.g. localhost:9010), so — like a real
-# download client — we fetch them from the host and decompress the bytes inside
-# the api container (which bundles zstandard).
+# compose: brings up the full stack (unless NO_UP=1) and registers the TuzkaOCR
+# backend. k3d (TARGET=k3d): uses the running deploy as it is (the chart registered the
+# backends; port-forwards from `make local-deploy-forward-up`). Either way it creates a
+# fresh user, submits an image, polls to completion, then fetches and decompresses
+# the result. Result URLs are presigned with the *public* MinIO endpoint, so — like a
+# real download client — we fetch them from the host and decompress them there (zstd).
 #
 # Env overrides:
-#   IMAGE                path to test image      (default: test-data/test.jpg)
+#   TARGET               compose | k3d           (default: compose)
+#   IMAGE                path to test image      (default: test-data/sample.jpg)
 #   TAAS_URL             host API base           (default: http://localhost:8080)
-#   OCR_ENGINE_URL       in-cluster engine URL   (default: http://ocr-engine:8000)
+#   OCR_ENGINE_URL       compose engine URL      (default: http://ocr-engine:8000)
 #   OCR_ENGINE_API_KEY   engine api key          (default: test-engine-key)
 #   JOB_TIMEOUT          seconds to wait for OCR (default: 900)
-#   NO_UP=1              skip `compose up`/build (use already-running stack)
+#   NO_UP=1              compose: skip `compose up`/build (use already-running stack)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+TARGET="${TARGET:-compose}"
 IMAGE="${IMAGE:-test-data/sample.jpg}"
 TAAS_URL="${TAAS_URL:-http://localhost:8080}"
 # shellcheck source=lib/taas-admin.sh
@@ -37,12 +39,14 @@ die() { printf '\033[1;31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ -f "$IMAGE" ] || die "test image not found: $IMAGE (set IMAGE=...)"
 command -v "$PY" >/dev/null || die "python3 not found (set PY=...)"
+command -v zstd >/dev/null || die "zstd not found (results are zstd-compressed)"
+case "$TARGET" in compose|k3d) ;; *) die "TARGET must be compose or k3d" ;; esac
 
 # jq-free JSON field extraction via python
 jget() { "$PY" -c 'import sys,json; d=json.load(sys.stdin); print(d'"$1"')'; }
 
 # ---------------------------------------------------------------------------
-if [ "${NO_UP:-0}" != "1" ]; then
+if [ "$TARGET" = compose ] && [ "${NO_UP:-0}" != "1" ]; then
   say "Building and starting the stack (this is slow on first run — TuzkaOCR model load)"
   docker compose up -d --build
 fi
@@ -55,23 +59,28 @@ for i in $(seq 1 60); do
 done
 ok "API healthy"
 
-say "Waiting for ocr-engine container to report healthy"
-cid="$(docker compose ps -q ocr-engine)"
-[ -n "$cid" ] || die "ocr-engine container not found"
-for i in $(seq 1 120); do
-  h="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo none)"
-  [ "$h" = healthy ] && break
-  [ "$i" = 120 ] && die "ocr-engine never became healthy (status=$h)"
-  sleep 5
-done
-ok "ocr-engine healthy"
+if [ "$TARGET" = compose ]; then
+  say "Waiting for ocr-engine container to report healthy"
+  cid="$(docker compose ps -q ocr-engine)"
+  [ -n "$cid" ] || die "ocr-engine container not found"
+  for i in $(seq 1 120); do
+    h="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo none)"
+    [ "$h" = healthy ] && break
+    [ "$i" = 120 ] && die "ocr-engine never became healthy (status=$h)"
+    sleep 5
+  done
+  ok "ocr-engine healthy"
 
-# ---------------------------------------------------------------------------
-say "Registering OCR backend (idempotent)"
-TAAS_ADMIN_ENV=OCR_ENGINE_API_KEY taas_admin backend upsert --url "$OCR_ENGINE_URL" \
-  --label tuzka-cpu --api-key-env OCR_ENGINE_API_KEY --max-inflight 4 >/dev/null \
-  || die "backend upsert failed"
-ok "backend registered"
+  # ---------------------------------------------------------------------------
+  say "Registering OCR backend (idempotent)"
+  TAAS_ADMIN_ENV=OCR_ENGINE_API_KEY taas_admin backend upsert --url "$OCR_ENGINE_URL" \
+    --label tuzka-cpu --api-key-env OCR_ENGINE_API_KEY --max-inflight 4 >/dev/null \
+    || die "backend upsert failed"
+  ok "backend registered"
+else
+  say "Backends registered by the chart:"
+  taas_admin backend list
+fi
 
 say "Creating a fresh test user"
 USERNAME="taas-test-$(date +%s)"
@@ -111,7 +120,7 @@ echo "$RESULT_JSON" | "$PY" -m json.tool
 n="$(echo "$RESULT_JSON" | jget '["results"].__len__()')"
 [ "$n" -ge 1 ] || die "no result entries returned"
 
-say "Fetching + saving results (download from host, decompress in container)"
+say "Fetching + saving results"
 mkdir -p "$RESULTS_DIR"
 base="$(basename "$IMAGE")"; base="${base%.*}"
 echo "$RESULT_JSON" | "$PY" -c 'import sys,json
@@ -119,17 +128,14 @@ for r in json.load(sys.stdin)["results"]:
     print(r["fmt"], r["url"])' | while read -r fmt url; do
   ext="xml"; [ "$fmt" = txt ] && ext="txt"
   out="$RESULTS_DIR/${base}.${fmt}.${ext}"
-  # The presigned URL targets the public endpoint (localhost:9010), reachable from
-  # the host but not from inside the container network, so download here with curl;
-  # pipe the raw bytes into the api container to decompress (it bundles zstandard).
-  curl -sf "$url" | docker compose exec -T api python -c '
-import sys
-raw=sys.stdin.buffer.read()
-if raw[:4]==b"\x28\xb5\x2f\xfd":
-    import zstandard
-    raw=zstandard.ZstdDecompressor().decompress(raw)
-sys.stdout.buffer.write(raw)
-' > "$out"
+  # The presigned URL targets the public endpoint, reachable from the host.
+  curl -sf "$url" -o "$out.raw" || die "result '$fmt' download failed"
+  if [ "$(head -c 4 "$out.raw" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ]; then
+    zstd -dcq "$out.raw" > "$out"   # zstd frame magic
+  else
+    cat "$out.raw" > "$out"
+  fi
+  rm -f "$out.raw"
   size="$(wc -c < "$out")"
   [ "$size" -gt 0 ] || die "result '$fmt' empty or unreachable"
   ok "result fmt=$fmt -> ${size} bytes -> $out"

@@ -7,6 +7,8 @@ UV := uv run --extra dev
 
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
+# Stack the e2e/contract/bench targets run against: compose or the local k3d deploy.
+TARGET ?= compose
 
 # Registry for `make build-push` — there is no public registry, host your own.
 # Usage: make build-push REGISTRY=ghcr.io/yourorg [TAG=0.1.0]
@@ -93,9 +95,9 @@ check-alto-schema: ## Validate TuzkaOCR's ALTO against the vendored ALTO 4.4 XSD
 	$(UV) python scripts/check-alto-schema.py $(FILES)
 
 .PHONY: test-contract
-test-contract: ## Schemathesis contract/property tests vs a running compose stack (TAAS_URL)
+test-contract: ## Schemathesis contract/property tests vs a running stack (TARGET=compose|k3d, TAAS_URL)
 	@url=$${TAAS_URL:-http://localhost:8080}; \
-	key=$$(TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
+	key=$$(TARGET=$(TARGET) TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	args="run $$url/openapi.json -c all"; \
 	[ -n "$$key" ] && args="$$args -H X-API-Key:$$key"; \
 	$(UV) schemathesis $$args
@@ -108,7 +110,7 @@ test-contract-local: env ## One command: bring up the API (migrated, no workers/
 .PHONY: load-test
 load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= to tune)
 	@url=$${TAAS_URL:-http://localhost:8080}; \
-	key=$$(TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
+	key=$$(TARGET=$(TARGET) TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
 	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
 
@@ -122,20 +124,20 @@ perf-taas: ## Whole-taas measurement against a fake-engine stack (USERS=, RATE=,
 	USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
 
 .PHONY: test-integration
-test-integration: env ## End-to-end smoke against the full stack (IMAGE=... to override)
-	IMAGE=$(IMAGE) bash scripts/test.sh
+test-integration: env ## End-to-end smoke against the full stack (TARGET=compose|k3d, IMAGE=)
+	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
 
 .PHONY: test-batch
-test-batch: ## E2E batch run against a running stack: archive in, results archive out (PAGES=, IMAGE=)
-	PAGES=$(or $(PAGES),5) bash scripts/test-batch.sh
+test-batch: ## E2E batch run against a running stack: archive in, results archive out (TARGET=, PAGES=, IMAGE=)
+	TARGET=$(TARGET) PAGES=$(or $(PAGES),5) bash scripts/test-batch.sh
 
 .PHONY: test-integration-fast
-test-integration-fast: ## E2E against an already-running stack (no build/up)
-	NO_UP=1 IMAGE=$(IMAGE) bash scripts/test.sh
+test-integration-fast: ## E2E against an already-running stack (no build/up; TARGET=compose|k3d)
+	NO_UP=1 TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
 
 .PHONY: test-compat
-test-compat: ## Run the legacy-compat server e2e (stack must be up)
-	IMAGE=$(IMAGE) bash scripts/test-compat.sh
+test-compat: ## Run the legacy-compat server e2e (stack must be up; TARGET=compose|k3d)
+	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test-compat.sh
 
 # --- Local k3d deploy: Helm chart in k3d + host TuzkaOCR engine via reverse tunnel ---
 # All targets share the `local-deploy-` prefix. Typical flow:
@@ -215,7 +217,6 @@ local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency pr
 # Latency cases need the ports rewired first; the runner prints the exact fix if
 # they are not (k3d: make local-deploy-forward-down && make local-deploy-forward-bench).
 BENCH_API_DIR ?= bench/api
-TARGET        ?= compose
 
 .PHONY: bench-up
 bench-up: ## Cold-start k3d (engines, cluster, chart) then bench (SKIP_BENCH=1, WITH_GPU=0)

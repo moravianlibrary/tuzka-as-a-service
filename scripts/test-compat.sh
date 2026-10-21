@@ -6,21 +6,28 @@
 # compat downloads the presigned result inside the network and returns the
 # decompressed body directly, so the client just gets XML/txt back.
 #
-# Assumes the main stack is already up (run `make test` or `make up` first).
-# Rebuilds + restarts the compat container to pick up local changes.
+# Assumes the stack is already up. compose: rebuilds + restarts the compat container to
+# pick up local changes and registers the engine backend. k3d (TARGET=k3d): uses the
+# running deploy as it is, through `make local-deploy-forward-up`'s port-forwards.
 #
 # Env overrides:
-#   IMAGE   test image          (default: test-data/_e2e.jpg)
+#   TARGET   compose | k3d       (default: compose)
+#   IMAGE   test image          (default: test-data/sample.jpg)
 #   TAAS_URL host taas API       (default: http://localhost:8080)
-#   COMPAT_URL host compat API   (default: http://localhost:8001)
-#   OCR_ENGINE_URL / OCR_ENGINE_API_KEY  (for idempotent backend registration)
+#   COMPAT_URL host compat API   (default: :8001 on compose, :8081 on k3d)
+#   OCR_ENGINE_URL / OCR_ENGINE_API_KEY  (compose: idempotent backend registration)
 #   JOB_TIMEOUT seconds          (default: 900)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+TARGET="${TARGET:-compose}"
 IMAGE="${IMAGE:-test-data/sample.jpg}"
 TAAS_URL="${TAAS_URL:-http://localhost:8080}"
-COMPAT_URL="${COMPAT_URL:-http://localhost:8001}"
+if [ "$TARGET" = k3d ]; then
+  COMPAT_URL="${COMPAT_URL:-http://localhost:8081}"
+else
+  COMPAT_URL="${COMPAT_URL:-http://localhost:8001}"
+fi
 # shellcheck source=lib/taas-admin.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/taas-admin.sh"
 OCR_ENGINE_URL="${OCR_ENGINE_URL:-http://ocr-engine:8000}"
@@ -36,8 +43,11 @@ jget() { "$PY" -c 'import sys,json; d=json.load(sys.stdin); print(d'"$1"')'; }
 
 [ -f "$IMAGE" ] || die "test image not found: $IMAGE (set IMAGE=...)"
 
-say "Rebuilding + restarting compat container"
-docker compose up -d --build compat >/dev/null
+case "$TARGET" in compose|k3d) ;; *) die "TARGET must be compose or k3d" ;; esac
+if [ "$TARGET" = compose ]; then
+  say "Rebuilding + restarting compat container"
+  docker compose up -d --build compat >/dev/null
+fi
 for i in $(seq 1 30); do
   curl -sf "$TAAS_URL/healthz" >/dev/null 2>&1 && break
   [ "$i" = 30 ] && die "taas API not healthy"
@@ -53,11 +63,13 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-say "Ensuring OCR backend is registered"
-TAAS_ADMIN_ENV=OCR_ENGINE_API_KEY taas_admin backend upsert --url "$OCR_ENGINE_URL" \
-  --label tuzka-cpu --api-key-env OCR_ENGINE_API_KEY --max-inflight 4 >/dev/null \
-  || die "backend upsert failed"
-ok "backend ready"
+if [ "$TARGET" = compose ]; then
+  say "Ensuring OCR backend is registered"
+  TAAS_ADMIN_ENV=OCR_ENGINE_API_KEY taas_admin backend upsert --url "$OCR_ENGINE_URL" \
+    --label tuzka-cpu --api-key-env OCR_ENGINE_API_KEY --max-inflight 4 >/dev/null \
+    || die "backend upsert failed"
+  ok "backend ready"
+fi
 
 say "Creating a fresh taas user (its key is the legacy api-key)"
 USERNAME="compat-test-$(date +%s)"

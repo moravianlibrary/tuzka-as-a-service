@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# End-to-end batch test against a running compose stack (make up first).
+# End-to-end batch test against a running stack: compose (make up first) or, with
+# TARGET=k3d, the local k3d deploy (make local-deploy-forward-up first).
 #
 # Packs N copies of a test image into a .tar.zst, submits it as one batch, polls
 # GET /batches/{id} until it finishes, downloads the results archive, and checks that
 # the manifest lists every page as done with its outputs.
 #
 # Env overrides:
+#   TARGET         compose | k3d             (default: compose)
 #   IMAGE          page image                (default: test-data/sample.jpg)
 #   PAGES          copies of it in the batch (default: 5)
 #   TAAS_URL       host API base             (default: http://localhost:8080)
