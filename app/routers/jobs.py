@@ -394,7 +394,6 @@ async def download_job_result(
     summary="List your jobs",
     responses={
         401: {"description": "Missing or invalid X-API-Key header"},
-        422: {"description": "Invalid external_id (not printable text)"},
         429: {"description": "Rate limit exceeded (see Retry-After header)"},
     },
 )
@@ -422,9 +421,11 @@ async def list_jobs(
         count_query = count_query.where(Job.status == status)
     if external_id is not None:
         try:
-            parse_external_id(external_id)  # a label submit would refuse matches nothing
-        except ValueError as exc:
-            raise Unprocessable(str(exc)) from exc
+            parse_external_id(external_id)
+        except ValueError:
+            # Submit refuses such a label, so no job has it. Answering without the query
+            # also keeps a NUL away from Postgres, which rejects it (that was a 500).
+            return JobListResponse(jobs=[], total=0)
         query = query.where(Job.external_id == external_id)
         count_query = count_query.where(Job.external_id == external_id)
 
