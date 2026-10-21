@@ -17,6 +17,7 @@ from app.services.redis_jobs import (
     LOAD_SPP_KEY,
     dequeue_jobs,
     enqueue_job,
+    get_jobs,
     rebuild_load_counters,
     record_page_seconds,
     release_and_requeue,
@@ -143,3 +144,11 @@ async def test_rebuild_with_nothing_queued_clears_counters(redis_client: aioredi
     await redis_client.hset(LOAD_QUEUED_KEY, FIELD, 3)
     await rebuild_load_counters(redis_client)
     assert await _counts(redis_client) == ({}, {})
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_reads_many_in_one_round_trip(redis_client: aioredis.Redis) -> None:
+    await enqueue_job(redis_client, "g1", _meta("kramarky"), TTL)
+    metas = await get_jobs(redis_client, ["g1", "missing"])
+    assert metas["g1"] is not None and metas["g1"]["domain"] == "kramarky"
+    assert metas["missing"] is None

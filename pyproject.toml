@@ -40,7 +40,7 @@ api = [
   # Image size at submit (header only), for dispatch scoring
   "pillow>=10.0",
 ]
-dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "types-jsonschema", "xmlschema"]
+dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "types-jsonschema", "xmlschema", "pytest-benchmark"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
@@ -89,3 +89,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# tests/perf holds the micro-benchmarks (`make bench-micro`): slow and noisy, so a plain
+# `pytest` / `make check` never recurses into them. Naming the directory still runs them.
+norecursedirs = [".*", "__pycache__", "perf"]

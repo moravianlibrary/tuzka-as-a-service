@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.engines.base import DomainInfo, EngineInfo
 from app.services.domain_sync import (
+    all_served_capabilities,
     apply_declared_capabilities,
     apply_domain_sync,
     plan_domain_links,
@@ -196,4 +197,17 @@ async def test_declared_never_overrides_engine_rows(session) -> None:
     assert await _sources(session) == {
         "default": ("engine", ["alto", "txt"]),
         "maps": ("declared", ["json"]),
+    }
+
+
+@pytest.mark.asyncio
+async def test_all_served_capabilities_in_one_query(session) -> None:
+    await session.execute(text("INSERT INTO backends (id, url) VALUES (2, 'http://e2')"))
+    await apply_domain_sync(session, 1, _info(default=DomainInfo(ALTO_TXT, None)))
+    await apply_domain_sync(session, 2, _info(maps=DomainInfo(frozenset({"json"}), None)))
+    await session.commit()
+
+    assert await all_served_capabilities(session) == {
+        1: {"default": ALTO_TXT},
+        2: {"maps": frozenset({"json"})},
     }

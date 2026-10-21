@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.services import batch_store, perf
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
-from app.services.domain_sync import apply_domain_sync, served_capabilities
+from app.services.domain_sync import all_served_capabilities, apply_domain_sync
 from app.services.event_emitter import get_emitter
 from app.services.events import EventName, JobEvent, failure
 from app.services.job_attempts import append_attempt
@@ -30,7 +30,7 @@ from app.services.redis_jobs import (
     dequeue_jobs,
     get_backend_batches,
     get_backend_inflight,
-    get_job,
+    get_jobs,
     job_domain,
     batch_event,
     job_event_payload,
@@ -116,13 +116,23 @@ def allocate_jobs(
     leftovers: list[PendingJob] = []
     count = len(slots)
     start = 0
+    # Which slots can serve a (domain, outputs) pair is the same for every job asking for
+    # it, so it's worked out once per pair, not once per job and slot.
+    serves_by_key: dict[tuple[str, frozenset[str]], list[bool]] = {}
     for job in jobs:
-        serving = [s for s in slots if can_serve(s, job)]
-        allow_avoided = all(s.backend.id in job.avoid for s in serving)
+        key = (job.domain, job.outputs)
+        mask = serves_by_key.get(key)
+        if mask is None:
+            mask = serves_by_key[key] = [can_serve(s, job) for s in slots]
+        # Only a retried job has backends to avoid; the rest skip this check entirely.
+        allow_avoided = bool(job.avoid) and all(
+            s.backend.id in job.avoid for s, ok in zip(slots, mask, strict=True) if ok
+        )
         placed = False
         for step in range(count):
-            slot = slots[(start + step) % count]
-            if slot.free <= 0 or not can_serve(slot, job):
+            index = (start + step) % count
+            slot = slots[index]
+            if slot.free <= 0 or not mask[index]:
                 continue
             if slot.backend.id in job.avoid and not allow_avoided:
                 continue
@@ -239,6 +249,9 @@ async def main() -> None:
     sync_tasks: set[asyncio.Task[None]] = set()
     domains_synced_at: dict[int, float] = {}
     domain_sync_inflight: set[int] = set()
+    # Every backend's capabilities, loaded in one query; 0.0 = reload on next use.
+    capabilities: dict[int, dict[str, frozenset[str]]] = {}
+    capabilities_loaded_at = 0.0
 
     def adapter_for(backend: Backend) -> EngineAdapter:
         """The backend's adapter, built once and rebuilt when its adapter id, URL or key
@@ -280,9 +293,11 @@ async def main() -> None:
             # mapping rather than unlink the backend, and retry on the next tick.
             logger.warning("Domain sync for %s: engine advertised no domains", backend.url)
             return
+        nonlocal capabilities_loaded_at
         async with session_factory() as db:
             await apply_domain_sync(db, backend.id, info)
             await db.commit()
+        capabilities_loaded_at = 0.0  # this sync changed them: reload on the next tick
         domains_synced_at[backend.id] = time.time()
         logger.debug("Synced %d domain(s) for backend %s", len(info.domains), backend.url)
 
@@ -308,9 +323,19 @@ async def main() -> None:
         task.add_done_callback(_done)
 
     async def served_domains(backend_id: int) -> dict[str, frozenset[str]]:
-        """Domain → outputs ``backend_id`` currently serves (from the synced mapping)."""
-        async with session_factory() as db:
-            return await served_capabilities(db, backend_id)
+        """Domain → outputs ``backend_id`` currently serves (from the synced mapping).
+
+        Read from one query for all backends, reloaded right after this worker's own
+        domain syncs and otherwise every ``backend_refresh_seconds``, which bounds how
+        stale a change made elsewhere (another replica's sync, a declared registration)
+        can be. The dispatch re-check reads the same snapshot.
+        """
+        nonlocal capabilities, capabilities_loaded_at
+        if time.time() - capabilities_loaded_at >= settings.backend_refresh_seconds:
+            async with session_factory() as db:
+                capabilities = await all_served_capabilities(db)
+            capabilities_loaded_at = time.time()
+        return capabilities.get(backend_id, {})
 
     async def check_health(backend: Backend) -> bool:
         now = time.time()
@@ -333,8 +358,9 @@ async def main() -> None:
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
+        meta: dict[str, str] | None,
     ) -> None:
-        meta = await get_job(r, job_id)
+        # meta was read this tick, with every other dequeued job's, in one round trip.
         if not meta:
             logger.warning(f"Job {job_id} not found in Redis, skipping")
             return
@@ -577,9 +603,10 @@ async def main() -> None:
                     if not entries:
                         break  # nothing pending — lower tiers have nothing to do either
 
+                    metas = await get_jobs(r, [job_id for job_id, _ in entries])
                     pending: list[PendingJob] = []
                     for job_id, score in entries:
-                        meta = await get_job(r, job_id) or {}
+                        meta = metas[job_id] or {}
                         domain, outputs = job_domain(meta), job_outputs(meta)
                         pending.append(
                             PendingJob(
@@ -619,7 +646,9 @@ async def main() -> None:
                     )
                     results = await asyncio.gather(
                         *[
-                            dispatch(job.job_id, job.score, slot.backend, slot.domains)
+                            dispatch(
+                                job.job_id, job.score, slot.backend, slot.domains, metas[job.job_id]
+                            )
                             for job, slot in assignments
                         ],
                         return_exceptions=True,
