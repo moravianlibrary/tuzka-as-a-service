@@ -191,8 +191,9 @@ This replaces the static `priority × max_inflight` dispatch and the TODO formul
 - **Batch affinity:** when scores are close, prefer the backend that already has
   items from the same batch. On a GPU this keeps the model warm and the batch
   together. Keep the preference soft, so one busy batch can't starve other users.
-- This mostly makes the adaptive submit/pull timers unnecessary. Measure that
-  with `bench/api` before building timers.
+- This mostly makes the adaptive submit/pull timers unnecessary. Measured on k3d
+  (step 8 T6): with a free slot, submit→dispatch p95 is 0.07 s — **timers not
+  needed**.
 - **The score is computed in the dispatch path, not read from ClickStack.**
   Workers update it as each attempt finishes (Redis hash per backend × domain).
   ClickStack is only for looking back.
