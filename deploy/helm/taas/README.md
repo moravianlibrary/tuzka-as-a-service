@@ -115,7 +115,6 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `compat.enabled` | `true` | Deploy the legacy-compat server |
 | `compat.replicaCount` | `1` | Compat replicas |
 | `compat.ttlSeconds` | `"3600"` | Compat request-state TTL |
-| `compat.engines` | (Default + Kramarky) | Engine map (JSON) |
 
 ### Data layer
 

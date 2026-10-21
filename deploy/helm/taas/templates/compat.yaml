@@ -10,7 +10,6 @@ data:
   TAAS_BASE_URL: {{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port | quote }}
   REDIS_URL: {{ printf "redis://%s-redis:%v/0" (include "taas.fullname" .) .Values.redis.port | quote }}
   COMPAT_TTL_SECONDS: {{ .Values.compat.ttlSeconds | quote }}
-  ENGINES: {{ .Values.compat.engines | quote }}
 ---
 apiVersion: apps/v1
 kind: Deployment

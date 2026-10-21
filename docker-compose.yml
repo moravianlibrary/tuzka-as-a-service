@@ -182,7 +182,6 @@ services:
       TAAS_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379/0
       COMPAT_TTL_SECONDS: 3600
-      ENGINES: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
     depends_on:
       api:
         condition: service_healthy

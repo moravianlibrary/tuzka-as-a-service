@@ -48,7 +48,6 @@ compat:
     repository: taas-compat
   port: 8001
   ttlSeconds: "3600"
-  engines: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
   resources:
     requests:
       cpu: 100m
