@@ -1,7 +1,7 @@
 """Add users.allowed_domains / users.allowed_outputs (scoped API keys)
 
 Revision ID: 017
-Revises: 014
+Revises: 016
 Create Date: 2026-10-21 00:00:00.000000
 
 NULL means every domain / output, so existing keys keep full access.
@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from alembic import op
 
 revision: str = "017"
-down_revision: str | None = "014"
+down_revision: str | None = "016"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
