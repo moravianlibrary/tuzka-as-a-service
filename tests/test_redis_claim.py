@@ -13,6 +13,7 @@ from app.services.redis_jobs import (
     enqueue_job,
     get_backend_batches,
     get_backend_inflight,
+    get_backends_state,
     peek_pending,
     rebuild_backend_counters,
     requeue_orphans,
@@ -21,6 +22,20 @@ from app.services.redis_jobs import (
 )
 
 TTL = 3600
+
+
+@pytest.mark.asyncio
+async def test_get_backends_state_handles_missing_counters_and_batches(
+    redis_client: aioredis.Redis,
+) -> None:
+    await redis_client.set("backend:1:inflight", 2)
+    await redis_client.hset("backend:1:batches", mapping={"batch-a": 2, "batch-b": 1})
+
+    assert await get_backends_state(redis_client, [1, 2]) == {
+        1: (2, {"batch-a": 2, "batch-b": 1}),
+        2: (0, {}),
+    }
+    assert await get_backends_state(redis_client, []) == {}
 
 
 async def _enqueue(r: aioredis.Redis, job_id: str, priority: int, submitted_at: float) -> None:

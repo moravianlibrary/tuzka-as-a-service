@@ -112,6 +112,7 @@ One row per fix (T5): what, commit, before → after.
 | Backend in-flight counters rebuilt by the cleanup worker (they had drifted to -5…+2 after those double dispatches) | `b10dd36` | 8 backends off | 0 |
 | Harvest cost: fetch outputs concurrently, one multi-row result insert, pipelined `set_done` without the `HGETALL` | `4608429`, `539d2f0`, `f2f0a1d` | 10b: 13.22 done/s, `store_s` p95 9.30 s; 50b: 10.02 done/s | 10b: 15.28 done/s, 7.64 s; 50b: 11.75 done/s with 5 % more offered load |
 | Release the engine slot at engine-done, harvest from a durable `jobs:pending_harvest` queue | `da88fb0` | 10b: 14.04 done/s, 898 jobs still queued at collection | 10b: 18.54 done/s, 245 queued (keep `max_inflight` at 8; 32 is worse) |
+| Read all healthy backends' in-flight counters and batch hashes in one Redis pipeline | C1 | 10b: 57.22 Redis commands/job, 13.98 done/s; 50b: 45.19 commands/job, 12.44 done/s | 10b: 53.38 commands/job, 14.55 done/s; 50b: 50.09 commands/job, 12.63 done/s |
 
 ## Where the time goes (plan 11 B3)
 
@@ -325,3 +326,41 @@ higher; the released slot, not a deep pre-queue, is what keeps the engine busy.
 Raw output: `bench/perf_out/release-{before,after}-8-10b`,
 `release-after-32-10b`, and the earlier-code depth pairs `inflight-{8,32}-10b`
 (gitignored).
+
+### C1: read backend state in one Redis trip
+
+The submit worker now pipelines one `MGET` of backend in-flight counters with one
+`HGETALL` per healthy backend's batch hash. The comparison used the same worker limits,
+fake-engine settings and two-minute Locust commands as B3, without py-spy:
+`OUT=bench/perf_out/c1-before-10b make perf-taas TARGET=k3d USERS=50 RATE=10
+DURATION=2m`, then `c1-after-10b` with the C1 worker image; likewise
+`c1-before-50b` and `c1-after-50b-clean` with `USERS=100`. The 50b after run began
+with empty pending, in-flight and harvest queues. The first 50b after attempt had one
+status-0 POST and exited nonzero; a later passing rerun had a large leftover queue, so
+neither is used below. Both reported after runs had zero Locust failures.
+
+Done counts and `store_s` use `SELECT count(), quantile(0.95)(store_s) FROM
+taas.job_events WHERE event='done' AND ts >= toDateTime(start) AND ts <
+toDateTime(start+120)`, with `start` from the first timestamp in each run's
+`locust_stats_history.csv` (10b 1792682724 → 1792687400; 50b 1792683528 →
+1792687817). Redis commands per job are the sum of `redis_per_job.txt`, using the
+database's jobs-added count from `perf_taas.sh`.
+
+| Measurement | 10b before → after | 50b before → after |
+|---|---:|---:|
+| POSTs / failures | 2,533 / 0 → 2,541 / 0 | 4,415 / 0 → 4,423 / 0 |
+| Jobs done in 120 s | 1,677 → 1,746 (13.98 → 14.55/s) | 1,493 → 1,516 (12.44 → 12.63/s) |
+| `store_s` p95 | 10.61 → 9.57 s | 48.89 → 49.29 s |
+| Redis `GET` / job | 6.68 → 1.78 | 7.34 → 1.77 |
+| Redis `HGETALL` / job | 8.00 → 8.21 | 7.72 → 17.99 |
+| All Redis commands / job | 57.22 → 53.38 | 45.19 → 50.09 |
+
+The targeted `GET` count fell at both backend counts. The clean 50b run's poller
+`HGETALL` count rose enough to increase total commands per job; C1 does not explain that
+increase, and the command-count target is still missed. C3 addresses the poller's
+per-pass job-hash reads. Throughput changed by +4.1% at 10b and +1.5% at 50b, within
+the host drift observed in C4. The local Redis micro-benchmark
+`TEST_REDIS_URL=redis://127.0.0.1:56379/15 uv run pytest -q
+tests/perf/test_backend_state.py --benchmark-only --benchmark-disable-gc` measured the
+median of one pass over 50 backends at 38.27 ms with sequential reads and 2.90 ms with
+the pipeline (13.2× faster for this isolated state read).

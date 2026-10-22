@@ -805,6 +805,28 @@ async def get_backend_inflight(r: aioredis.Redis, backend_id: int) -> int:
     return int(val) if val else 0
 
 
+async def get_backends_state(
+    r: aioredis.Redis, backend_ids: list[int]
+) -> dict[int, tuple[int, dict[str, int]]]:
+    """Read every backend's free-slot and batch-affinity state in one Redis trip."""
+    if not backend_ids:
+        return {}
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.mget([f"backend:{backend_id}:inflight" for backend_id in backend_ids])
+        for backend_id in backend_ids:
+            pipe.hgetall(_backend_batches_key(backend_id))
+        inflight_values, *batch_values = await pipe.execute()
+    return {
+        backend_id: (
+            int(inflight) if inflight else 0,
+            {_s(batch_id): int(count) for batch_id, count in batches.items()},
+        )
+        for backend_id, inflight, batches in zip(
+            backend_ids, inflight_values, batch_values, strict=True
+        )
+    }
+
+
 def job_event_payload(
     job_id: str,
     external_id: str | None,

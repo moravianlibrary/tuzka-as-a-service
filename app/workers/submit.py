@@ -29,8 +29,7 @@ from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
     claim_pending,
-    get_backend_batches,
-    get_backend_inflight,
+    get_backends_state,
     get_jobs,
     job_domain,
     job_event_payload,
@@ -588,16 +587,20 @@ async def main() -> None:
                 # This tick's eligible backends: healthy, with their free capacity + served
                 # domains (each looked up once). Full ones stay in (free=0) so a retry
                 # waits for them rather than falling back to the backend it avoids.
-                eligible: list[BackendSlot] = []
+                healthy_backends: list[Backend] = []
                 for backend in backends:
                     with timer.stage("health"):
                         healthy = await check_health(backend)
-                    if not healthy:
-                        continue
-                    with timer.stage("backend_state"):
-                        inflight = await get_backend_inflight(r, backend.id)
-                        domains = await served_domains(backend.id)
-                        batches = await get_backend_batches(r, backend.id)
+                    if healthy:
+                        healthy_backends.append(backend)
+                with timer.stage("backend_state"):
+                    backend_states = await get_backends_state(
+                        r, [backend.id for backend in healthy_backends]
+                    )
+                eligible: list[BackendSlot] = []
+                for backend in healthy_backends:
+                    inflight, batches = backend_states[backend.id]
+                    domains = await served_domains(backend.id)
                     eligible.append(
                         BackendSlot(
                             backend,
