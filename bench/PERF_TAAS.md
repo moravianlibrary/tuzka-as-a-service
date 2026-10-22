@@ -355,12 +355,44 @@ database's jobs-added count from `perf_taas.sh`.
 | Redis `HGETALL` / job | 8.00 → 8.21 | 7.72 → 17.99 |
 | All Redis commands / job | 57.22 → 53.38 | 45.19 → 50.09 |
 
-The targeted `GET` count fell at both backend counts. The clean 50b run's poller
-`HGETALL` count rose enough to increase total commands per job; C1 does not explain that
-increase, and the command-count target is still missed. C3 addresses the poller's
-per-pass job-hash reads. Throughput changed by +4.1% at 10b and +1.5% at 50b, within
+The targeted `GET` count fell at both backend counts. Aggregate `HGETALL` rose in the
+clean 50b run, enough to increase total commands per job. These Redis totals cannot
+assign that rise to the poller: C1 still sends one batch-hash `HGETALL` for every
+healthy backend on each submit pass. The command-count target remains missed.
+Throughput changed by +4.1% at 10b and +1.5% at 50b, within
 the host drift observed in C4. The local Redis micro-benchmark
 `TEST_REDIS_URL=redis://127.0.0.1:56379/15 uv run pytest -q
 tests/perf/test_backend_state.py --benchmark-only --benchmark-disable-gc` measured the
 median of one pass over 50 backends at 38.27 ms with sequential reads and 2.90 ms with
 the pipeline (13.2× faster for this isolated state read).
+
+### Bounded harvest scheduler and API route diagnosis
+
+The uncommitted scheduler candidate starts at most ten harvest tasks, refills free
+slots from the durable Redis queue, and lets status polling continue. Local checks and
+the three k3d suites passed. The first 50-backend load run failed on one POST with
+`RemoteDisconnected('Remote end closed connection without response')`; the API and
+poller did not restart. A later load used a logged port-forward at `127.0.0.1:18080`,
+then a temporary direct NodePort at `172.24.0.2:32580`. Both used `USERS=100 RATE=10
+DURATION=2m`, began with empty job queues, and had zero Locust failures. The
+port-forward log showed no forwarding error. A C1 control followed on the same direct
+route after the scheduler run drained.
+
+The table queries `taas.job_events` in exact, separate 120-second Locust windows; the
+older `perf_taas.sh` ClickHouse report looked back an extra 60 seconds and could include
+jobs completed before the run. The raw outputs are `bench/perf_out/transport-pf-50b`,
+`transport-direct-50b`, and `transport-c1-direct-50b` (gitignored).
+
+| Worker and route | Submitted | Done / 120 s | `store_s` p95 | `queue_s` p95 | Locust failures |
+|---|---:|---:|---:|---:|---:|
+| Scheduler, port-forward | 4,634 | 1,180 / 9.83/s | 70.32 s | 13.22 s | 0 |
+| Scheduler, direct | 4,739 | 1,232 / 10.27/s | 72.38 s | 12.67 s | 0 |
+| C1, direct | 4,680 | 1,582 / 13.18/s | 42.34 s | 42.77 s | 0 |
+
+The two API routes gave similar scheduler throughput and did not reproduce the lone
+connection close, so its origin remains unknown. Against the same direct route, the
+scheduler completed 22% fewer jobs than C1 and raised `store_s` p95 by 30 seconds,
+although it shortened queue wait. Both poller versions reached their 500 mCPU limit.
+The scheduler's `harvest_wait` p95 fell near zero, showing that semaphore waiting moved
+back into the durable Redis queue; it did not improve end-to-end throughput at this CPU
+limit. Keep harvest concurrency at ten while investigating poller CPU contention.

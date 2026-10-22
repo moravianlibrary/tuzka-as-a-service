@@ -58,11 +58,14 @@ jobs_before="$(psql_taas "SELECT count(*) FROM jobs")"
 echo "==> Locust: $USERS users, $RATE/s spawn, $DURATION"
 started=$(date +%s)
 key="$(TARGET="$TARGET" TAAS_URL="$TAAS_URL" bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p')"
+locust_status=0
 TAAS_API_KEY="$key" uv run --extra dev locust -f tests/load/locustfile.py --host "$TAAS_URL" \
-  --headless -u "$USERS" -r "$RATE" -t "$DURATION" --csv "$OUT/locust" >"$OUT/locust.log" 2>&1
+  --headless -u "$USERS" -r "$RATE" -t "$DURATION" --csv "$OUT/locust" >"$OUT/locust.log" 2>&1 \
+  || locust_status=$?
+finished=$(date +%s)
+printf 'started=%s\nfinished=%s\n' "$started" "$finished" > "$OUT/run_window.txt"
 
 echo "==> collecting"
-window_s=$(( $(date +%s) - started + 60 ))  # this run's job events only
 commandstats > "$OUT/redis_after.txt"
 jobs_after="$(psql_taas "SELECT count(*) FROM jobs")"
 submitted=$(( jobs_after - jobs_before ))
@@ -87,7 +90,9 @@ latency_sql="
     SELECT event, count(), quantile(0.5)(queue_s), quantile(0.95)(queue_s),
            quantile(0.5)(store_s), quantile(0.95)(store_s),
            quantile(0.5)(total_s), quantile(0.95)(total_s)
-    FROM taas.job_events WHERE ts > now() - INTERVAL $window_s SECOND GROUP BY event
+    FROM taas.job_events
+    WHERE ts >= toDateTime($started, 'UTC') AND ts < toDateTime($finished, 'UTC')
+    GROUP BY event
     FORMAT PrettyCompact"
 if [ "$TARGET" = k3d ]; then
   clickhouse "$latency_sql" > "$OUT/clickhouse_latency.txt" || echo "  (ClickHouse query failed)"
@@ -96,3 +101,4 @@ elif [ -n "${CLICKHOUSE_URL:-}" ]; then
     > "$OUT/clickhouse_latency.txt" || echo "  (ClickHouse query failed)"
 fi
 echo "==> done: $OUT (copy the numbers into bench/PERF_TAAS.md)"
+exit "$locust_status"
