@@ -143,6 +143,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **The engine slot is freed when the engine finishes, not after the harvest.** The
+  poller moves a done job to a durable `jobs:pending_harvest` queue in the same atomic
+  step that releases its slot and counters, keeping the engine's last status for the run
+  timestamps; results are fetched, stored and recorded from that queue separately. A
+  poller crash no longer loses a finished job, a transient harvest error is retried with
+  backoff, and the submit worker pauses dispatch at `PENDING_HARVEST_MAX` (default
+  10,000) so a harvest bottleneck cannot grow Redis without bound. At 10 fake backends a
+  two-minute A/B went from 14.0 to 18.5 jobs done/s and the queued backlog at collection
+  fell from 898 to 245 jobs. `bench/PERF_TAAS.md` has the A/B caveats and why
+  `max_inflight` 32 is now worse.
 - **Faster harvest.** The poller fetches a job's outputs concurrently, writes all result
   rows in one multi-row upsert, and marks the job done in one pipelined Redis write
   without re-reading the job hash it already has. At 10 fake backends a two-minute run

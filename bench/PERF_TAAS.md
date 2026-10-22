@@ -81,10 +81,10 @@ Flame graphs (10 backends, 50 users, 60 s, on-CPU samples):
    than one) and a harvest: fetch each output, compress, store, upsert, events. Both
    saturate one poller at about 20 jobs/s whatever the number of backends; with 400 jobs
    in flight (50 backends), polls crowd out harvests and `store_s` goes from 3.6 to 18 s.
-2. **Slots are held until harvest**, so (1) also caps dispatch: a 0.05 s job keeps its
-   backend slot ~4 s (first poll after `POLL_BACKOFF_INITIAL` = 1 s, then a harvest
-   slot). Dispatch passes run every ~70 ms but find 2 free slots each; `queue_s` is
-   waiting for slots, not for the submit worker.
+2. **Slots are held until harvest** (fixed in C6), so (1) also caps dispatch: a 0.05 s
+   job keeps its backend slot ~4 s (first poll after `POLL_BACKOFF_INITIAL` = 1 s, then a
+   harvest slot). Dispatch passes run every ~70 ms but find 2 free slots each; `queue_s`
+   is waiting for slots, not for the submit worker.
 3. **Per-backend round trips in the submit worker**: `get_backend_inflight` and
    `get_backend_batches` (2 Redis calls per backend per pass, each an OTel span) take ~26 %
    of its CPU at 10 backends, and grow with the backend count.
@@ -111,6 +111,7 @@ One row per fix (T5): what, commit, before → after.
 | Orphan requeue checked and requeued atomically (found by the batch run: 23 jobs dispatched twice) | `8312f83` | 23 double dispatches in 10 000 pages | 0 |
 | Backend in-flight counters rebuilt by the cleanup worker (they had drifted to -5…+2 after those double dispatches) | `b10dd36` | 8 backends off | 0 |
 | Harvest cost: fetch outputs concurrently, one multi-row result insert, pipelined `set_done` without the `HGETALL` | `4608429`, `539d2f0`, `f2f0a1d` | 10b: 13.22 done/s, `store_s` p95 9.30 s; 50b: 10.02 done/s | 10b: 15.28 done/s, 7.64 s; 50b: 11.75 done/s with 5 % more offered load |
+| Release the engine slot at engine-done, harvest from a durable `jobs:pending_harvest` queue | `da88fb0` | 10b: 14.04 done/s, 898 jobs still queued at collection | 10b: 18.54 done/s, 245 queued (keep `max_inflight` at 8; 32 is worse) |
 
 ## Where the time goes (plan 11 B3)
 
@@ -274,3 +275,53 @@ After the 50b jobs drained, `/load` still showed 17 queued although Redis had ze
 pending, delayed and in-flight IDs (`redis-cli ZCARD jobs:pending:0`, `ZCARD
 jobs:delayed`, `SCARD jobs:inflight`). The existing `rebuild_load_counters` function
 recounted them to zero; the cleanup worker also runs that recount on its heavy sweep.
+
+### C6: release the engine slot at engine done
+
+B3's second limiter was that a backend slot stayed held through the harvest: a 0.05 s
+fake job kept its slot ~4 s (the first poll, then a harvest slot), so dispatch waited for
+harvest, not for the engine. The poller now releases the slot as soon as a poll says the
+engine is done, moves the job atomically to a durable `jobs:pending_harvest` ZSET (with
+the engine's last status, for the run timestamps), and harvests from that queue at its
+own pace. A transient harvest error is retried with backoff, and the submit worker stops
+dispatching when the queue reaches `PENDING_HARVEST_MAX` (default 10,000).
+
+10 fake backends, 50 users, the same fixed-rate load, back-to-back on the two worker
+images (`OUT=bench/perf_out/release-before-8-10b` and `release-after-8-10b`,
+`make perf-taas TARGET=k3d USERS=50 RATE=10 DURATION=2m`):
+
+| | before `c4-fetch` | after `release-done` |
+|---|---:|---:|
+| jobs done in 120 s | 1,685 (14.04/s) | 2,225 (18.54/s) |
+| jobs still queued at collection | 898 | 245 |
+| `queue_s` p50 / p95 | 16.20 / 36.49 s | 21.52 / 63.14 s |
+| `store_s` p50 / p95 | 4.93 / 8.81 s | 6.54 / 11.51 s |
+| submit → done p50 / p95 | 21.43 / 41.51 s | 27.37 / 68.85 s |
+
+The done rate is the comparison: both runs offered about 2,500 jobs (the old one 2,583,
+the new one 2,470 by the events' `submitted` count), and the old worker finished only
+65 % of them in the window, leaving 898 queued. The new one finished 90 % and left 245.
+Per-job percentiles are biased by which jobs completed — the old done sample is the
+earlier, shorter-wait jobs — and `store_s` now deliberately includes the wait in the
+harvest queue. The new 60 s stage flush is dominated by `harvest_wait` (p95 4.9 s;
+`fetch_outputs` 139 ms, `db_write` 74 ms, `set_done` 32 ms per job), so the next limit is
+harvest concurrency, not slots.
+
+Deeper engine queues do not help once the slot recycles at engine-done. The same image
+and load with `max_inflight` 32 (`FAKE_CAPACITY=32`) instead of 8:
+
+| | depth 8 | depth 32 |
+|---|---:|---:|
+| jobs done in 120 s | 2,225 (18.54/s) | 1,538 (12.82/s) |
+| `queue_s` p50 / p95 | 21.52 / 63.14 s | 1.68 / 20.16 s |
+| `store_s` p50 / p95 | 6.54 / 11.51 s | 21.31 / 36.07 s |
+| submit → done p50 / p95 | 27.37 / 68.85 s | 25.22 / 46.49 s |
+
+A 32-slot engine queue only batches more done jobs into the harvest queue: dispatch is
+immediate, but `store_s` waits 21 s and the extra inflight polls crowd out harvests, so
+throughput falls by 31 %. Keep `max_inflight` at the engine's real concurrency/queue, not
+higher; the released slot, not a deep pre-queue, is what keeps the engine busy.
+
+Raw output: `bench/perf_out/release-{before,after}-8-10b`,
+`release-after-32-10b`, and the earlier-code depth pairs `inflight-{8,32}-10b`
+(gitignored).
