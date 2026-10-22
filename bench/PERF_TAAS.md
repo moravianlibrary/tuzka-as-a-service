@@ -110,6 +110,7 @@ One row per fix (T5): what, commit, before → after.
 | Poll fan-out bounded (`POLLER_POLL_CONCURRENCY`) and a blocking Redis pool: the poller crash-looped at 400 jobs in flight (`MaxConnectionsError`, OOM) | `1195421` | 50 backends: 107 jobs done in 2 min, poller restarting | 2161 done, no restarts |
 | Orphan requeue checked and requeued atomically (found by the batch run: 23 jobs dispatched twice) | `8312f83` | 23 double dispatches in 10 000 pages | 0 |
 | Backend in-flight counters rebuilt by the cleanup worker (they had drifted to -5…+2 after those double dispatches) | `b10dd36` | 8 backends off | 0 |
+| Harvest cost: fetch outputs concurrently, one multi-row result insert, pipelined `set_done` without the `HGETALL` | `4608429`, `539d2f0`, `f2f0a1d` | 10b: 13.22 done/s, `store_s` p95 9.30 s; 50b: 10.02 done/s | 10b: 15.28 done/s, 7.64 s; 50b: 11.75 done/s with 5 % more offered load |
 
 ## Where the time goes (plan 11 B3)
 
@@ -206,6 +207,63 @@ Ranked step C work from these measurements:
 5. **C2, first poll timing.** Polling takes about 8–9% of poller on-CPU samples, but the
    harvest queue is the larger limit under these loads. Test the fast-first-poll idea
    after the harvest path is shortened.
+
+### C4: harvest cost
+
+B3 ranked the harvest path first, so C4 (plan 11) changed only what its stage timers
+showed: fetch the requested outputs at once, write their result rows in one statement,
+and mark the job done without re-reading the job hash.
+
+| Change | Commit | 10b stage mean, B3 → C4 | 50b stage mean, B3 → C4 |
+|---|---|---:|---:|
+| Fetch a job's outputs concurrently | `4608429` | `fetch_outputs` 143 → 122 ms/job | 221 → 173 ms/job |
+| One multi-row `INSERT … ON CONFLICT` for the results, one job update | `539d2f0` | `db_write` 112 → 64 ms/job (3 → 2 round trips) | 124 → 83 ms/job |
+| Pipelined `set_done` with the job hash passed in, no `HGETALL` | `f2f0a1d` | `set_done` 150 → 53 ms/job | 188 → 72 ms/job |
+
+The "before" means are the last 60 s flush of the B3 profiling runs
+(`bench/perf_out/b3-10b/worker-poller-stages.log`, `b3-50b/…`, py-spy attached); the
+"after" means are the full flushes of the unprofiled C4 runs at the same backend counts.
+The end-to-end numbers below come from a back-to-back A/B of the two worker images
+(`taas-worker:b1-stages` and `taas-worker:c4-fetch`), which is the only fair comparison
+on this noisy host.
+
+10 fake backends, 50 Locust users (`OUT=bench/perf_out/c4-ab-b1-10b` and
+`c4-ab-c4-10b`, `make perf-taas TARGET=k3d USERS=50 RATE=10 DURATION=2m`):
+
+| | before `b1-stages` | after `c4-fetch` |
+|---|---:|---:|
+| jobs done in 120 s | 1,587 (13.22/s) | 1,833 (15.28/s) |
+| `queue_s` p50 / p95 | 17.60 / 31.23 s | 9.74 / 26.37 s |
+| `store_s` p50 / p95 | 4.99 / 9.30 s | 4.44 / 7.64 s |
+| submit → done p50 / p95 | 23.82 / 37.52 s | 15.35 / 30.48 s |
+| POSTs / failed | 2,510 / 0 | 2,509 / 1 (status 0 at the ramp) |
+
+50 fake backends, 100 users (`c4-ab-b1-50b` and `c4-ab-c4-50b`, same command with
+`USERS=100`):
+
+| | before `b1-stages` | after `c4-fetch` |
+|---|---:|---:|
+| jobs done in 120 s | 1,202 (10.02/s) | 1,410 (11.75/s) |
+| `queue_s` p50 / p95 | 10.68 / 42.23 s | 7.25 / 56.50 s |
+| `store_s` p50 / p95 | 21.08 / 50.52 s | 21.25 / 53.32 s |
+| submit → done p50 / p95 | 34.73 / 76.27 s | 33.55 / 78.27 s |
+| POSTs / failed | 4,023 / 0 | 4,221 / 0 |
+
+The 10b run is the clean comparison: both runs offered the same ~2,500 jobs, and the
+after run completed 15 % more of them with an 18 % lower `store_s` p95. At 50 backends
+the poller is behind a queue whose p95 is 42–56 s, and the closed-loop Locust test
+hands the freed capacity straight back as more submissions: the after run offered 5 %
+more POSTs, so its queue and per-job latencies are higher even though it completed 17 %
+more jobs.
+Per-job latency at 50b is therefore not comparable between the two columns; the done
+rate is.
+
+The same unchanged `b1-stages` code measured 16.27 done/s at 10b earlier that afternoon
+and 13.22/s twenty-five minutes later, and 14.07/s at 50b at 12:32 against 10.02/s at
+13:18, so single runs more than ~20 minutes apart are not comparable on this host. The
+A/B pairs above were run back to back with the image swapped in between, and are the
+numbers to quote. Raw output: `bench/perf_out/c4-ab-*`, `c4-before-*`, `c4-after-*`
+(gitignored).
 
 The D4 targets remain missed in these profiling runs: 10b done rate is 10.40/s,
 50b is lower at 9.01/s, 10b Redis use is 52.44 commands/job, and `store_s` p95 is

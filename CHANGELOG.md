@@ -143,6 +143,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Faster harvest.** The poller fetches a job's outputs concurrently, writes all result
+  rows in one multi-row upsert, and marks the job done in one pipelined Redis write
+  without re-reading the job hash it already has. At 10 fake backends a two-minute run
+  went from 13.2 to 15.3 jobs done/s and `store_s` p95 from 9.3 to 7.6 s; at 50 backends
+  from 10.0 to 11.8 done/s (with 5 % more offered load). `bench/PERF_TAAS.md` has the
+  stage-level numbers and the A/B caveats.
 - API timestamps are UTC with a `Z` (`2026-10-21T08:02:19.668317Z`), as the OpenAPI
   `date-time` format requires: job status and lists, batches and the WebSocket
   catch-up `ts`. They were the same UTC times without any offset before; a client
