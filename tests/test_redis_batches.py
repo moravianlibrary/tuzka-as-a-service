@@ -54,6 +54,9 @@ async def test_three_pages_two_done_one_failed(redis_client: aioredis.Redis) -> 
         await set_running(redis_client, job_id, "e", "http://e", 1, TTL)
 
     assert await set_done(redis_client, "p1", TTL) == BatchCounts("b1", 3, 1, 0)
+    # A stale snapshot from the poller still must not count the finished page again.
+    stale = {"batch_id": "b1", "backend_id": "1", "status": "running"}
+    assert await set_done(redis_client, "p1", TTL, stale) is None
     assert await set_failed(redis_client, "p2", "boom", TTL) == BatchCounts("b1", 3, 1, 1)
     assert await set_done(redis_client, "p3", TTL) == BatchCounts("b1", 3, 2, 1)
     # A re-run of a state function doesn't count a page twice.

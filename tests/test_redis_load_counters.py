@@ -17,6 +17,7 @@ from app.services.redis_jobs import (
     LOAD_SPP_KEY,
     claim_pending,
     enqueue_job,
+    get_job,
     get_jobs,
     rebuild_load_counters,
     record_page_seconds,
@@ -77,6 +78,18 @@ async def test_enqueue_run_done(redis_client: aioredis.Redis) -> None:
     await set_done(redis_client, "j1", TTL)
     await set_done(redis_client, "j1", TTL)  # a re-run is a no-op
     assert await _counts(redis_client) == ({FIELD: 0}, {FIELD: 0})
+
+
+@pytest.mark.asyncio
+async def test_done_with_the_pollers_snapshot(redis_client: aioredis.Redis) -> None:
+    """The poller passes the hash it already holds; the counters still move once."""
+    await enqueue_job(redis_client, "j3", _meta(), TTL)
+    await set_running(redis_client, "j3", "e1", "http://e1", 1, TTL)
+    snapshot = await get_job(redis_client, "j3")
+
+    await set_done(redis_client, "j3", TTL, snapshot)
+    assert await _counts(redis_client) == ({FIELD: 0}, {FIELD: 0})
+    assert await redis_client.get("backend:1:inflight") == b"0"
 
 
 @pytest.mark.asyncio

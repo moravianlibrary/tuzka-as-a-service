@@ -413,28 +413,49 @@ def _s(value: bytes | str) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
-async def set_done(r: aioredis.Redis, job_id: str, state_ttl: int) -> BatchCounts | None:
+async def set_done(
+    r: aioredis.Redis,
+    job_id: str,
+    state_ttl: int,
+    meta: dict[str, str] | None = None,
+) -> BatchCounts | None:
     """Mark the job done and release its slot. For a page of a batch, returns the
-    batch's new counts, for the caller to publish as a batch event."""
+    batch's new counts, for the caller to publish as a batch event.
+
+    ``meta`` is the caller's snapshot of the job hash (the poller already has it, so a
+    plain job saves a round trip). A batch page still re-reads the hash, because a re-run
+    must see the finished status to avoid counting the page twice."""
     key = f"job:{job_id}"
-    meta = await get_job(r, job_id)
+    if meta is None or meta.get("batch_id"):
+        meta = await get_job(r, job_id)
     batch = await _count_batch_page(r, meta, "done")
     backend_id = meta.get("backend_id") if meta else None
-    await r.hset(
-        key,
-        mapping={"status": "done", "finished_at": str(time.time())},
-    )
-    await r.expire(key, state_ttl)
-    # Only decrement when srem actually removed the job: makes slot-release
-    # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
-    # can't double-decrement the backend counter.
-    removed = await r.srem("jobs:inflight", job_id)
-    if removed and meta is not None:
-        await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
-    if backend_id and removed:
-        await r.decr(f"backend:{backend_id}:inflight")
+    # The status write and the slot release don't depend on each other, so send them in
+    # one round trip; only the SREM result decides the counters after it.
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.hset(
+            key,
+            mapping={"status": "done", "finished_at": str(time.time())},
+        )
+        pipe.expire(key, state_ttl)
+        pipe.srem("jobs:inflight", job_id)
+        _, _, removed = await pipe.execute()
+    if not removed:
+        return batch
+    # Only decrement when srem actually removed the job: makes slot-release idempotent,
+    # so a re-run (e.g. reaper re-processing after a failed commit) can't double-decrement
+    # the backend counter.
+    async with r.pipeline(transaction=False) as pipe:
+        if meta is not None:
+            pipe.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
+        if backend_id:
+            pipe.decr(f"backend:{backend_id}:inflight")
+            # A slot just freed — let the submit worker refill it now.
+            pipe.rpush(_SUBMIT_WAKEUP_KEY, b"1")
+            pipe.expire(_SUBMIT_WAKEUP_KEY, _SUBMIT_WAKEUP_TTL_SECONDS)
+        await pipe.execute()
+    if backend_id:
         await _release_batch(r, backend_id, meta)
-        await signal_submit(r)  # a slot just freed — let the worker refill it now
     return batch
 
 

@@ -458,7 +458,7 @@ async def main() -> None:
                     await db.commit()
 
             with timer.stage("set_done"):
-                batch = await set_done(r, job_id, state_ttl)  # idempotent
+                batch = await set_done(r, job_id, state_ttl, meta)  # idempotent
             if not first_harvest:
                 logger.info("Job %s was already harvested; not reporting it again", job_id)
                 if batch is not None:  # the first harvest died before its set_done
@@ -546,7 +546,7 @@ async def main() -> None:
             done = await db.scalar(select(Job.status).where(Job.id == job_id)) == "done"
             if done:
                 logger.warning("Job %s is already done; not failing it: %s", job_id, error)
-                await set_done(r, job_id, state_ttl)
+                await set_done(r, job_id, state_ttl, meta)
                 return
             batch = await set_failed(r, job_id, error, state_ttl)
             if (
