@@ -90,12 +90,14 @@ def is_transient_harvest_error(exc: Exception) -> bool:
 async def fetch_outputs(
     adapter: EngineAdapter, engine_job_id: str, outputs: frozenset[str]
 ) -> dict[str, bytes]:
-    """Fetch every requested output, in a stable order, before anything is stored.
-    An output the engine can't produce raises ``OutputUnavailable`` and nothing is kept:
-    a job delivers all it was asked for or fails (no partial results)."""
-    return {
-        output: (await adapter.fetch(engine_job_id, output)).content for output in sorted(outputs)
-    }
+    """Fetch every requested output concurrently, before anything is stored. The engine
+    serves each format independently, so fetching them in turn only adds their latencies
+    (2 outputs at about half of harvest wall time at 10 backends). An output the engine
+    can't produce raises ``OutputUnavailable`` and nothing is kept: a job delivers all it
+    was asked for or fails (no partial results)."""
+    formats = sorted(outputs)
+    fetched = await asyncio.gather(*(adapter.fetch(engine_job_id, output) for output in formats))
+    return {output: result.content for output, result in zip(formats, fetched, strict=True)}
 
 
 def _parse_engine_dt(value: str | None) -> datetime | None:
