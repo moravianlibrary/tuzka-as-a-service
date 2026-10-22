@@ -383,6 +383,7 @@ async def main() -> None:
 
                 presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
+                result_rows: list[dict[str, Any]] = []
                 for result_fmt, obj_path, raw_bytes in results_to_store:
                     with timer.stage("compress"):
                         compressed = cctx.compress(raw_bytes)
@@ -404,21 +405,16 @@ async def main() -> None:
                             presigned_ttl,
                         )
 
-                    # An upsert: a second harvest of the job (another poller during a
-                    # rollout, or a re-run after a crash) rewrote the same object.
-                    row = {
-                        "presigned_url": presigned_url,
-                        "presigned_until": utcnow() + timedelta(minutes=presigned_ttl),
-                        "size_bytes": len(compressed),  # what the results storage cap counts
-                        "evicted_at": None,
-                    }
-                    with timer.stage("db_write"):
-                        await db.execute(
-                            pg_insert(JobResult)
-                            .values(job_id=job_id, fmt=result_fmt, **row)
-                            .on_conflict_do_update(index_elements=["job_id", "fmt"], set_=row)
-                        )
-
+                    result_rows.append(
+                        {
+                            "job_id": job_id,
+                            "fmt": result_fmt,
+                            "presigned_url": presigned_url,
+                            "presigned_until": utcnow() + timedelta(minutes=presigned_ttl),
+                            "size_bytes": len(compressed),  # what the storage cap counts
+                            "evicted_at": None,
+                        }
+                    )
                     event_data[f"{result_fmt}_url"] = presigned_url  # alto_url, geojson_url, …
 
                 stored_at = utcnow()
@@ -436,6 +432,22 @@ async def main() -> None:
                 # Only the first harvest marks it done; a second one (another poller
                 # got there first) must not report the job, its events or its timing again.
                 with timer.stage("db_write"):
+                    if result_rows:
+                        # One statement for every output: with the job update below, a
+                        # two-output job costs two round trips instead of three. An
+                        # upsert, because a re-harvest rewrote the same objects.
+                        stmt = pg_insert(JobResult).values(result_rows)
+                        await db.execute(
+                            stmt.on_conflict_do_update(
+                                index_elements=["job_id", "fmt"],
+                                set_={
+                                    "presigned_url": stmt.excluded.presigned_url,
+                                    "presigned_until": stmt.excluded.presigned_until,
+                                    "size_bytes": stmt.excluded.size_bytes,
+                                    "evicted_at": stmt.excluded.evicted_at,
+                                },
+                            )
+                        )
                     claimed = await db.execute(
                         update(Job)
                         .where(Job.id == job_id, Job.status != "done")
