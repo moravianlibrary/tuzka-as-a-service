@@ -237,6 +237,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Helm upgrades using older reused values now supply the harvest queue limit, so the
+  workers start when `config.pendingHarvestMax` was absent from the previous release.
 - Empty single-image uploads now return `422` before storage or job creation. Empty
   image members in batch archives are listed in `skipped` instead of becoming jobs.
 - A queued job could be lost: the submit worker took jobs off the queue every pass and
