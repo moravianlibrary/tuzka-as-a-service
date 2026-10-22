@@ -23,7 +23,13 @@ from app.services import batch_store
 from app.services import config as config_service
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, durations, failure
-from app.services.redis_jobs import batch_event, job_event_payload, publish_event, set_failed
+from app.services.redis_jobs import (
+    batch_event,
+    job_event_payload,
+    pending_harvest_members,
+    publish_event,
+    set_failed,
+)
 
 logger = logging.getLogger("reaper")
 
@@ -83,6 +89,12 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         return limits.running_timeout_seconds
 
     stale = select_stale_jobs(candidates, now, queued_timeout, running_timeout_for)
+    if stale:
+        # A job whose engine finished but whose harvest is still queued is not stuck:
+        # its slot was released and the poller is working through the backlog. Failing
+        # it here would throw away results that are already on the engine.
+        harvesting = await pending_harvest_members(r, [str(job.id) for job, _ in stale])
+        stale = [(job, reason) for job, reason in stale if str(job.id) not in harvesting]
 
     sem = asyncio.Semaphore(_REAP_CONCURRENCY)
 

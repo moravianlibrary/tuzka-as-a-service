@@ -40,6 +40,15 @@ _POLL_WAKEUP_TTL_SECONDS = 60
 # Delayed-retry ZSET: job_id scored by ready-at unix time.
 _DELAYED_KEY = "jobs:delayed"
 
+# Durable harvest queue: job_id scored by its next harvest attempt (unix time). A job
+# whose engine finished but whose results are not stored yet lives here instead of
+# jobs:inflight. The engine slot goes back to the dispatcher as soon as the engine is
+# done, so a slow harvest (fetch, compress, store, DB) does not idle the backend; the
+# poller drains this queue at its own pace. The entry and the engine's last status are
+# written in the same atomic step as the slot release, so a poller crash between
+# engine-done and harvest loses no work.
+PENDING_HARVEST_KEY = "jobs:pending_harvest"
+
 # Load counters for GET /load: how many jobs are waiting (incl. delayed retries) and in
 # flight, per "{domain}|{sorted,outputs}" field (load_field). Moved only by the state
 # functions below, and only on a real transition, so re-running one is a no-op.
@@ -413,18 +422,128 @@ def _s(value: bytes | str) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
+# Move a finished job from the in-flight set to the durable harvest queue, in one atomic
+# step. The SREM result gates the whole transition, so two pollers that both see the
+# engine done can't release the slot (or enqueue the harvest) twice. The engine's last
+# status goes into the job hash, so the harvest has its timestamps even after a crash.
+# KEYS: inflight set, harvest queue, job hash, load:inflight, backend inflight, batches
+# ARGV: job id, now, load field, backend id, batch id, engine status JSON
+_RELEASE_DONE_LUA = """
+if redis.call('SREM', KEYS[1], ARGV[1]) == 0 then
+  return 0
+end
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+if redis.call('EXISTS', KEYS[3]) == 1 then
+  redis.call('HSET', KEYS[3], 'harvest_times', ARGV[6], 'harvest_attempts', 0)
+end
+redis.call('HINCRBY', KEYS[4], ARGV[3], -1)
+if ARGV[4] ~= '' then
+  redis.call('DECR', KEYS[5])
+  if ARGV[5] ~= '' then
+    local left = redis.call('HINCRBY', KEYS[6], ARGV[5], -1)
+    if left <= 0 then redis.call('HDEL', KEYS[6], ARGV[5]) end
+  end
+end
+return 1
+"""
+
+
+async def release_done(
+    r: aioredis.Redis,
+    job_id: str,
+    meta: dict[str, str],
+    times: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> bool:
+    """Release a finished job's engine slot and queue its harvest, atomically.
+
+    This is the engine-done transition: the slot must be reusable by the next job now,
+    not after the harvest, which fetches outputs, stores objects and writes the result
+    rows (seconds at load). The job waits in ``PENDING_HARVEST_KEY`` until ``set_done``
+    or ``set_failed`` removes it. Returns True when this call made the transition; a
+    duplicate done-poll returns False and changes nothing."""
+    backend_id = meta.get("backend_id") or ""
+    batch_id = meta.get("batch_id") or ""
+    sha = await r.script_load(_RELEASE_DONE_LUA)
+    released = await r.evalsha(
+        sha,
+        6,
+        "jobs:inflight",
+        PENDING_HARVEST_KEY,
+        f"job:{job_id}",
+        LOAD_INFLIGHT_KEY,
+        f"backend:{backend_id}:inflight" if backend_id else "backend:0:inflight",
+        _backend_batches_key(backend_id) if backend_id else "backend:0:batches",
+        job_id,
+        now if now is not None else time.time(),
+        _job_load_field(meta),
+        backend_id,
+        batch_id,
+        json.dumps(times or {}, default=str),
+    )
+    if released:
+        await signal_submit(r)  # the engine slot is free — refill it now
+    return bool(released)
+
+
+async def due_harvest_ids(r: aioredis.Redis, limit: int, now: float | None = None) -> list[str]:
+    """Jobs whose next harvest attempt is due, soonest first."""
+    at = now if now is not None else time.time()
+    members = cast(
+        "list[bytes]",
+        await r.zrangebyscore(PENDING_HARVEST_KEY, "-inf", at, start=0, num=limit),
+    )
+    return [_s(m) for m in members]
+
+
+async def next_harvest_at(r: aioredis.Redis) -> float | None:
+    """When the next harvest attempt is due, or None when the queue is empty."""
+    rows = await r.zrange(PENDING_HARVEST_KEY, 0, 0, withscores=True)
+    return float(rows[0][1]) if rows else None
+
+
+async def pending_harvest_depth(r: aioredis.Redis) -> int:
+    """How many finished jobs are waiting for their results to be stored."""
+    return int(await r.zcard(PENDING_HARVEST_KEY))
+
+
+async def reschedule_harvest(r: aioredis.Redis, job_id: str, delay_s: float) -> None:
+    """Back off a failed harvest: bump its attempt count, retry it after ``delay_s``."""
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hincrby(f"job:{job_id}", "harvest_attempts", 1)
+        pipe.zadd(PENDING_HARVEST_KEY, {job_id: time.time() + delay_s})
+        await pipe.execute()
+
+
+async def forget_harvests(r: aioredis.Redis, job_ids: list[str]) -> None:
+    """Drop harvest entries whose job state expired; their DB row is reaped separately.
+    Without this, a hash that vanished while its queue entry lived would be retried
+    forever, since every pass sees it as due and can't fetch its metadata."""
+    if job_ids:
+        await r.zrem(PENDING_HARVEST_KEY, *job_ids)
+
+
+async def pending_harvest_members(r: aioredis.Redis, job_ids: list[str]) -> set[str]:
+    """Which of ``job_ids`` are waiting to be harvested (the reaper's backstop)."""
+    if not job_ids:
+        return set()
+    scores = await r.zmscore(PENDING_HARVEST_KEY, job_ids)
+    return {job_id for job_id, score in zip(job_ids, scores, strict=True) if score is not None}
+
+
 async def set_done(
     r: aioredis.Redis,
     job_id: str,
     state_ttl: int,
     meta: dict[str, str] | None = None,
 ) -> BatchCounts | None:
-    """Mark the job done and release its slot. For a page of a batch, returns the
-    batch's new counts, for the caller to publish as a batch event.
+    """Mark the job done and drop it from the harvest queue. For a page of a batch,
+    returns the batch's new counts, for the caller to publish as a batch event.
 
-    ``meta`` is the caller's snapshot of the job hash (the poller already has it, so a
-    plain job saves a round trip). A batch page still re-reads the hash, because a re-run
-    must see the finished status to avoid counting the page twice."""
+    The engine slot is normally released earlier, by ``release_done`` at engine-done;
+    the release here is the idempotent fallback for a direct call. ``meta`` is the
+    caller's snapshot of the job hash. A batch page still re-reads the hash, because a
+    re-run must see the finished status to avoid counting the page twice."""
     key = f"job:{job_id}"
     if meta is None or meta.get("batch_id"):
         meta = await get_job(r, job_id)
@@ -439,7 +558,9 @@ async def set_done(
         )
         pipe.expire(key, state_ttl)
         pipe.srem("jobs:inflight", job_id)
-        _, _, removed = await pipe.execute()
+        pipe.zrem(PENDING_HARVEST_KEY, job_id)
+        pipe.hdel(key, "harvest_times", "harvest_attempts")
+        _, _, removed, _, _ = await pipe.execute()
     if not removed:
         return batch
     # Only decrement when srem actually removed the job: makes slot-release idempotent,
@@ -468,11 +589,17 @@ async def set_failed(
     meta = await get_job(r, job_id)
     batch = await _count_batch_page(r, meta, "failed")
     backend_id = meta.get("backend_id") if meta else None
-    await r.hset(
-        key,
-        mapping={"status": "failed", "error": error, "finished_at": str(time.time())},
-    )
-    await r.expire(key, state_ttl)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hset(
+            key,
+            mapping={"status": "failed", "error": error, "finished_at": str(time.time())},
+        )
+        pipe.expire(key, state_ttl)
+        # A harvest that failed for good leaves the durable queue; a poll failure was
+        # never on it.
+        pipe.zrem(PENDING_HARVEST_KEY, job_id)
+        pipe.hdel(key, "harvest_times", "harvest_attempts")
+        await pipe.execute()
     # Only decrement when srem actually removed the job: makes slot-release
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
@@ -528,7 +655,15 @@ async def release_and_requeue(
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)
     await r.hset(key, mapping={"status": "queued"})
-    await r.hdel(key, "engine_job_id", "backend_url", "backend_id")
+    await r.hdel(
+        key,
+        "engine_job_id",
+        "backend_url",
+        "backend_id",
+        "harvest_times",
+        "harvest_attempts",
+    )
+    await r.zrem(PENDING_HARVEST_KEY, job_id)
     await r.expire(key, state_ttl)
 
     if delay_s > 0:

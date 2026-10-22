@@ -1,6 +1,7 @@
 """Poller worker: polls engines for in-flight job results, stores output, and finalizes jobs."""
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -37,14 +38,20 @@ from app.services.events import (
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
+    due_harvest_ids,
+    forget_harvests,
     get_inflight_ids,
     get_job,
+    get_jobs,
     job_domain,
     job_event_payload,
     job_outputs,
+    next_harvest_at,
     publish_event,
     record_page_seconds,
     release_and_requeue,
+    release_done,
+    reschedule_harvest,
     set_done,
     set_failed,
     wait_for_poll_signal,
@@ -327,6 +334,14 @@ async def main() -> None:
         )
 
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
+        # The job was moved to the harvest queue at engine-done, together with the last
+        # engine status, so a retry (or a pass after a poller restart) still has the
+        # run's timestamps even though the poll outcome is long gone.
+        if not times and meta.get("harvest_times"):
+            try:
+                times = json.loads(meta["harvest_times"])
+            except ValueError:
+                logger.warning("Job %s has unreadable harvest_times", job_id)
         username = meta["username"]
         external_id = meta.get("external_id") or None
         engine_job_id = meta["engine_job_id"]
@@ -514,13 +529,17 @@ async def main() -> None:
             await mark_failed(job_id, meta, str(e), attempt=attempt, times=times)
         except Exception as e:
             # The engine already finished this job; a transient DB/storage error here is
-            # not the job's fault. Leave it inflight so the next poll re-harvests it (the
-            # reaper fails it eventually if it truly stays stuck) rather than stamping a
-            # raw infrastructure traceback as a permanent user-visible failure.
+            # not the job's fault. Keep it on the durable harvest queue and retry with
+            # backoff rather than stamping a raw infrastructure traceback as a permanent
+            # user-visible failure.
             if is_transient_harvest_error(e):
+                harvest_attempt = int(meta.get("harvest_attempts", 0)) + 1
+                delay = backoff_seconds(harvest_attempt)
+                await reschedule_harvest(r, job_id, delay)
                 logger.warning(
-                    "Transient error harvesting job %s; leaving inflight to retry: %s",
+                    "Transient error harvesting job %s; retrying in %.1fs: %s",
                     job_id,
+                    delay,
                     e,
                 )
                 return
@@ -658,13 +677,13 @@ async def main() -> None:
                     if jid not in due_set
                 ]
 
+                done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
                 if due:
                     logger.info(f"Checking {len(due)} inflight jobs")
                     statuses = await asyncio.gather(
                         *[check_with_sem(jid, metas_by_id[jid]) for jid in due]
                     )
 
-                    done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
                     failed_jobs: list[
                         tuple[str, dict[str, str], str, dict[str, Any], dict[str, Any]]
                     ] = []
@@ -700,6 +719,22 @@ async def main() -> None:
                         else:
                             running_jobs.append((outcome.job_id, meta))
 
+                    # The engine is done: free its slot now and queue the harvest, rather
+                    # than holding the slot through fetch/store/DB. The harvest drain
+                    # below picks these up in this same pass when it has capacity.
+                    if done_jobs:
+                        released = await asyncio.gather(
+                            *[release_done(r, jid, meta, times) for jid, meta, times in done_jobs],
+                            return_exceptions=True,
+                        )
+                        for (jid, _meta, _times), release_result in zip(
+                            done_jobs, released, strict=True
+                        ):
+                            if isinstance(release_result, Exception):
+                                logger.error(
+                                    "Releasing job %s for harvest failed: %s", jid, release_result
+                                )
+
                     # Update next_poll_at with backoff for running jobs; remember each new
                     # deadline so the wait below fires right when the soonest job is due.
                     for job_id, meta in running_jobs:
@@ -719,16 +754,6 @@ async def main() -> None:
                             },
                         )
                         pending_deadlines.append(new_deadline)
-
-                    # Harvest done jobs
-                    if done_jobs:
-                        results = await asyncio.gather(
-                            *[harvest_with_sem(jid, meta, times) for jid, meta, times in done_jobs],
-                            return_exceptions=True,
-                        )
-                        for result in results:
-                            if isinstance(result, Exception):
-                                logger.error("Harvest failed: %s", result)
 
                     # Mark failed jobs
                     for job_id, meta, error, attempt, times in failed_jobs:
@@ -780,10 +805,39 @@ async def main() -> None:
                                 job_event("retried", job_id, meta, None, **attempt_failure(attempt))
                             )
 
-                # Wake at the soonest scheduled poll, capped by the idle ceiling.
+                # Harvest from the durable queue: the jobs just released above, retries
+                # whose backoff elapsed, and leftovers from a poller restart. This runs
+                # even when nothing is in flight, since a delayed retry can be due then.
+                harvest_limit = max(settings.poller_harvest_concurrency * 2, len(done_jobs))
+                harvest_ids = await due_harvest_ids(r, harvest_limit)
+                if harvest_ids:
+                    harvest_metas = await get_jobs(r, harvest_ids)
+                    missing = [jid for jid, m in harvest_metas.items() if m is None]
+                    if missing:
+                        logger.warning(
+                            "Dropping %d harvest entr(ies) with expired job state", len(missing)
+                        )
+                        await forget_harvests(r, missing)
+                    results = await asyncio.gather(
+                        *[
+                            harvest_with_sem(jid, m, {})
+                            for jid, m in harvest_metas.items()
+                            if m is not None
+                        ],
+                        return_exceptions=True,
+                    )
+                    for harvest_result in results:
+                        if isinstance(harvest_result, Exception):
+                            logger.error("Harvest failed: %s", harvest_result)
+
+                # Wake at the soonest scheduled poll or harvest retry, capped by the idle
+                # ceiling. A due harvest (score in the past) means don't block at all.
                 wait_timeout = next_poll_timeout(
                     pending_deadlines, time.time(), settings.poller_tick_seconds
                 )
+                next_harvest = await next_harvest_at(r)
+                if next_harvest is not None:
+                    wait_timeout = min(wait_timeout, max(0.0, next_harvest - time.time()))
 
             except Exception:
                 logger.exception("Poller worker failed")

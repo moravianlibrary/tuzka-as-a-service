@@ -412,6 +412,9 @@ config:
   submitTickSeconds: "1.0"
   pollerTickSeconds: "1.0"
   pollerHarvestConcurrency: "10"
+  # Stop dispatching when this many finished jobs are still waiting for their results
+  # to be stored (the durable harvest queue); bounds Redis growth under overload.
+  pendingHarvestMax: "10000"
   pollBackoffInitial: "1.0"
   pollBackoffMax: "5.0"
   zstdCompressionLevel: "3"

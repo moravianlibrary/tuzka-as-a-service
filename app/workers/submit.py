@@ -38,6 +38,7 @@ from app.services.redis_jobs import (
     job_outputs,
     parse_avoid,
     peek_pending,
+    pending_harvest_depth,
     promote_due_retries,
     publish_event,
     requeue_job,
@@ -571,6 +572,7 @@ async def main() -> None:
 
     stop = install_stop()
     logger.info("Submit worker started")
+    paused_for_harvest = False
     try:
         while not stop.is_set():
             try:
@@ -605,6 +607,24 @@ async def main() -> None:
                             batches=batches,
                         )
                     )
+
+                # Backpressure: the harvest queue is durable and bounded. When it is
+                # full, stop feeding the engines — their free slots would only become
+                # more unharvested results, growing latency and Redis. The tick
+                # re-checks (and harvest success wakes the poller, not this worker).
+                harvest_depth = await pending_harvest_depth(r)
+                if harvest_depth >= settings.pending_harvest_max:
+                    if not paused_for_harvest:
+                        logger.warning(
+                            "Harvest queue full (%d jobs, limit %d); pausing dispatch",
+                            harvest_depth,
+                            settings.pending_harvest_max,
+                        )
+                        paused_for_harvest = True
+                    eligible = []
+                elif paused_for_harvest:
+                    logger.info("Harvest queue drained; resuming dispatch")
+                    paused_for_harvest = False
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.

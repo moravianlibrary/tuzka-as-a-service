@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     submit_tick_seconds: float = 1.0
     poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10
+    # The durable harvest queue: jobs whose engine finished but whose results are not
+    # stored yet. The engine slot is released at engine-done, so this queue is what lets
+    # the engine keep working while harvest catches up. The submit worker pauses dispatch
+    # when it grows past this, so a harvest bottleneck can't make Redis grow without
+    # bound; the queue itself is work, not a leak, and drains when harvest recovers.
+    pending_harvest_max: int = 10_000
     # Engine status checks in flight at once per poll pass (one per due in-flight job).
     poller_poll_concurrency: int = 50
     poll_backoff_initial: float = 1.0
