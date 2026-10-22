@@ -15,11 +15,17 @@ import os
 import uuid
 
 from locust import HttpUser, between, task
+from locust.clients import ResponseContextManager
 
 API_KEY = os.environ.get("TAAS_API_KEY", "")
 # Submit stores the upload bytes without decoding them, so any small blob named .jpg passes
 # the extension/size checks — no real image file needed to load the ingest path.
 _IMAGE = b"\xff\xd8\xff\xe0load-test-payload"
+
+
+def failure_reason(response: ResponseContextManager) -> Exception | str:
+    """Preserve Locust's transport exception instead of reporting only status 0."""
+    return response.error if response.error is not None else f"unexpected {response.status_code}"
 
 
 class TaasUser(HttpUser):
@@ -47,7 +53,7 @@ class TaasUser(HttpUser):
             elif r.status_code == 429:
                 r.success()  # rate-limited under load is expected backpressure
             else:
-                r.failure(f"unexpected {r.status_code}")
+                r.failure(failure_reason(r))
 
     @task(3)
     def poll_status(self) -> None:
@@ -61,7 +67,7 @@ class TaasUser(HttpUser):
             if r.status_code in (200, 404, 429):
                 r.success()
             else:
-                r.failure(f"unexpected {r.status_code}")
+                r.failure(failure_reason(r))
 
     @task(1)
     def list_jobs(self) -> None:
@@ -71,4 +77,4 @@ class TaasUser(HttpUser):
             if r.status_code in (200, 429):
                 r.success()
             else:
-                r.failure(f"unexpected {r.status_code}")
+                r.failure(failure_reason(r))
