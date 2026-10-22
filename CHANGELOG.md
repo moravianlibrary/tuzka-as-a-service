@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `make perf-profile TARGET=k3d` records API and worker flame graphs with an external
+  py-spy container alongside the existing stage timings and whole-service load metrics.
 - Submit and poller workers now log per-stage wall-time counts, totals, p95 and maximums
   every 60 seconds, add child spans inside job traces, and send stage totals to
   ClickHouse live metrics when configured.

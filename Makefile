@@ -123,6 +123,10 @@ bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make
 perf-taas: ## Whole-taas measurement against a fake-engine stack (TARGET=compose|k3d, USERS=, RATE=, DURATION=, OUT=)
 	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
 
+.PHONY: perf-profile
+perf-profile: ## Profile API and workers with external py-spy during perf-taas (TARGET=k3d)
+	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_profile.sh
+
 .PHONY: test-integration
 test-integration: env ## End-to-end smoke against the full stack (TARGET=compose|k3d, IMAGE=)
 	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh

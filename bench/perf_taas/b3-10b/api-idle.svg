@@ -1,0 +1,491 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg version="1.1" width="1200" height="730" onload="init(evt)" viewBox="0 0 1200 730" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:fg="http://github.com/jonhoo/inferno"><!--Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples.--><!--NOTES: --><defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs><style type="text/css">
+text { font-family:monospace; font-size:12px }
+#title { text-anchor:middle; font-size:17px; }
+#matched { text-anchor:end; }
+#search { text-anchor:end; opacity:0.1; cursor:pointer; }
+#search:hover, #search.show { opacity:1; }
+#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+#unzoom { cursor:pointer; }
+#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+.hide { display:none; }
+.parent { opacity:0.5; }
+</style><script type="text/ecmascript"><![CDATA[
+        var nametype = 'Function:';
+        var fontsize = 12;
+        var fontwidth = 0.59;
+        var xpad = 10;
+        var inverted = true;
+        var searchcolor = 'rgb(230,0,230)';
+        var fluiddrawing = true;
+        var truncate_text_right = false;
+    ]]><![CDATA["use strict";
+var details, searchbtn, unzoombtn, matchedtxt, svg, searching, frames, known_font_width;
+function init(evt) {
+    details = document.getElementById("details").firstChild;
+    searchbtn = document.getElementById("search");
+    unzoombtn = document.getElementById("unzoom");
+    matchedtxt = document.getElementById("matched");
+    svg = document.getElementsByTagName("svg")[0];
+    frames = document.getElementById("frames");
+    known_font_width = get_monospace_width(frames);
+    total_samples = parseInt(frames.attributes.total_samples.value);
+    searching = 0;
+
+    // Use GET parameters to restore a flamegraph's state.
+    var restore_state = function() {
+        var params = get_params();
+        if (params.x && params.y)
+            zoom(find_group(document.querySelector('[*|x="' + params.x + '"][y="' + params.y + '"]')));
+        if (params.s)
+            search(params.s);
+    };
+
+    if (fluiddrawing) {
+        // Make width dynamic so the SVG fits its parent's width.
+        svg.removeAttribute("width");
+        // Edge requires us to have a viewBox that gets updated with size changes.
+        var isEdge = /Edge\/\d./i.test(navigator.userAgent);
+        if (!isEdge) {
+            svg.removeAttribute("viewBox");
+        }
+        var update_for_width_change = function() {
+            if (isEdge) {
+                svg.attributes.viewBox.value = "0 0 " + svg.width.baseVal.value + " " + svg.height.baseVal.value;
+            }
+
+            // Keep consistent padding on left and right of frames container.
+            frames.attributes.width.value = svg.width.baseVal.value - xpad * 2;
+
+            // Text truncation needs to be adjusted for the current width.
+            update_text_for_elements(frames.children);
+
+            // Keep search elements at a fixed distance from right edge.
+            var svgWidth = svg.width.baseVal.value;
+            searchbtn.attributes.x.value = svgWidth - xpad;
+            matchedtxt.attributes.x.value = svgWidth - xpad;
+        };
+        window.addEventListener('resize', function() {
+            update_for_width_change();
+        });
+        // This needs to be done asynchronously for Safari to work.
+        setTimeout(function() {
+            unzoom();
+            update_for_width_change();
+            restore_state();
+        }, 0);
+    } else {
+        restore_state();
+    }
+}
+// event listeners
+window.addEventListener("click", function(e) {
+    var target = find_group(e.target);
+    if (target) {
+        if (target.nodeName == "a") {
+            if (e.ctrlKey === false) return;
+            e.preventDefault();
+        }
+        if (target.classList.contains("parent")) unzoom();
+        zoom(target);
+
+        // set parameters for zoom state
+        var el = target.querySelector("rect");
+        if (el && el.attributes && el.attributes.y && el.attributes["fg:x"]) {
+            var params = get_params()
+            params.x = el.attributes["fg:x"].value;
+            params.y = el.attributes.y.value;
+            history.replaceState(null, null, parse_params(params));
+        }
+    }
+    else if (e.target.id == "unzoom") {
+        unzoom();
+
+        // remove zoom state
+        var params = get_params();
+        if (params.x) delete params.x;
+        if (params.y) delete params.y;
+        history.replaceState(null, null, parse_params(params));
+    }
+    else if (e.target.id == "search") search_prompt();
+}, false)
+// mouse-over for info
+// show
+window.addEventListener("mouseover", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = nametype + " " + g_to_text(target);
+}, false)
+// clear
+window.addEventListener("mouseout", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = ' ';
+}, false)
+// ctrl-F for search
+window.addEventListener("keydown",function (e) {
+    if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+        e.preventDefault();
+        search_prompt();
+    }
+}, false)
+// functions
+function get_params() {
+    var params = {};
+    var paramsarr = window.location.search.substr(1).split('&');
+    for (var i = 0; i < paramsarr.length; ++i) {
+        var tmp = paramsarr[i].split("=");
+        if (!tmp[0] || !tmp[1]) continue;
+        params[tmp[0]]  = decodeURIComponent(tmp[1]);
+    }
+    return params;
+}
+function parse_params(params) {
+    var uri = "?";
+    for (var key in params) {
+        uri += key + '=' + encodeURIComponent(params[key]) + '&';
+    }
+    if (uri.slice(-1) == "&")
+        uri = uri.substring(0, uri.length - 1);
+    if (uri == '?')
+        uri = window.location.href.split('?')[0];
+    return uri;
+}
+function find_child(node, selector) {
+    var children = node.querySelectorAll(selector);
+    if (children.length) return children[0];
+    return;
+}
+function find_group(node) {
+    var parent = node.parentElement;
+    if (!parent) return;
+    if (parent.id == "frames") return node;
+    return find_group(parent);
+}
+function orig_save(e, attr, val) {
+    if (e.attributes["fg:orig_" + attr] != undefined) return;
+    if (e.attributes[attr] == undefined) return;
+    if (val == undefined) val = e.attributes[attr].value;
+    e.setAttribute("fg:orig_" + attr, val);
+}
+function orig_load(e, attr) {
+    if (e.attributes["fg:orig_"+attr] == undefined) return;
+    e.attributes[attr].value = e.attributes["fg:orig_" + attr].value;
+    e.removeAttribute("fg:orig_" + attr);
+}
+function g_to_text(e) {
+    var text = find_child(e, "title").firstChild.nodeValue;
+    return (text)
+}
+function g_to_func(e) {
+    var func = g_to_text(e);
+    // if there's any manipulation we want to do to the function
+    // name before it's searched, do it here before returning.
+    return (func);
+}
+function get_monospace_width(frames) {
+    // Given the id="frames" element, return the width of text characters if
+    // this is a monospace font, otherwise return 0.
+    text = find_child(frames.children[0], "text");
+    originalContent = text.textContent;
+    text.textContent = "!";
+    bangWidth = text.getComputedTextLength();
+    text.textContent = "W";
+    wWidth = text.getComputedTextLength();
+    text.textContent = originalContent;
+    if (bangWidth === wWidth) {
+        return bangWidth;
+    } else {
+        return 0;
+    }
+}
+function update_text_for_elements(elements) {
+    // In order to render quickly in the browser, you want to do one pass of
+    // reading attributes, and one pass of mutating attributes. See
+    // https://web.dev/avoid-large-complex-layouts-and-layout-thrashing/ for details.
+
+    // Fall back to inefficient calculation, if we're variable-width font.
+    // TODO This should be optimized somehow too.
+    if (known_font_width === 0) {
+        for (var i = 0; i < elements.length; i++) {
+            update_text(elements[i]);
+        }
+        return;
+    }
+
+    var textElemNewAttributes = [];
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var r = find_child(e, "rect");
+        var t = find_child(e, "text");
+        var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+        var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+        var newX = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+        // Smaller than this size won't fit anything
+        if (w < 2 * known_font_width) {
+            textElemNewAttributes.push([newX, ""]);
+            continue;
+        }
+
+        // Fit in full text width
+        if (txt.length * known_font_width < w) {
+            textElemNewAttributes.push([newX, txt]);
+            continue;
+        }
+
+        var substringLength = Math.floor(w / known_font_width) - 2;
+        if (truncate_text_right) {
+            // Truncate the right side of the text.
+            textElemNewAttributes.push([newX, txt.substring(0, substringLength) + ".."]);
+            continue;
+        } else {
+            // Truncate the left side of the text.
+            textElemNewAttributes.push([newX, ".." + txt.substring(txt.length - substringLength, txt.length)]);
+            continue;
+        }
+    }
+
+    console.assert(textElemNewAttributes.length === elements.length, "Resize failed, please file a bug at https://github.com/jonhoo/inferno/");
+
+    // Now that we know new textContent, set it all in one go so we don't refresh a bazillion times.
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var values = textElemNewAttributes[i];
+        var t = find_child(e, "text");
+        t.attributes.x.value = values[0];
+        t.textContent = values[1];
+    }
+}
+
+function update_text(e) {
+    var r = find_child(e, "rect");
+    var t = find_child(e, "text");
+    var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+    var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+    t.attributes.x.value = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+    // Smaller than this size won't fit anything
+    if (w < 2 * fontsize * fontwidth) {
+        t.textContent = "";
+        return;
+    }
+    t.textContent = txt;
+    // Fit in full text width
+    if (t.getComputedTextLength() < w)
+        return;
+    if (truncate_text_right) {
+        // Truncate the right side of the text.
+        for (var x = txt.length - 2; x > 0; x--) {
+            if (t.getSubStringLength(0, x + 2) <= w) {
+                t.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+    } else {
+        // Truncate the left side of the text.
+        for (var x = 2; x < txt.length; x++) {
+            if (t.getSubStringLength(x - 2, txt.length) <= w) {
+                t.textContent = ".." + txt.substring(x, txt.length);
+                return;
+            }
+        }
+    }
+    t.textContent = "";
+}
+// zoom
+function zoom_reset(e) {
+    if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * parseInt(e.attributes["fg:x"].value) / total_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / total_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_reset(c[i]);
+    }
+}
+function zoom_child(e, x, zoomed_width_samples) {
+    if (e.tagName == "text") {
+        var parent_x = parseFloat(find_child(e.parentNode, "rect[x]").attributes.x.value);
+        e.attributes.x.value = format_percent(parent_x + (100 * 3 / frames.attributes.width.value));
+    } else if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * (parseInt(e.attributes["fg:x"].value) - x) / zoomed_width_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / zoomed_width_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_child(c[i], x, zoomed_width_samples);
+    }
+}
+function zoom_parent(e) {
+    if (e.attributes) {
+        if (e.attributes.x != undefined) {
+            e.attributes.x.value = "0.0%";
+        }
+        if (e.attributes.width != undefined) {
+            e.attributes.width.value = "100.0%";
+        }
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_parent(c[i]);
+    }
+}
+function zoom(node) {
+    var attr = find_child(node, "rect").attributes;
+    var width = parseInt(attr["fg:w"].value);
+    var xmin = parseInt(attr["fg:x"].value);
+    var xmax = xmin + width;
+    var ymin = parseFloat(attr.y.value);
+    unzoombtn.classList.remove("hide");
+    var el = frames.children;
+    var to_update_text = [];
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        var a = find_child(e, "rect").attributes;
+        var ex = parseInt(a["fg:x"].value);
+        var ew = parseInt(a["fg:w"].value);
+        // Is it an ancestor
+        if (!inverted) {
+            var upstack = parseFloat(a.y.value) > ymin;
+        } else {
+            var upstack = parseFloat(a.y.value) < ymin;
+        }
+        if (upstack) {
+            // Direct ancestor
+            if (ex <= xmin && (ex+ew) >= xmax) {
+                e.classList.add("parent");
+                zoom_parent(e);
+                to_update_text.push(e);
+            }
+            // not in current path
+            else
+                e.classList.add("hide");
+        }
+        // Children maybe
+        else {
+            // no common path
+            if (ex < xmin || ex >= xmax) {
+                e.classList.add("hide");
+            }
+            else {
+                zoom_child(e, xmin, width);
+                to_update_text.push(e);
+            }
+        }
+    }
+    update_text_for_elements(to_update_text);
+}
+function unzoom() {
+    unzoombtn.classList.add("hide");
+    var el = frames.children;
+    for(var i = 0; i < el.length; i++) {
+        el[i].classList.remove("parent");
+        el[i].classList.remove("hide");
+        zoom_reset(el[i]);
+    }
+    update_text_for_elements(el);
+}
+// search
+function reset_search() {
+    var el = document.querySelectorAll("#frames rect");
+    for (var i = 0; i < el.length; i++) {
+        orig_load(el[i], "fill")
+    }
+    var params = get_params();
+    delete params.s;
+    history.replaceState(null, null, parse_params(params));
+}
+function search_prompt() {
+    if (!searching) {
+        var term = prompt("Enter a search term (regexp " +
+            "allowed, eg: ^ext4_)", "");
+        if (term != null) {
+            search(term)
+        }
+    } else {
+        reset_search();
+        searching = 0;
+        searchbtn.classList.remove("show");
+        searchbtn.firstChild.nodeValue = "Search"
+        matchedtxt.classList.add("hide");
+        matchedtxt.firstChild.nodeValue = ""
+    }
+}
+function search(term) {
+    var re = new RegExp(term);
+    var el = frames.children;
+    var matches = new Object();
+    var maxwidth = 0;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        // Skip over frames which are either not visible, or below the zoomed-to frame
+        if (e.classList.contains("hide") || e.classList.contains("parent")) {
+            continue;
+        }
+        var func = g_to_func(e);
+        var rect = find_child(e, "rect");
+        if (func == null || rect == null)
+            continue;
+        // Save max width. Only works as we have a root frame
+        var w = parseInt(rect.attributes["fg:w"].value);
+        if (w > maxwidth)
+            maxwidth = w;
+        if (func.match(re)) {
+            // highlight
+            var x = parseInt(rect.attributes["fg:x"].value);
+            orig_save(rect, "fill");
+            rect.attributes.fill.value = searchcolor;
+            // remember matches
+            if (matches[x] == undefined) {
+                matches[x] = w;
+            } else {
+                if (w > matches[x]) {
+                    // overwrite with parent
+                    matches[x] = w;
+                }
+            }
+            searching = 1;
+        }
+    }
+    if (!searching)
+        return;
+    var params = get_params();
+    params.s = term;
+    history.replaceState(null, null, parse_params(params));
+
+    searchbtn.classList.add("show");
+    searchbtn.firstChild.nodeValue = "Reset Search";
+    // calculate percent matched, excluding vertical overlap
+    var count = 0;
+    var lastx = -1;
+    var lastw = 0;
+    var keys = Array();
+    for (k in matches) {
+        if (matches.hasOwnProperty(k))
+            keys.push(k);
+    }
+    // sort the matched frames by their x location
+    // ascending, then width descending
+    keys.sort(function(a, b){
+        return a - b;
+    });
+    // Step through frames saving only the biggest bottom-up frames
+    // thanks to the sort order. This relies on the tree property
+    // where children are always smaller than their parents.
+    for (var k in keys) {
+        var x = parseInt(keys[k]);
+        var w = matches[keys[k]];
+        if (x >= lastx + lastw) {
+            count += w;
+            lastx = x;
+            lastw = w;
+        }
+    }
+    // display matched percent
+    matchedtxt.classList.remove("hide");
+    var pct = 100 * count / maxwidth;
+    if (pct != 100) pct = pct.toFixed(1);
+    matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+}
+function format_percent(n) {
+    return n.toFixed(4) + "%";
+}
+]]></script><rect x="0" y="0" width="100%" height="730" fill="url(#background)"/><text id="title" fill="rgb(0,0,0)" x="50.0000%" y="24.00">py-spy record -d 60 -r 50 --idle -o /tmp/taas-idle.svg --pid 1</text><text id="details" fill="rgb(0,0,0)" x="10" y="40.00"> </text><text id="unzoom" class="hide" fill="rgb(0,0,0)" x="10" y="24.00">Reset Zoom</text><text id="search" fill="rgb(0,0,0)" x="1190" y="24.00">Search</text><text id="matched" fill="rgb(0,0,0)" x="1190" y="719.00"> </text><svg id="frames" x="10" width="1180" total_samples="30663"><g><title>read (ssl.py:886) (34 samples, 0.11%)</title><rect x="5.7529%" y="228" width="0.1109%" height="15" fill="rgb(227,0,7)" fg:x="1764" fg:w="34"/><text x="6.0029%" y="238.50"></text></g><g><title>app (fastapi/routing.py:455) (48 samples, 0.16%)</title><rect x="6.2910%" y="580" width="0.1565%" height="15" fill="rgb(217,0,24)" fg:x="1929" fg:w="48"/><text x="6.5410%" y="590.50"></text></g><g><title>_get_form (starlette/requests.py:294) (43 samples, 0.14%)</title><rect x="6.3073%" y="596" width="0.1402%" height="15" fill="rgb(221,193,54)" fg:x="1934" fg:w="43"/><text x="6.5573%" y="606.50"></text></g><g><title>solve_dependencies (fastapi/dependencies/utils.py:656) (42 samples, 0.14%)</title><rect x="6.4638%" y="596" width="0.1370%" height="15" fill="rgb(248,212,6)" fg:x="1982" fg:w="42"/><text x="6.7138%" y="606.50"></text></g><g><title>check (app/services/rate_limit.py:61) (79 samples, 0.26%)</title><rect x="6.6269%" y="628" width="0.2576%" height="15" fill="rgb(208,68,35)" fg:x="2032" fg:w="79"/><text x="6.8769%" y="638.50"></text></g><g><title>_async_traced_execute_command (redis/__init__.py:384) (51 samples, 0.17%)</title><rect x="6.7182%" y="644" width="0.1663%" height="15" fill="rgb(232,128,0)" fg:x="2060" fg:w="51"/><text x="6.9682%" y="654.50"></text></g><g><title>_check (app/deps.py:139) (80 samples, 0.26%)</title><rect x="6.6269%" y="612" width="0.2609%" height="15" fill="rgb(207,160,47)" fg:x="2032" fg:w="80"/><text x="6.8769%" y="622.50"></text></g><g><title>solve_dependencies (fastapi/dependencies/utils.py:690) (86 samples, 0.28%)</title><rect x="6.6106%" y="596" width="0.2805%" height="15" fill="rgb(228,23,34)" fg:x="2027" fg:w="86"/><text x="6.8606%" y="606.50"></text></g><g><title>app (fastapi/routing.py:511) (174 samples, 0.57%)</title><rect x="6.4508%" y="580" width="0.5675%" height="15" fill="rgb(218,30,26)" fg:x="1978" fg:w="174"/><text x="6.7008%" y="590.50"></text></g><g><title>greenlet_spawn (sqlalchemy/util/concurrency.py:205) (45 samples, 0.15%)</title><rect x="7.0900%" y="644" width="0.1468%" height="15" fill="rgb(220,122,19)" fg:x="2174" fg:w="45"/><text x="7.3400%" y="654.50"></text></g><g><title>scalar (sqlalchemy/ext/asyncio/session.py:720) (49 samples, 0.16%)</title><rect x="7.0835%" y="628" width="0.1598%" height="15" fill="rgb(250,228,42)" fg:x="2172" fg:w="49"/><text x="7.3335%" y="638.50"></text></g><g><title>get_job_status (app/routers/jobs.py:256) (54 samples, 0.18%)</title><rect x="7.0704%" y="612" width="0.1761%" height="15" fill="rgb(240,193,28)" fg:x="2168" fg:w="54"/><text x="7.3204%" y="622.50"></text></g><g><title>submit_job (app/routers/jobs.py:172) (56 samples, 0.18%)</title><rect x="7.4259%" y="612" width="0.1826%" height="15" fill="rgb(216,20,37)" fg:x="2277" fg:w="56"/><text x="7.6759%" y="622.50"></text></g><g><title>put_object (app/services/storage.py:66) (56 samples, 0.18%)</title><rect x="7.4259%" y="628" width="0.1826%" height="15" fill="rgb(206,188,39)" fg:x="2277" fg:w="56"/><text x="7.6759%" y="638.50"></text></g><g><title>put_object (miniopy_async/api.py:2752) (46 samples, 0.15%)</title><rect x="7.4585%" y="644" width="0.1500%" height="15" fill="rgb(217,207,13)" fg:x="2287" fg:w="46"/><text x="7.7085%" y="654.50"></text></g><g><title>_put_object (miniopy_async/api.py:2493) (46 samples, 0.15%)</title><rect x="7.4585%" y="660" width="0.1500%" height="15" fill="rgb(231,73,38)" fg:x="2287" fg:w="46"/><text x="7.7085%" y="670.50"></text></g><g><title>_execute (miniopy_async/api.py:519) (46 samples, 0.15%)</title><rect x="7.4585%" y="676" width="0.1500%" height="15" fill="rgb(225,20,46)" fg:x="2287" fg:w="46"/><text x="7.7085%" y="686.50"></text></g><g><title>_url_open (miniopy_async/api.py:375) (32 samples, 0.10%)</title><rect x="7.5042%" y="692" width="0.1044%" height="15" fill="rgb(210,31,41)" fg:x="2301" fg:w="32"/><text x="7.7542%" y="702.50"></text></g><g><title>greenlet_spawn (sqlalchemy/util/concurrency.py:205) (65 samples, 0.21%)</title><rect x="7.6835%" y="644" width="0.2120%" height="15" fill="rgb(221,200,47)" fg:x="2356" fg:w="65"/><text x="7.9335%" y="654.50"></text></g><g><title>submit_job (app/routers/jobs.py:194) (73 samples, 0.24%)</title><rect x="7.6770%" y="612" width="0.2381%" height="15" fill="rgb(226,26,5)" fg:x="2354" fg:w="73"/><text x="7.9270%" y="622.50"></text></g><g><title>commit (sqlalchemy/ext/asyncio/session.py:1308) (73 samples, 0.24%)</title><rect x="7.6770%" y="628" width="0.2381%" height="15" fill="rgb(249,33,26)" fg:x="2354" fg:w="73"/><text x="7.9270%" y="638.50"></text></g><g><title>submit_job (app/routers/jobs.py:195) (33 samples, 0.11%)</title><rect x="7.9151%" y="612" width="0.1076%" height="15" fill="rgb(235,183,28)" fg:x="2427" fg:w="33"/><text x="8.1651%" y="622.50"></text></g><g><title>refresh (sqlalchemy/ext/asyncio/session.py:531) (33 samples, 0.11%)</title><rect x="7.9151%" y="628" width="0.1076%" height="15" fill="rgb(221,5,38)" fg:x="2427" fg:w="33"/><text x="8.1651%" y="638.50"></text></g><g><title>enqueue_job (app/services/redis_jobs.py:208) (44 samples, 0.14%)</title><rect x="8.1238%" y="628" width="0.1435%" height="15" fill="rgb(247,18,42)" fg:x="2491" fg:w="44"/><text x="8.3738%" y="638.50"></text></g><g><title>_async_traced_execute_pipeline (redis/__init__.py:442) (35 samples, 0.11%)</title><rect x="8.1531%" y="644" width="0.1141%" height="15" fill="rgb(241,131,45)" fg:x="2500" fg:w="35"/><text x="8.4031%" y="654.50"></text></g><g><title>submit_job (app/routers/jobs.py:201) (129 samples, 0.42%)</title><rect x="8.1140%" y="612" width="0.4207%" height="15" fill="rgb(249,31,29)" fg:x="2488" fg:w="129"/><text x="8.3640%" y="622.50"></text></g><g><title>enqueue_job (app/services/redis_jobs.py:209) (82 samples, 0.27%)</title><rect x="8.2673%" y="628" width="0.2674%" height="15" fill="rgb(225,111,53)" fg:x="2535" fg:w="82"/><text x="8.5173%" y="638.50"></text></g><g><title>_add_pending (app/services/redis_jobs.py:133) (33 samples, 0.11%)</title><rect x="8.4271%" y="644" width="0.1076%" height="15" fill="rgb(238,160,17)" fg:x="2584" fg:w="33"/><text x="8.6771%" y="654.50"></text></g><g><title>signal_submit (app/services/redis_jobs.py:57) (31 samples, 0.10%)</title><rect x="8.4336%" y="660" width="0.1011%" height="15" fill="rgb(214,148,48)" fg:x="2586" fg:w="31"/><text x="8.6836%" y="670.50"></text></g><g><title>app (fastapi/routing.py:745) (468 samples, 1.53%)</title><rect x="7.0215%" y="580" width="1.5263%" height="15" fill="rgb(232,36,49)" fg:x="2153" fg:w="468"/><text x="7.2715%" y="590.50"></text></g><g><title>run_endpoint_function (fastapi/routing.py:372) (463 samples, 1.51%)</title><rect x="7.0378%" y="596" width="1.5100%" height="15" fill="rgb(209,103,24)" fg:x="2158" fg:w="463"/><text x="7.2878%" y="606.50"></text></g><g><title>app (fastapi/routing.py:152) (705 samples, 2.30%)</title><rect x="6.2812%" y="564" width="2.2992%" height="15" fill="rgb(229,88,8)" fg:x="1926" fg:w="705"/><text x="6.5312%" y="574.50">a..</text></g><g><title>__call__ (starlette/responses.py:171) (60 samples, 0.20%)</title><rect x="8.5836%" y="580" width="0.1957%" height="15" fill="rgb(213,181,19)" fg:x="2632" fg:w="60"/><text x="8.8336%" y="590.50"></text></g><g><title>sender (starlette/_exception_handler.py:39) (58 samples, 0.19%)</title><rect x="8.5902%" y="596" width="0.1892%" height="15" fill="rgb(254,191,54)" fg:x="2634" fg:w="58"/><text x="8.8402%" y="606.50"></text></g><g><title>sender (starlette/_exception_handler.py:39) (58 samples, 0.19%)</title><rect x="8.5902%" y="612" width="0.1892%" height="15" fill="rgb(241,83,37)" fg:x="2634" fg:w="58"/><text x="8.8402%" y="622.50"></text></g><g><title>_send (starlette/middleware/errors.py:161) (58 samples, 0.19%)</title><rect x="8.5902%" y="628" width="0.1892%" height="15" fill="rgb(233,36,39)" fg:x="2634" fg:w="58"/><text x="8.8402%" y="638.50"></text></g><g><title>__call__ (asgi/__init__.py:779) (823 samples, 2.68%)</title><rect x="6.1573%" y="324" width="2.6840%" height="15" fill="rgb(226,3,54)" fg:x="1888" fg:w="823"/><text x="6.4073%" y="334.50">__..</text></g><g><title>__call__ (starlette/middleware/errors.py:164) (822 samples, 2.68%)</title><rect x="6.1605%" y="340" width="2.6808%" height="15" fill="rgb(245,192,40)" fg:x="1889" fg:w="822"/><text x="6.4105%" y="350.50">__..</text></g><g><title>__call__ (fastapi/__init__.py:360) (821 samples, 2.68%)</title><rect x="6.1638%" y="356" width="2.6775%" height="15" fill="rgb(238,167,29)" fg:x="1890" fg:w="821"/><text x="6.4138%" y="366.50">__..</text></g><g><title>__call__ (fastapi/telemetry/_asgi.py:151) (820 samples, 2.67%)</title><rect x="6.1670%" y="372" width="2.6742%" height="15" fill="rgb(232,182,51)" fg:x="1891" fg:w="820"/><text x="6.4170%" y="382.50">__..</text></g><g><title>__call__ (starlette/middleware/exceptions.py:63) (818 samples, 2.67%)</title><rect x="6.1736%" y="388" width="2.6677%" height="15" fill="rgb(231,60,39)" fg:x="1893" fg:w="818"/><text x="6.4236%" y="398.50">__..</text></g><g><title>wrapped_app (starlette/_exception_handler.py:42) (815 samples, 2.66%)</title><rect x="6.1833%" y="404" width="2.6579%" height="15" fill="rgb(208,69,12)" fg:x="1896" fg:w="815"/><text x="6.4333%" y="414.50">wr..</text></g><g><title>__call__ (fastapi/middleware/asyncexitstack.py:18) (810 samples, 2.64%)</title><rect x="6.1997%" y="420" width="2.6416%" height="15" fill="rgb(235,93,37)" fg:x="1901" fg:w="810"/><text x="6.4497%" y="430.50">__..</text></g><g><title>__call__ (starlette/routing.py:678) (810 samples, 2.64%)</title><rect x="6.1997%" y="436" width="2.6416%" height="15" fill="rgb(213,116,39)" fg:x="1901" fg:w="810"/><text x="6.4497%" y="446.50">__..</text></g><g><title>app (fastapi/routing.py:2811) (802 samples, 2.62%)</title><rect x="6.2257%" y="452" width="2.6155%" height="15" fill="rgb(222,207,29)" fg:x="1909" fg:w="802"/><text x="6.4757%" y="462.50">ap..</text></g><g><title>handle (fastapi/routing.py:1839) (801 samples, 2.61%)</title><rect x="6.2290%" y="468" width="2.6123%" height="15" fill="rgb(206,96,30)" fg:x="1910" fg:w="801"/><text x="6.4790%" y="478.50">ha..</text></g><g><title>handle (fastapi/routing.py:2894) (799 samples, 2.61%)</title><rect x="6.2355%" y="484" width="2.6057%" height="15" fill="rgb(218,138,4)" fg:x="1912" fg:w="799"/><text x="6.4855%" y="494.50">ha..</text></g><g><title>_handle_selected (fastapi/routing.py:1865) (796 samples, 2.60%)</title><rect x="6.2453%" y="500" width="2.5960%" height="15" fill="rgb(250,191,14)" fg:x="1915" fg:w="796"/><text x="6.4953%" y="510.50">_h..</text></g><g><title>handle (fastapi/routing.py:1328) (795 samples, 2.59%)</title><rect x="6.2486%" y="516" width="2.5927%" height="15" fill="rgb(239,60,40)" fg:x="1916" fg:w="795"/><text x="6.4986%" y="526.50">ha..</text></g><g><title>app (fastapi/routing.py:166) (794 samples, 2.59%)</title><rect x="6.2518%" y="532" width="2.5894%" height="15" fill="rgb(206,27,48)" fg:x="1917" fg:w="794"/><text x="6.5018%" y="542.50">ap..</text></g><g><title>wrapped_app (starlette/_exception_handler.py:42) (794 samples, 2.59%)</title><rect x="6.2518%" y="548" width="2.5894%" height="15" fill="rgb(225,35,8)" fg:x="1917" fg:w="794"/><text x="6.5018%" y="558.50">wr..</text></g><g><title>app (fastapi/routing.py:153) (80 samples, 0.26%)</title><rect x="8.5804%" y="564" width="0.2609%" height="15" fill="rgb(250,213,24)" fg:x="2631" fg:w="80"/><text x="8.8304%" y="574.50"></text></g><g><title>__call__ (fastapi/applications.py:1199) (909 samples, 2.96%)</title><rect x="5.8931%" y="260" width="2.9645%" height="15" fill="rgb(247,123,22)" fg:x="1807" fg:w="909"/><text x="6.1431%" y="270.50">__c..</text></g><g><title>__call__ (fastapi/telemetry/_asgi.py:274) (903 samples, 2.94%)</title><rect x="5.9127%" y="276" width="2.9449%" height="15" fill="rgb(231,138,38)" fg:x="1813" fg:w="903"/><text x="6.1627%" y="286.50">__..</text></g><g><title>__call__ (starlette/applications.py:96) (901 samples, 2.94%)</title><rect x="5.9192%" y="292" width="2.9384%" height="15" fill="rgb(231,145,46)" fg:x="1815" fg:w="901"/><text x="6.1692%" y="302.50">__..</text></g><g><title>__call__ (starlette/middleware/errors.py:164) (898 samples, 2.93%)</title><rect x="5.9290%" y="308" width="2.9286%" height="15" fill="rgb(251,118,11)" fg:x="1818" fg:w="898"/><text x="6.1790%" y="318.50">__..</text></g><g><title>run_asgi (uvicorn/protocols/http/httptools_impl.py:422) (912 samples, 2.97%)</title><rect x="5.8866%" y="228" width="2.9743%" height="15" fill="rgb(217,147,25)" fg:x="1805" fg:w="912"/><text x="6.1366%" y="238.50">run..</text></g><g><title>__call__ (uvicorn/middleware/proxy_headers.py:63) (911 samples, 2.97%)</title><rect x="5.8898%" y="244" width="2.9710%" height="15" fill="rgb(247,81,37)" fg:x="1806" fg:w="911"/><text x="6.1398%" y="254.50">__c..</text></g><g><title>&lt;module&gt; (uvicorn:6) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="68" width="8.8706%" height="15" fill="rgb(209,12,38)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="78.50">&lt;module&gt; (uvi..</text></g><g><title>__call__ (click/core.py:1631) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="84" width="8.8706%" height="15" fill="rgb(227,1,9)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="94.50">__call__ (cli..</text></g><g><title>main (click/core.py:1552) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="100" width="8.8706%" height="15" fill="rgb(248,47,43)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="110.50">main (click/c..</text></g><g><title>invoke (click/core.py:1415) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="116" width="8.8706%" height="15" fill="rgb(221,10,30)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="126.50">invoke (click..</text></g><g><title>invoke (click/core.py:910) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="132" width="8.8706%" height="15" fill="rgb(210,229,1)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="142.50">invoke (click..</text></g><g><title>main (uvicorn/main.py:499) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="148" width="8.8706%" height="15" fill="rgb(222,148,37)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="158.50">main (uvicorn..</text></g><g><title>run (uvicorn/main.py:632) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="164" width="8.8706%" height="15" fill="rgb(234,67,33)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="174.50">run (uvicorn/..</text></g><g><title>run (uvicorn/server.py:86) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="180" width="8.8706%" height="15" fill="rgb(247,98,35)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="190.50">run (uvicorn/..</text></g><g><title>run (asyncio/runners.py:196) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="196" width="8.8706%" height="15" fill="rgb(247,138,52)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="206.50">run (asyncio/..</text></g><g><title>run (asyncio/runners.py:119) (2,720 samples, 8.87%)</title><rect x="0.0000%" y="212" width="8.8706%" height="15" fill="rgb(213,79,30)" fg:x="0" fg:w="2720"/><text x="0.2500%" y="222.50">run (asyncio/..</text></g><g><title>run (anyio/_backends/_asyncio.py:1089) (9,695 samples, 31.62%)</title><rect x="8.8706%" y="100" width="31.6179%" height="15" fill="rgb(246,177,23)" fg:x="2720" fg:w="9695"/><text x="9.1206%" y="110.50">run (anyio/_backends/_asyncio.py:1089)</text></g><g><title>get (queue.py:199) (9,695 samples, 31.62%)</title><rect x="8.8706%" y="116" width="31.6179%" height="15" fill="rgb(230,62,27)" fg:x="2720" fg:w="9695"/><text x="9.1206%" y="126.50">get (queue.py:199)</text></g><g><title>wait (threading.py:359) (9,695 samples, 31.62%)</title><rect x="8.8706%" y="132" width="31.6179%" height="15" fill="rgb(216,154,8)" fg:x="2720" fg:w="9695"/><text x="9.1206%" y="142.50">wait (threading.py:359)</text></g><g><title>_worker (concurrent/futures/thread.py:90) (11,995 samples, 39.12%)</title><rect x="40.4885%" y="116" width="39.1188%" height="15" fill="rgb(244,35,45)" fg:x="12415" fg:w="11995"/><text x="40.7385%" y="126.50">_worker (concurrent/futures/thread.py:90)</text></g><g><title>worker (_shared_internal/__init__.py:159) (5,903 samples, 19.25%)</title><rect x="79.6106%" y="116" width="19.2512%" height="15" fill="rgb(251,115,12)" fg:x="24411" fg:w="5903"/><text x="79.8606%" y="126.50">worker (_shared_internal/__ini..</text></g><g><title>wait (threading.py:660) (5,903 samples, 19.25%)</title><rect x="79.6106%" y="132" width="19.2512%" height="15" fill="rgb(240,54,50)" fg:x="24411" fg:w="5903"/><text x="79.8606%" y="142.50">wait (threading.py:660)</text></g><g><title>wait (threading.py:363) (5,903 samples, 19.25%)</title><rect x="79.6106%" y="148" width="19.2512%" height="15" fill="rgb(233,84,52)" fg:x="24411" fg:w="5903"/><text x="79.8606%" y="158.50">wait (threading.py:363)</text></g><g><title>_encode_resource_spans (common/_internal/trace_encoder/__init__.py:66) (56 samples, 0.18%)</title><rect x="98.8879%" y="180" width="0.1826%" height="15" fill="rgb(207,117,47)" fg:x="30322" fg:w="56"/><text x="99.1379%" y="190.50"></text></g><g><title>export (http/trace_exporter/__init__.py:179) (83 samples, 0.27%)</title><rect x="98.8716%" y="148" width="0.2707%" height="15" fill="rgb(249,43,39)" fg:x="30317" fg:w="83"/><text x="99.1216%" y="158.50"></text></g><g><title>encode_spans (common/_internal/trace_encoder/__init__.py:44) (83 samples, 0.27%)</title><rect x="98.8716%" y="164" width="0.2707%" height="15" fill="rgb(209,38,44)" fg:x="30317" fg:w="83"/><text x="99.1216%" y="174.50"></text></g><g><title>_bootstrap (threading.py:1015) (27,689 samples, 90.30%)</title><rect x="8.8706%" y="68" width="90.3010%" height="15" fill="rgb(236,212,23)" fg:x="2720" fg:w="27689"/><text x="9.1206%" y="78.50">_bootstrap (threading.py:1015)</text></g><g><title>_bootstrap_inner (threading.py:1044) (27,689 samples, 90.30%)</title><rect x="8.8706%" y="84" width="90.3010%" height="15" fill="rgb(242,79,21)" fg:x="2720" fg:w="27689"/><text x="9.1206%" y="94.50">_bootstrap_inner (threading.py:1044)</text></g><g><title>run (threading.py:995) (17,994 samples, 58.68%)</title><rect x="40.4885%" y="100" width="58.6831%" height="15" fill="rgb(211,96,35)" fg:x="12415" fg:w="17994"/><text x="40.7385%" y="110.50">run (threading.py:995)</text></g><g><title>worker (_shared_internal/__init__.py:165) (95 samples, 0.31%)</title><rect x="98.8618%" y="116" width="0.3098%" height="15" fill="rgb(253,215,40)" fg:x="30314" fg:w="95"/><text x="99.1118%" y="126.50"></text></g><g><title>_export (_shared_internal/__init__.py:187) (92 samples, 0.30%)</title><rect x="98.8716%" y="132" width="0.3000%" height="15" fill="rgb(211,81,21)" fg:x="30317" fg:w="92"/><text x="99.1216%" y="142.50"></text></g><g><title>execute (sqlalchemy/orm/unitofwork.py:646) (56 samples, 0.18%)</title><rect x="99.2988%" y="260" width="0.1826%" height="15" fill="rgb(208,190,38)" fg:x="30448" fg:w="56"/><text x="99.5488%" y="270.50"></text></g><g><title>_save_obj (sqlalchemy/orm/persistence.py:97) (34 samples, 0.11%)</title><rect x="99.3706%" y="276" width="0.1109%" height="15" fill="rgb(235,213,38)" fg:x="30470" fg:w="34"/><text x="99.6206%" y="286.50"></text></g><g><title>_flush (sqlalchemy/orm/session.py:4640) (76 samples, 0.25%)</title><rect x="99.2532%" y="228" width="0.2479%" height="15" fill="rgb(237,122,38)" fg:x="30434" fg:w="76"/><text x="99.5032%" y="238.50"></text></g><g><title>execute (sqlalchemy/orm/unitofwork.py:467) (62 samples, 0.20%)</title><rect x="99.2988%" y="244" width="0.2022%" height="15" fill="rgb(244,218,35)" fg:x="30448" fg:w="62"/><text x="99.5488%" y="254.50"></text></g><g><title>commit (sqlalchemy/orm/session.py:1330) (96 samples, 0.31%)</title><rect x="99.2173%" y="116" width="0.3131%" height="15" fill="rgb(240,68,47)" fg:x="30423" fg:w="96"/><text x="99.4673%" y="126.50"></text></g><g><title>_prepare_impl (&lt;sqlalchemy generated _go() wrapper for sqlalchemy.orm.session.SessionTransaction._prepare_impl&gt;:2) (96 samples, 0.31%)</title><rect x="99.2173%" y="132" width="0.3131%" height="15" fill="rgb(210,16,53)" fg:x="30423" fg:w="96"/><text x="99.4673%" y="142.50"></text></g><g><title>_go (sqlalchemy/orm/state_changes.py:137) (96 samples, 0.31%)</title><rect x="99.2173%" y="148" width="0.3131%" height="15" fill="rgb(235,124,12)" fg:x="30423" fg:w="96"/><text x="99.4673%" y="158.50"></text></g><g><title>_prepare_impl (sqlalchemy/orm/session.py:1304) (95 samples, 0.31%)</title><rect x="99.2206%" y="164" width="0.3098%" height="15" fill="rgb(224,169,11)" fg:x="30424" fg:w="95"/><text x="99.4706%" y="174.50"></text></g><g><title>flush (sqlalchemy/orm/session.py:4536) (95 samples, 0.31%)</title><rect x="99.2206%" y="180" width="0.3098%" height="15" fill="rgb(250,166,2)" fg:x="30424" fg:w="95"/><text x="99.4706%" y="190.50"></text></g><g><title>_flush (&lt;sqlalchemy generated warned() wrapper for sqlalchemy.orm.session.Session._flush&gt;:2) (95 samples, 0.31%)</title><rect x="99.2206%" y="196" width="0.3098%" height="15" fill="rgb(242,216,29)" fg:x="30424" fg:w="95"/><text x="99.4706%" y="206.50"></text></g><g><title>warned (sqlalchemy/util/deprecations.py:281) (93 samples, 0.30%)</title><rect x="99.2271%" y="212" width="0.3033%" height="15" fill="rgb(230,116,27)" fg:x="30426" fg:w="93"/><text x="99.4771%" y="222.50"></text></g><g><title>_go (sqlalchemy/orm/state_changes.py:137) (106 samples, 0.35%)</title><rect x="99.2043%" y="100" width="0.3457%" height="15" fill="rgb(228,99,48)" fg:x="30419" fg:w="106"/><text x="99.4543%" y="110.50"></text></g><g><title>commit (sqlalchemy/orm/session.py:2095) (108 samples, 0.35%)</title><rect x="99.2010%" y="68" width="0.3522%" height="15" fill="rgb(253,11,6)" fg:x="30418" fg:w="108"/><text x="99.4510%" y="78.50"></text></g><g><title>commit (&lt;sqlalchemy generated _go() wrapper for sqlalchemy.orm.session.SessionTransaction.commit&gt;:2) (108 samples, 0.35%)</title><rect x="99.2010%" y="84" width="0.3522%" height="15" fill="rgb(247,143,39)" fg:x="30418" fg:w="108"/><text x="99.4510%" y="94.50"></text></g><g><title>execute (sqlalchemy/orm/session.py:2473) (59 samples, 0.19%)</title><rect x="99.5532%" y="68" width="0.1924%" height="15" fill="rgb(236,97,10)" fg:x="30526" fg:w="59"/><text x="99.8032%" y="78.50"></text></g><g><title>_execute_internal (sqlalchemy/orm/session.py:2369) (53 samples, 0.17%)</title><rect x="99.5728%" y="84" width="0.1728%" height="15" fill="rgb(233,208,19)" fg:x="30532" fg:w="53"/><text x="99.8228%" y="94.50"></text></g><g><title>_load_on_pk_identity (sqlalchemy/orm/loading.py:702) (33 samples, 0.11%)</title><rect x="99.7978%" y="100" width="0.1076%" height="15" fill="rgb(216,164,2)" fg:x="30601" fg:w="33"/><text x="100.0478%" y="110.50"></text></g><g><title>execute (sqlalchemy/orm/session.py:2473) (33 samples, 0.11%)</title><rect x="99.7978%" y="116" width="0.1076%" height="15" fill="rgb(220,129,5)" fg:x="30601" fg:w="33"/><text x="100.0478%" y="126.50"></text></g><g><title>refresh (sqlalchemy/orm/session.py:3303) (48 samples, 0.16%)</title><rect x="99.7717%" y="68" width="0.1565%" height="15" fill="rgb(242,17,10)" fg:x="30593" fg:w="48"/><text x="100.0217%" y="78.50"></text></g><g><title>_load_on_ident (sqlalchemy/orm/loading.py:518) (48 samples, 0.16%)</title><rect x="99.7717%" y="84" width="0.1565%" height="15" fill="rgb(242,107,0)" fg:x="30593" fg:w="48"/><text x="100.0217%" y="94.50"></text></g><g><title>all (30,663 samples, 100%)</title><rect x="0.0000%" y="52" width="100.0000%" height="15" fill="rgb(251,28,31)" fg:x="0" fg:w="30663"/><text x="0.2500%" y="62.50"></text></g></svg></svg>
