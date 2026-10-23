@@ -429,7 +429,8 @@ so the change in done/s cannot be attributed to CPU alone. The earlier isolated
 prototype CPU comparison (same code, 500 mCPU → 2 CPU) measured 15.02 → 26.80
 jobs/s and `store_s` p95 55.13 → 10.23 s. C4a moves more wait to the pending
 queue by design; the 100-job cap prevents results waiting in Redis without bound.
-The D4 targets are still missed: 22.30/s is below 40, and Redis commands/job
-exceed 40. D4's 40/s target is defined for ten backends and requires a separate
-measurement with enough offered work; this 50-backend run submitted only
-33.23 jobs/s. Raw outputs are gitignored under `bench/perf_out/`.
+The D4 Redis target remains missed: commands/job exceed 40. D4's 40/s
+throughput target is defined for ten backends; this 50-backend run does not
+decide it and submitted only 33.23 jobs/s. Test ten backends with enough
+offered work before evaluating that target. Raw outputs are gitignored under
+`bench/perf_out/`.
