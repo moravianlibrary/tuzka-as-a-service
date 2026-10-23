@@ -83,7 +83,7 @@ _FINISH = text(
     UPDATE batches SET status = 'finished', finished_at = now()
     WHERE id = :batch_id AND status = 'queued'
       AND NOT EXISTS (
-        SELECT 1 FROM jobs WHERE batch_id = :batch_id AND status IN ('queued', 'running')
+        SELECT 1 FROM jobs WHERE batch_id = :batch_id AND status IN ('queued', 'running', 'storing')
       )
     """
 )
@@ -107,7 +107,7 @@ _FINISH_STALLED = text(
     UPDATE batches b SET status = 'finished', finished_at = now()
     WHERE b.status = 'queued'
       AND NOT EXISTS (
-        SELECT 1 FROM jobs j WHERE j.batch_id = b.id AND j.status IN ('queued', 'running')
+        SELECT 1 FROM jobs j WHERE j.batch_id = b.id AND j.status IN ('queued', 'running', 'storing')
       )
     """
 )

@@ -31,11 +31,16 @@ def test_select_stale_jobs_flags_queued_and_running_past_deadline():
         _Job(
             "running", submitted_at=now - timedelta(seconds=5000), dispatched_at=None
         ),  # not yet dispatched -> skip
+        _Job(
+            "storing",
+            submitted_at=now - timedelta(seconds=5000),
+            dispatched_at=now - timedelta(seconds=400),
+        ),  # lost harvest queue entry -> stale
     ]
     stale = select_stale_jobs(
         jobs, now=now, queued_timeout=900, running_timeout_for=lambda domain: 300
     )
-    assert [jobs.index(j) for j, _ in stale] == [0, 2]
+    assert [jobs.index(j) for j, _ in stale] == [0, 2, 5]
     reasons = [reason for _, reason in stale]
     assert "queue" in reasons[0]
     assert "processing" in reasons[1]

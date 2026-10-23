@@ -251,7 +251,8 @@ async def get_job_status(
 
     Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
     authenticated user. The status reflects the asynchronous lifecycle (``queued``,
-    ``running``, ``done``, ``failed``); fetch the result endpoint once it is ``done``.
+    ``running``, ``storing``, ``done``, ``failed``); ``storing`` means the engine has
+    finished and its results await storage. Fetch results once it is ``done``.
     """
     job = await db.scalar(select(Job).where(Job.id == job_id, Job.username == username))
     if job is None:
@@ -400,7 +401,7 @@ async def download_job_result(
     },
 )
 async def list_jobs(
-    status: Literal["queued", "running", "done", "failed"] | None = None,
+    status: Literal["queued", "running", "storing", "done", "failed"] | None = None,
     external_id: str | None = Query(
         None, max_length=255, description="Only jobs submitted with this external_id."
     ),

@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import httpx
 import zstandard
@@ -54,6 +56,7 @@ from app.services.redis_jobs import (
     reschedule_harvest,
     set_done,
     set_failed,
+    signal_poll,
     wait_for_poll_signal,
 )
 from app.services.redis_pool import make_redis
@@ -211,6 +214,57 @@ def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
     if not deadlines:
         return cap
     return min(cap, max(0.0, min(deadlines) - now))
+
+
+async def drain_poll_queue(
+    due: Iterable[str],
+    *,
+    concurrency: int,
+    check: Callable[[str], Awaitable[PollOutcome]],
+    process: Callable[[list[PollOutcome]], Awaitable[None]],
+    stop: asyncio.Event | None = None,
+) -> None:
+    """Status-check ``due`` with a sliding window of at most ``concurrency`` in flight.
+
+    Each completed check frees its slot immediately, so the next due job starts while the
+    rest of the batch is still being polled; finished batches go to ``process`` (release
+    the engine slot, requeue, fail) without blocking the other checks. A raised status
+    check is logged and does not cancel its peers — the job stays in flight and the next
+    pass retries it. ``stop`` stops refilling slots but lets active checks finish; if the
+    caller is cancelled, every remaining check is cancelled and awaited.
+    """
+    if concurrency < 1:
+        raise ValueError("poller poll concurrency must be at least 1")
+    pending = iter(due)
+    active: set[asyncio.Future[PollOutcome]] = set()
+
+    def fill_slots() -> None:
+        while len(active) < concurrency and not (stop is not None and stop.is_set()):
+            try:
+                job_id = next(pending)
+            except StopIteration:
+                return
+            active.add(asyncio.ensure_future(check(job_id)))
+
+    fill_slots()
+    try:
+        while active:
+            completed, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+            active.difference_update(completed)
+            statuses: list[PollOutcome] = []
+            for future in completed:
+                try:
+                    statuses.append(future.result())
+                except Exception:
+                    logger.exception("Status check failed unexpectedly")
+            fill_slots()
+            if statuses:
+                await process(statuses)
+    finally:
+        for future in active:
+            future.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
 
 
 async def _probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> int | None:
@@ -648,7 +702,143 @@ async def main() -> None:
         finally:
             sem.release()
 
+    released_since_harvest = 0
+
+    async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:
+        nonlocal released_since_harvest
+        done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
+        failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any], dict[str, Any]]] = []
+        requeue_jobs: list[tuple[str, dict[str, str], float, int | None, dict[str, Any]]] = []
+        running_jobs: list[tuple[str, dict[str, str]]] = []
+
+        for outcome in statuses:
+            meta = outcome.meta
+            requeues = int(meta.get("requeues", 0))
+            with timer.stage("classify"):
+                action = classify_poll_result(
+                    outcome.status, outcome.retryable, requeues, max_requeues
+                )
+            if action == "harvest":
+                done_jobs.append((outcome.job_id, meta, outcome.times))
+            elif action == "fail":
+                err = poll_failure_message(outcome, max_requeues)
+                attempt = poll_attempt(outcome, False, utcnow().isoformat())
+                failed_jobs.append((outcome.job_id, meta, err, attempt, outcome.times))
+            elif action == "requeue":
+                delay = backoff_seconds(requeues)
+                avoid: int | None = int(meta["backend_id"]) if meta.get("backend_id") else None
+                attempt = poll_attempt(outcome, True, utcnow().isoformat())
+                requeue_jobs.append((outcome.job_id, meta, delay, avoid, attempt))
+            else:
+                running_jobs.append((outcome.job_id, meta))
+
+        # The engine is done: free its slot now and queue the harvest, rather
+        # than holding the slot through fetch/store/DB. The harvest drain
+        # below picks these up in this same pass when it has capacity.
+        if done_jobs:
+            released = await asyncio.gather(
+                *[release_done(r, jid, meta, times) for jid, meta, times in done_jobs],
+                return_exceptions=True,
+            )
+            storing_ids: list[UUID] = []
+            for (jid, _meta, _times), release_result in zip(done_jobs, released, strict=True):
+                if isinstance(release_result, Exception):
+                    logger.error("Releasing job %s for harvest failed: %s", jid, release_result)
+                elif release_result:
+                    storing_ids.append(UUID(jid))
+            if storing_ids:
+                # Redis owns durable harvest work before Postgres exposes `storing`.
+                async with session_factory() as db:
+                    await db.execute(
+                        update(Job)
+                        .where(Job.id.in_(storing_ids), Job.status == "running")
+                        .values(status="storing")
+                    )
+                    await db.commit()
+
+        # Update next_poll_at with backoff for running jobs; remember each new
+        # deadline so the wait below fires right when the soonest job is due.
+        for job_id, meta in running_jobs:
+            current_backoff = float(meta.get("next_poll_at", time.time())) - float(
+                meta.get("last_poll", time.time())
+            )
+            next_backoff = min(
+                max(current_backoff * 2, settings.poll_backoff_initial),
+                settings.poll_backoff_max,
+            )
+            new_deadline = time.time() + next_backoff
+            await r.hset(
+                f"job:{job_id}",
+                mapping={
+                    "next_poll_at": str(new_deadline),
+                    "last_poll": str(time.time()),
+                },
+            )
+
+        # Mark failed jobs
+        for job_id, meta, error, attempt, times in failed_jobs:
+            with (
+                job_span("fail", job_id, meta, backend_id=meta.get("backend_id")),
+                timer.stage("fail"),
+            ):
+                await mark_failed(job_id, meta, error, attempt=attempt, times=times)
+
+        # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
+        # another backend picks them up after a jittered backoff. Redis is
+        # updated first (release slot + schedule the retry + bump the requeue
+        # counter the budget reads); the DB mirrors it, with the attempt
+        # recorded, in one batched session.
+        if requeue_jobs:
+            for job_id, meta, delay, avoid_id, _attempt in requeue_jobs:
+                with timer.stage("requeue"):
+                    await release_and_requeue(
+                        r,
+                        job_id,
+                        float(meta.get("submitted_at", time.time())),
+                        state_ttl,
+                        delay_s=delay,
+                        avoid_backend_id=avoid_id,
+                    )
+                    await r.hincrby(f"job:{job_id}", "requeues", 1)
+                    if avoid_id is not None:  # retryable: the backend's fault
+                        await perf.record_failure(r, avoid_id, job_domain(meta))
+                logger.info(f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})")
+            async with session_factory() as db:
+                for job_id, _meta, _delay, _avoid, attempt in requeue_jobs:
+                    await db.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            status="queued",
+                            engine_job_id=None,
+                            backend_id=None,
+                            dispatched_at=None,
+                            requeues=Job.requeues + 1,
+                            **append_attempt(attempt),
+                        )
+                    )
+                await db.commit()
+            for job_id, meta, _delay, _avoid, attempt in requeue_jobs:
+                emitter.emit(job_event("retried", job_id, meta, None, **attempt_failure(attempt)))
+        if done_jobs:
+            released_since_harvest += len(done_jobs)
+            await signal_poll(r)
+
+    async def drain_due(due: list[str], metas: dict[str, dict[str, str]]) -> None:
+        # Refill each free status slot while the main loop harvests in parallel.
+        async with session_factory() as db:
+            max_requeues = await config_service.get_max_requeues(db)
+            state_ttl = await config_service.get_state_ttl_seconds(db)
+        await drain_poll_queue(
+            due,
+            concurrency=settings.poller_poll_concurrency,
+            check=lambda jid: check_with_sem(jid, metas[jid]),
+            process=lambda statuses: process_chunk(statuses, max_requeues, state_ttl),
+            stop=stop,
+        )
+
     stop = install_stop()
+    poll_task: asyncio.Task[None] | None = None
     logger.info("Poller worker started")
     try:
         while not stop.is_set():
@@ -658,157 +848,43 @@ async def main() -> None:
             # heal ceiling. A dispatch (signal_poll from set_running) wakes us sooner still.
             wait_timeout = settings.poller_tick_seconds
             try:
-                with timer.stage("inflight_scan"):
-                    job_ids = await get_inflight_ids(r)
-                    metas_by_id: dict[str, dict[str, str]] = {}
-                    if job_ids:
-                        metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
-                        metas_by_id = {jid: m for jid, m in zip(job_ids, metas, strict=True) if m}
-                now = time.time()
-
-                due = [
-                    jid for jid, m in metas_by_id.items() if float(m.get("next_poll_at", 0)) <= now
-                ]
-                due_set = set(due)
-                # Jobs not due yet keep their scheduled time; we must wake for the soonest.
-                pending_deadlines = [
-                    float(m.get("next_poll_at", 0))
-                    for jid, m in metas_by_id.items()
-                    if jid not in due_set
-                ]
-
-                done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
-                if due:
-                    logger.info(f"Checking {len(due)} inflight jobs")
-                    statuses = await asyncio.gather(
-                        *[check_with_sem(jid, metas_by_id[jid]) for jid in due]
-                    )
-
-                    failed_jobs: list[
-                        tuple[str, dict[str, str], str, dict[str, Any], dict[str, Any]]
-                    ] = []
-                    requeue_jobs: list[
-                        tuple[str, dict[str, str], float, int | None, dict[str, Any]]
-                    ] = []
-                    running_jobs: list[tuple[str, dict[str, str]]] = []
-
-                    async with session_factory() as db:
-                        max_requeues = await config_service.get_max_requeues(db)
-                        state_ttl = await config_service.get_state_ttl_seconds(db)
-
-                    for outcome in statuses:
-                        meta = outcome.meta
-                        requeues = int(meta.get("requeues", 0))
-                        with timer.stage("classify"):
-                            action = classify_poll_result(
-                                outcome.status, outcome.retryable, requeues, max_requeues
-                            )
-                        if action == "harvest":
-                            done_jobs.append((outcome.job_id, meta, outcome.times))
-                        elif action == "fail":
-                            err = poll_failure_message(outcome, max_requeues)
-                            attempt = poll_attempt(outcome, False, utcnow().isoformat())
-                            failed_jobs.append((outcome.job_id, meta, err, attempt, outcome.times))
-                        elif action == "requeue":
-                            delay = backoff_seconds(requeues)
-                            avoid: int | None = (
-                                int(meta["backend_id"]) if meta.get("backend_id") else None
-                            )
-                            attempt = poll_attempt(outcome, True, utcnow().isoformat())
-                            requeue_jobs.append((outcome.job_id, meta, delay, avoid, attempt))
-                        else:
-                            running_jobs.append((outcome.job_id, meta))
-
-                    # The engine is done: free its slot now and queue the harvest, rather
-                    # than holding the slot through fetch/store/DB. The harvest drain
-                    # below picks these up in this same pass when it has capacity.
-                    if done_jobs:
-                        released = await asyncio.gather(
-                            *[release_done(r, jid, meta, times) for jid, meta, times in done_jobs],
-                            return_exceptions=True,
-                        )
-                        for (jid, _meta, _times), release_result in zip(
-                            done_jobs, released, strict=True
-                        ):
-                            if isinstance(release_result, Exception):
-                                logger.error(
-                                    "Releasing job %s for harvest failed: %s", jid, release_result
-                                )
-
-                    # Update next_poll_at with backoff for running jobs; remember each new
-                    # deadline so the wait below fires right when the soonest job is due.
-                    for job_id, meta in running_jobs:
-                        current_backoff = float(meta.get("next_poll_at", time.time())) - float(
-                            meta.get("last_poll", time.time())
-                        )
-                        next_backoff = min(
-                            max(current_backoff * 2, settings.poll_backoff_initial),
-                            settings.poll_backoff_max,
-                        )
-                        new_deadline = time.time() + next_backoff
-                        await r.hset(
-                            f"job:{job_id}",
-                            mapping={
-                                "next_poll_at": str(new_deadline),
-                                "last_poll": str(time.time()),
-                            },
-                        )
-                        pending_deadlines.append(new_deadline)
-
-                    # Mark failed jobs
-                    for job_id, meta, error, attempt, times in failed_jobs:
-                        with (
-                            job_span("fail", job_id, meta, backend_id=meta.get("backend_id")),
-                            timer.stage("fail"),
-                        ):
-                            await mark_failed(job_id, meta, error, attempt=attempt, times=times)
-
-                    # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
-                    # another backend picks them up after a jittered backoff. Redis is
-                    # updated first (release slot + schedule the retry + bump the requeue
-                    # counter the budget reads); the DB mirrors it, with the attempt
-                    # recorded, in one batched session.
-                    if requeue_jobs:
-                        for job_id, meta, delay, avoid_id, _attempt in requeue_jobs:
-                            with timer.stage("requeue"):
-                                await release_and_requeue(
-                                    r,
-                                    job_id,
-                                    float(meta.get("submitted_at", time.time())),
-                                    state_ttl,
-                                    delay_s=delay,
-                                    avoid_backend_id=avoid_id,
-                                )
-                                await r.hincrby(f"job:{job_id}", "requeues", 1)
-                                if avoid_id is not None:  # retryable: the backend's fault
-                                    await perf.record_failure(r, avoid_id, job_domain(meta))
-                            logger.info(
-                                f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})"
-                            )
-                        async with session_factory() as db:
-                            for job_id, _meta, _delay, _avoid, attempt in requeue_jobs:
-                                await db.execute(
-                                    update(Job)
-                                    .where(Job.id == job_id)
-                                    .values(
-                                        status="queued",
-                                        engine_job_id=None,
-                                        backend_id=None,
-                                        dispatched_at=None,
-                                        requeues=Job.requeues + 1,
-                                        **append_attempt(attempt),
-                                    )
-                                )
-                            await db.commit()
-                        for job_id, meta, _delay, _avoid, attempt in requeue_jobs:
-                            emitter.emit(
-                                job_event("retried", job_id, meta, None, **attempt_failure(attempt))
-                            )
+                if poll_task is not None and poll_task.done():
+                    try:
+                        poll_task.result()
+                    except Exception:
+                        logger.exception("Background poll batch failed")
+                    poll_task = None
+                pending_deadlines: list[float] = []
+                if poll_task is None:
+                    with timer.stage("inflight_scan"):
+                        job_ids = await get_inflight_ids(r)
+                        metas_by_id: dict[str, dict[str, str]] = {}
+                        if job_ids:
+                            metas = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
+                            metas_by_id = {
+                                jid: m for jid, m in zip(job_ids, metas, strict=True) if m
+                            }
+                    now = time.time()
+                    due = [
+                        jid
+                        for jid, m in metas_by_id.items()
+                        if float(m.get("next_poll_at", 0)) <= now
+                    ]
+                    due_set = set(due)
+                    pending_deadlines = [
+                        float(m.get("next_poll_at", 0))
+                        for jid, m in metas_by_id.items()
+                        if jid not in due_set
+                    ]
+                    if due:
+                        logger.info("Checking %d inflight jobs with bounded polling", len(due))
+                        poll_task = asyncio.create_task(drain_due(due, metas_by_id))
 
                 # Harvest from the durable queue: the jobs just released above, retries
                 # whose backoff elapsed, and leftovers from a poller restart. This runs
                 # even when nothing is in flight, since a delayed retry can be due then.
-                harvest_limit = max(settings.poller_harvest_concurrency * 2, len(done_jobs))
+                harvest_limit = max(settings.poller_harvest_concurrency * 2, released_since_harvest)
+                released_since_harvest = 0
                 harvest_ids = await due_harvest_ids(r, harvest_limit)
                 if harvest_ids:
                     harvest_metas = await get_jobs(r, harvest_ids)
@@ -870,6 +946,11 @@ async def main() -> None:
                 logger.exception("Waiting for the poll signal failed")
                 await asyncio.sleep(settings.poller_tick_seconds)
     finally:
+        if poll_task is not None:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
         await emitter.aclose()
         await http.aclose()
         await r.aclose()

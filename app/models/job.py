@@ -61,7 +61,10 @@ class Job(Base):
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_backend_id", "backend_id"),
         Index("ix_jobs_batch_status", "batch_id", "status"),
-        CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_jobs_status"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'storing', 'done', 'failed')",
+            name="ck_jobs_status",
+        ),
     )
 
 

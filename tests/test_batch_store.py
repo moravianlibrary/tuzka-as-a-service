@@ -96,6 +96,14 @@ async def test_finishes_only_when_no_page_is_left(session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_storing_page_keeps_batch_open(session) -> None:
+    batch_id = await _batch(session, ["done", "storing"])
+    await batch_store.finish_if_done(session, batch_id)
+    await session.commit()
+    assert await _status(session, batch_id) == "queued"
+
+
+@pytest.mark.asyncio
 async def test_a_retried_page_counts_once_with_its_newest_job(session) -> None:
     batch_id = await _batch(session, ["done"])
     for status, submitted in (

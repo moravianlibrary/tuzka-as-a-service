@@ -8,6 +8,7 @@ from uuid import UUID
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    STORING = "storing"
     DONE = "done"
     FAILED = "failed"
 

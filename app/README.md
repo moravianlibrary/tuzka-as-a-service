@@ -124,7 +124,7 @@ sequenceDiagram
     API->>R: enqueue (jobs:pending), DB row = queued
     S->>R: dequeue, pick healthy backend
     S->>E: POST /process  → engine_job_id  (status=running)
-    P->>E: poll status until done
+    P->>E: poll status until done (job status=storing)
     P->>E: GET result(s)
     P->>M: store zstd-compressed results
     P->>R: publish done event   (status=done)

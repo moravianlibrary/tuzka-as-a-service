@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Jobs now show `storing` after the poller observes engine completion and before their
+  results are saved. Dispatch pauses when running plus storing jobs reach
+  `UNSTORED_JOB_MAX` (default 100), keeping unfinished results bounded under overload.
 - `make perf-profile TARGET=k3d` records API and worker flame graphs with an external
   py-spy container alongside the existing stage timings and whole-service load metrics.
 - Submit and poller workers now log per-stage wall-time counts, totals, p95 and maximums
@@ -148,8 +151,9 @@ All notable changes to this project are documented here. The format is based on
   step that releases its slot and counters, keeping the engine's last status for the run
   timestamps; results are fetched, stored and recorded from that queue separately. A
   poller crash no longer loses a finished job, a transient harvest error is retried with
-  backoff, and the submit worker pauses dispatch at `PENDING_HARVEST_MAX` (default
-  10,000) so a harvest bottleneck cannot grow Redis without bound. At 10 fake backends a
+  backoff, and the submit worker pauses dispatch when running plus storing jobs reach
+  `UNSTORED_JOB_MAX` (default 100), so a harvest bottleneck cannot grow Redis without
+  bound. At 10 fake backends a
   two-minute A/B went from 14.0 to 18.5 jobs done/s and the queued backlog at collection
   fell from 898 to 245 jobs. `bench/PERF_TAAS.md` has the A/B caveats and why
   `max_inflight` 32 is now worse.
@@ -237,8 +241,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
-- Helm upgrades using older reused values now supply the harvest queue limit, so the
-  workers start when `config.pendingHarvestMax` was absent from the previous release.
+- Helm upgrades using older reused values supply the unstored-job limit, so the workers
+  start when `config.unstoredJobMax` was absent from the previous release.
 - Empty single-image uploads now return `422` before storage or job creation. Empty
   image members in batch archives are listed in `skipped` instead of becoming jobs.
 - A queued job could be lost: the submit worker took jobs off the queue every pass and

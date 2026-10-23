@@ -35,6 +35,6 @@ spec:
             - secretRef:
                 name: {{ include "taas.fullname" $ }}-secret
           resources:
-            {{- toYaml $.Values.worker.resources | nindent 12 }}
+            {{- toYaml (default $.Values.worker.resources $w.resources) | nindent 12 }}
 ---
 {{- end }}

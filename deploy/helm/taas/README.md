@@ -109,7 +109,9 @@ helm upgrade --install taas ./deploy/helm/taas \
 | `api.image.repository` | `taas-api` | API image |
 | `api.port` | `8000` | API container port |
 | `worker.image.repository` | `taas-worker` | Worker image (shared by all workers) |
+| `worker.resources` | req 250m / 256Mi, limits 1 / 512Mi | Default resources for every worker |
 | `workers.{submit,poller,cleanup}.replicaCount` | `1` | Replicas per worker |
+| `workers.{submit,poller,cleanup}.resources` | `worker.resources` | Per-worker resource override (the poller uses req 1 / mem 256Mi, limits 2 / mem 512Mi) |
 | `compat.enabled` | `true` | Deploy the legacy-compat server |
 | `compat.replicaCount` | `1` | Compat replicas |
 | `compat.ttlSeconds` | `"3600"` | Compat request-state TTL |

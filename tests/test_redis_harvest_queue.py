@@ -31,6 +31,7 @@ from app.services.redis_jobs import (
     set_done,
     set_failed,
     set_running,
+    unstored_depth,
 )
 
 TTL = 3600
@@ -62,6 +63,7 @@ async def test_release_done_frees_the_slot_and_queues_the_harvest(
     await redis_client.delete(_SUBMIT_WAKEUP_KEY)
     snapshot = await get_job(redis_client, "j1")
     assert snapshot is not None
+    assert await unstored_depth(redis_client) == (1, 0)
 
     times = {
         "started_at": "2026-10-22T10:00:00",
@@ -72,11 +74,13 @@ async def test_release_done_frees_the_slot_and_queues_the_harvest(
 
     assert await redis_client.sismember("jobs:inflight", "j1") == 0
     assert await pending_harvest_depth(redis_client) == 1
+    assert await unstored_depth(redis_client) == (0, 1)
     assert await redis_client.get("backend:1:inflight") == b"0"
     assert await redis_client.hget(LOAD_INFLIGHT_KEY, FIELD) == b"0"
     assert await redis_client.llen(_SUBMIT_WAKEUP_KEY) == 1  # the freed slot wakes submit
     stored = await get_job(redis_client, "j1")
     assert stored is not None
+    assert stored["status"] == "storing"
     assert json.loads(stored["harvest_times"]) == times
     assert await due_harvest_ids(redis_client, 10) == ["j1"]
     assert await next_harvest_at(redis_client) is not None

@@ -297,7 +297,10 @@ async def get_batch(
     error)."""
     batch = await _owned_batch(db, batch_id, username)
     counts = await batch_store.page_counts(db, batch_id)
-    queued, running = counts.get("queued", 0), counts.get("running", 0)
+    # Keep the aggregate running count compatible with existing batch clients;
+    # pages=1 exposes the more specific storing state per page.
+    queued = counts.get("queued", 0)
+    running = counts.get("running", 0) + counts.get("storing", 0)
     spp_raw = await r.hget("load:spp", batch.domain)  # seconds per page, if measured
     eta = batch_store.estimate_eta(
         queued + running,

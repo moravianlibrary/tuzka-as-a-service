@@ -37,13 +37,13 @@ from app.services.redis_jobs import (
     job_outputs,
     parse_avoid,
     peek_pending,
-    pending_harvest_depth,
     promote_due_retries,
     publish_event,
     requeue_job,
     schedule_retry,
     set_failed,
     set_running,
+    unstored_depth,
     wait_for_submit_signal,
 )
 from app.services.redis_pool import make_redis
@@ -92,6 +92,11 @@ class BackendSlot:
 def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
     """Whether a backend serving ``domains`` can run a ``domain`` job wanting ``outputs``."""
     return domain in domains and outputs <= domains[domain]
+
+
+def unstored_capacity(limit: int, inflight: int, storing: int) -> int:
+    """Dispatch credits left until results already in progress are stored."""
+    return max(0, limit - inflight - storing)
 
 
 def can_serve(slot: BackendSlot, job: PendingJob) -> bool:
@@ -611,29 +616,32 @@ async def main() -> None:
                         )
                     )
 
-                # Backpressure: the harvest queue is durable and bounded. When it is
-                # full, stop feeding the engines — their free slots would only become
-                # more unharvested results, growing latency and Redis. The tick
-                # re-checks (and harvest success wakes the poller, not this worker).
-                harvest_depth = await pending_harvest_depth(r)
-                if harvest_depth >= settings.pending_harvest_max:
+                # In-flight engine work will also need storage, so count it against
+                # the same budget as jobs already waiting for harvest.
+                inflight_depth, harvest_depth = await unstored_depth(r)
+                remaining = unstored_capacity(
+                    settings.unstored_job_max, inflight_depth, harvest_depth
+                )
+                if remaining == 0:
                     if not paused_for_harvest:
                         logger.warning(
-                            "Harvest queue full (%d jobs, limit %d); pausing dispatch",
+                            "Unstored jobs at limit (running=%d, storing=%d, limit=%d); "
+                            "pausing dispatch",
+                            inflight_depth,
                             harvest_depth,
-                            settings.pending_harvest_max,
+                            settings.unstored_job_max,
                         )
                         paused_for_harvest = True
                     eligible = []
                 elif paused_for_harvest:
-                    logger.info("Harvest queue drained; resuming dispatch")
+                    logger.info("Unstored jobs below limit; resuming dispatch")
                     paused_for_harvest = False
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.
                 for priority in sorted({slot.backend.priority for slot in eligible}, reverse=True):
                     tier = [slot for slot in eligible if slot.backend.priority == priority]
-                    capacity = sum(slot.free for slot in tier)
+                    capacity = min(sum(slot.free for slot in tier), remaining)
                     if capacity == 0:
                         continue  # this tier is full; a lower one may still have room
                     # Peeked, not popped: a job leaves its queue only once claimed below,
@@ -694,6 +702,8 @@ async def main() -> None:
                         ]
                     if not assignments:
                         continue
+
+                    remaining -= len(assignments)
 
                     logger.info(
                         f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "

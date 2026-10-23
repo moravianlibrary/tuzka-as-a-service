@@ -396,3 +396,40 @@ although it shortened queue wait. Both poller versions reached their 500 mCPU li
 The scheduler's `harvest_wait` p95 fell near zero, showing that semaphore waiting moved
 back into the durable Redis queue; it did not improve end-to-end throughput at this CPU
 limit. Keep harvest concurrency at ten while investigating poller CPU contention.
+
+### C4a follow-up: bounded unstored work with a sliding poll window and poller CPU
+
+The C4a candidate exposes `storing` after observed engine completion and limits
+unfinished result work to 100 jobs. The poller now runs status checks in a sliding
+window of ten while the main loop harvests, with a poller-only 1 CPU request and
+2 CPU limit (previous local limit: 500 mCPU). HTTPX and MinIO pools and harvest
+concurrency remain at their defaults. The scheduler source was adapted from the
+separately tested uncommitted prototype; the C4a Postgres `storing` transition was
+retained when integrating it.
+
+`TAAS_URL=http://172.24.0.2:32580 OUT=bench/perf_out/c4a-poll-cpu-50b-20261023
+TARGET=k3d USERS=100 RATE=10 DURATION=2m make perf-taas` ran with 50 enabled fake
+backends, empty starting queues, and zero Locust failures. The exact 120-second
+ClickHouse window begins at the first `locust_stats_history.csv` timestamp,
+2026-10-23 09:41:54 UTC. The running pod file hash matched the candidate and had
+10 poll slots, 10 harvest slots, and a 2 CPU/512 MiB limit.
+
+| Measurement | Earlier sliding prototype, 500 mCPU | Integrated C4a + scheduler, 2 CPU |
+|---|---:|---:|
+| Submitted jobs / Locust failures | 4,652 / 0 | 3,988 / 0 |
+| Done in 120 s | 1,803 (15.02/s) | 2,676 (22.30/s) |
+| `store_s` p95 | 55.13 s | 4.17 s |
+| `queue_s` p95 | 17.17 s | 34.56 s |
+| Status GET p50 | 143.16 ms | 47.82 ms |
+| Redis commands / submitted job | 51.47 | 51.05 |
+
+The two runs use the same direct API route, fake backend count, Locust settings,
+and bounded poll window. They differ in both CPU and C4a's unfinished-work cap,
+so the change in done/s cannot be attributed to CPU alone. The earlier isolated
+prototype CPU comparison (same code, 500 mCPU → 2 CPU) measured 15.02 → 26.80
+jobs/s and `store_s` p95 55.13 → 10.23 s. C4a moves more wait to the pending
+queue by design; the 100-job cap prevents results waiting in Redis without bound.
+The D4 targets are still missed: 22.30/s is below 40, and Redis commands/job
+exceed 40. D4's 40/s target is defined for ten backends and requires a separate
+measurement with enough offered work; this 50-backend run submitted only
+33.23 jobs/s. Raw outputs are gitignored under `bench/perf_out/`.

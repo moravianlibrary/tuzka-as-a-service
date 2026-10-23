@@ -434,7 +434,7 @@ if redis.call('SREM', KEYS[1], ARGV[1]) == 0 then
 end
 redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
 if redis.call('EXISTS', KEYS[3]) == 1 then
-  redis.call('HSET', KEYS[3], 'harvest_times', ARGV[6], 'harvest_attempts', 0)
+  redis.call('HSET', KEYS[3], 'status', 'storing', 'harvest_times', ARGV[6], 'harvest_attempts', 0)
 end
 redis.call('HINCRBY', KEYS[4], ARGV[3], -1)
 if ARGV[4] ~= '' then
@@ -507,6 +507,15 @@ async def pending_harvest_depth(r: aioredis.Redis) -> int:
     return int(await r.zcard(PENDING_HARVEST_KEY))
 
 
+async def unstored_depth(r: aioredis.Redis) -> tuple[int, int]:
+    """Engine work still in flight and observed completions awaiting storage."""
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.scard("jobs:inflight")
+        pipe.zcard(PENDING_HARVEST_KEY)
+        inflight, storing = await pipe.execute()
+    return int(inflight), int(storing)
+
+
 async def reschedule_harvest(r: aioredis.Redis, job_id: str, delay_s: float) -> None:
     """Back off a failed harvest: bump its attempt count, retry it after ``delay_s``."""
     async with r.pipeline(transaction=True) as pipe:
@@ -560,8 +569,10 @@ async def set_done(
         pipe.srem("jobs:inflight", job_id)
         pipe.zrem(PENDING_HARVEST_KEY, job_id)
         pipe.hdel(key, "harvest_times", "harvest_attempts")
-        _, _, removed, _, _ = await pipe.execute()
+        _, _, removed, harvest_removed, _ = await pipe.execute()
     if not removed:
+        if harvest_removed:
+            await signal_submit(r)  # storing finished; a global dispatch credit is free
         return batch
     # Only decrement when srem actually removed the job: makes slot-release idempotent,
     # so a re-run (e.g. reaper re-processing after a failed commit) can't double-decrement
@@ -599,7 +610,7 @@ async def set_failed(
         # never on it.
         pipe.zrem(PENDING_HARVEST_KEY, job_id)
         pipe.hdel(key, "harvest_times", "harvest_attempts")
-        await pipe.execute()
+        _, _, harvest_removed, _ = await pipe.execute()
     # Only decrement when srem actually removed the job: makes slot-release
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
@@ -611,6 +622,8 @@ async def set_failed(
             await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
         elif meta.get("status") == "queued":
             await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(meta), -1)
+    if harvest_removed:
+        await signal_submit(r)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)

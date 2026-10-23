@@ -17,7 +17,7 @@ data:
   SUBMIT_TICK_SECONDS: {{ .Values.config.submitTickSeconds | quote }}
   POLLER_TICK_SECONDS: {{ .Values.config.pollerTickSeconds | quote }}
   POLLER_HARVEST_CONCURRENCY: {{ .Values.config.pollerHarvestConcurrency | quote }}
-  PENDING_HARVEST_MAX: {{ .Values.config.pendingHarvestMax | default "10000" | quote }}
+  UNSTORED_JOB_MAX: {{ .Values.config.unstoredJobMax | default "100" | quote }}
   POLL_BACKOFF_INITIAL: {{ .Values.config.pollBackoffInitial | quote }}
   POLL_BACKOFF_MAX: {{ .Values.config.pollBackoffMax | quote }}
   ZSTD_COMPRESSION_LEVEL: {{ .Values.config.zstdCompressionLevel | quote }}

@@ -45,6 +45,25 @@ async def test_set_done_signals_on_freed_slot(redis_client) -> None:
     assert await _token_count(redis_client) == 1  # freeing the backend slot woke the worker
 
 
+async def test_stored_result_frees_a_global_dispatch_credit(redis_client) -> None:
+    await redis_jobs.enqueue_job(
+        redis_client,
+        "job-3",
+        {"priority": "0", "submitted_at": "1.0", "username": "alice"},
+        state_ttl=60,
+    )
+    await redis_jobs.set_running(redis_client, "job-3", "eng-3", "http://b", 7, 60)
+    meta = await redis_jobs.get_job(redis_client, "job-3")
+    assert meta is not None
+    await redis_jobs.release_done(redis_client, "job-3", meta)
+    await redis_client.delete(_SUBMIT_WAKEUP_KEY)
+
+    await redis_jobs.set_done(redis_client, "job-3", state_ttl=60)
+
+    assert await _token_count(redis_client) == 1
+    assert await redis_jobs.unstored_depth(redis_client) == (0, 0)
+
+
 async def test_wait_wakes_and_coalesces_burst(redis_client) -> None:
     for _ in range(5):
         await signal_submit(redis_client)

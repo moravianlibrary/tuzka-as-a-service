@@ -21,7 +21,8 @@ api:
       memory: 1Gi
 
 # -- Background workers. Each key becomes a Deployment running
-#    `python -m app.workers.<key>`. All share the worker image below.
+#    `python -m app.workers.<key>`. All share the worker image below and default
+#    resources; each worker may override resources for its Deployment.
 worker:
   image:
     repository: taas-worker
@@ -37,6 +38,18 @@ workers:
     replicaCount: 1
   poller:
     replicaCount: 1
+    # The poller does the status fan-out, result fetch/compress and S3 writes for every
+    # in-flight job. It sustains ~0.8-0.9 CPU at 50 backends, so request 1 CPU (a
+    # guaranteed share just above the observed load) and allow bursts to 2 (a 500m
+    # request left it CPU-starved and cut completed throughput). Submit/cleanup keep the
+    # 250m/1 CPU defaults above; this override is poller-only.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 512Mi
   cleanup:
     replicaCount: 1
 
@@ -412,9 +425,9 @@ config:
   submitTickSeconds: "1.0"
   pollerTickSeconds: "1.0"
   pollerHarvestConcurrency: "10"
-  # Stop dispatching when this many finished jobs are still waiting for their results
-  # to be stored (the durable harvest queue); bounds Redis growth under overload.
-  pendingHarvestMax: "10000"
+  # Bound work whose results are not stored yet (running engines plus durable harvest
+  # queue). Further jobs remain queued, so overload cannot grow the result backlog.
+  unstoredJobMax: "100"
   pollBackoffInitial: "1.0"
   pollBackoffMax: "5.0"
   zstdCompressionLevel: "3"

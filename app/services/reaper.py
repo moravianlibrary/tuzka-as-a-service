@@ -59,7 +59,7 @@ def select_stale_jobs(
     for job in jobs:
         if job.status == "queued" and job.submitted_at < queued_cutoff:
             stale.append((job, f"timed out in queue after {queued_timeout}s"))
-        elif job.status == "running" and job.dispatched_at is not None:
+        elif job.status in ("running", "storing") and job.dispatched_at is not None:
             running_timeout = running_timeout_for(job.domain)
             if job.dispatched_at < now - timedelta(seconds=running_timeout):
                 stale.append((job, f"timed out while processing after {running_timeout}s"))
@@ -78,7 +78,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     now = utcnow()
 
     result = await db.execute(
-        select(Job).where(Job.status.in_(("queued", "running"))).limit(REAP_MAX_PER_TICK)
+        select(Job).where(Job.status.in_(("queued", "running", "storing"))).limit(REAP_MAX_PER_TICK)
     )
     candidates = result.scalars().all()
 
