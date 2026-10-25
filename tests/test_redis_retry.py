@@ -1,4 +1,4 @@
-"""Tests for delayed retries in Redis: schedule_retry, promote_due_retries, parse_avoid.
+"""Tests for delayed retries in Redis: schedule_retry and promote_due_retries.
 
 Uses the ``redis_client`` fixture (skips if Redis not reachable).  Pins that
 a scheduled job is not pending before its time, is promoted after it, and that
@@ -14,32 +14,10 @@ from app.services.redis_jobs import (
     _DELAYED_KEY,
     _PENDING_KEY,
     job_event_payload,
-    parse_avoid,
     promote_due_retries,
     schedule_retry,
 )
-
-# ---- parse_avoid (pure) ----
-
-
-def test_parse_avoid_empty() -> None:
-    assert parse_avoid({}) == frozenset()
-    assert parse_avoid({"avoid_backends": ""}) == frozenset()
-
-
-def test_parse_avoid_single() -> None:
-    assert parse_avoid({"avoid_backends": "5"}) == frozenset({5})
-
-
-def test_parse_avoid_multiple() -> None:
-    result = parse_avoid({"avoid_backends": "3,5,7"})
-    assert result == frozenset({3, 5, 7})
-
-
-def test_parse_avoid_deduplicates() -> None:
-    result = parse_avoid({"avoid_backends": "3,5,3,7"})
-    assert result == frozenset({3, 5, 7})
-
+from tests.factories import job_state
 
 # ---- schedule_retry + promote_due_retries ----
 
@@ -53,9 +31,8 @@ async def test_scheduled_job_not_pending_before_time(
     original_score = 100.0
     delay_s = 60.0  # 60 seconds in the future
 
-    # Set up a minimal job hash so get_job returns a priority
     key = f"job:{job_id}"
-    await redis_client.hset(key, mapping={"priority": "0", "status": "queued"})
+    await redis_client.hset(key, mapping=job_state().to_hash())
 
     await schedule_retry(redis_client, job_id, original_score, delay_s, avoid_backend_id=1)
 
@@ -77,7 +54,7 @@ async def test_promote_due_retries_promotes_job(
     original_score = 200.0
 
     key = f"job:{job_id}"
-    await redis_client.hset(key, mapping={"priority": "0", "status": "queued"})
+    await redis_client.hset(key, mapping=job_state().to_hash())
 
     await schedule_retry(redis_client, job_id, original_score, delay_s=0.0, avoid_backend_id=2)
 
@@ -102,7 +79,7 @@ async def test_second_promote_due_retries_is_noop(
     original_score = 300.0
 
     key = f"job:{job_id}"
-    await redis_client.hset(key, mapping={"priority": "0", "status": "queued"})
+    await redis_client.hset(key, mapping=job_state().to_hash())
 
     await schedule_retry(redis_client, job_id, original_score, delay_s=0.0, avoid_backend_id=3)
 
@@ -120,7 +97,7 @@ async def test_avoid_backends_accumulates_without_duplicates(
     original_score = 400.0
 
     key = f"job:{job_id}"
-    await redis_client.hset(key, mapping={"priority": "0", "status": "queued"})
+    await redis_client.hset(key, mapping=job_state().to_hash())
 
     # Schedule with backend 1
     await schedule_retry(redis_client, job_id, original_score, delay_s=0.0, avoid_backend_id=1)

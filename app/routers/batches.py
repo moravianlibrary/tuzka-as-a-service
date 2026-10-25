@@ -3,7 +3,6 @@ archive. Each page is an ordinary job (``jobs.batch_id``); the batch adds the ar
 and the archive out."""
 
 import asyncio
-import json
 import mimetypes
 import time
 from datetime import timedelta
@@ -45,6 +44,7 @@ from app.schemas.api.batch import (
     BatchStatusResponse,
     BatchSubmitResponse,
 )
+from app.schemas.redis import JobState
 from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
@@ -220,20 +220,19 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         await redis_jobs.enqueue_job(
             r,
             str(job_id),
-            {
-                "username": username,
-                "external_id": "",
-                "batch_id": str(batch_id),
-                "fmt": job_fmt,
-                "domain": spec.domain,
-                "outputs": ",".join(sorted(spec.outputs)),
-                "options": json.dumps(spec.options),
-                "ext": ext,
-                "mp": str(megapixels),
-                "submitted_at": str(page_score(submitted, index)),
-                "priority": str(priority),
-                **trace,
-            },
+            JobState(
+                username=username,
+                batch_id=str(batch_id),
+                fmt=job_fmt,
+                domain=spec.domain,
+                outputs=spec.outputs,
+                options=spec.options,
+                ext=ext,
+                megapixels=megapixels,
+                submitted_at=page_score(submitted, index),
+                priority=priority,
+                trace=trace,
+            ),
             state_ttl,
         )
         emitter.emit(
@@ -479,19 +478,18 @@ async def retry_batch(
         await redis_jobs.enqueue_job(
             r,
             str(job_id),
-            {
-                "username": username,
-                "external_id": "",
-                "batch_id": str(batch_id),
-                "fmt": fmt_label(frozenset(batch.outputs)),
-                "domain": batch.domain,
-                "outputs": ",".join(batch.outputs),
-                "options": json.dumps(batch.options),
-                "ext": ext,
-                "mp": str(page_megapixels or 1.0),
-                "submitted_at": str(page_score(submitted, index)),
-                "priority": str(priority),
-            },
+            JobState(
+                username=username,
+                batch_id=str(batch_id),
+                fmt=fmt_label(frozenset(batch.outputs)),
+                domain=batch.domain,
+                outputs=frozenset(batch.outputs),
+                options=batch.options,
+                ext=ext,
+                megapixels=page_megapixels or 1.0,
+                submitted_at=page_score(submitted, index),
+                priority=priority,
+            ),
             state_ttl,
         )
     return BatchRetryResponse(batch_id=batch_id, retried=len(retried), expired=expired)

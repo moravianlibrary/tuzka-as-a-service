@@ -5,11 +5,10 @@ is not reachable) and pin that every transition moves the counters exactly once,
 job that has finished, however it got there, leaves every field at 0.
 """
 
-import time
-
 import pytest
 import redis.asyncio as aioredis
 
+from app.schemas.redis import JobState
 from app.services.load import load_field, parse_load_field
 from app.services.redis_jobs import (
     LOAD_INFLIGHT_KEY,
@@ -26,21 +25,14 @@ from app.services.redis_jobs import (
     set_failed,
     set_running,
 )
+from tests.factories import job_state
 
 TTL = 3600
 FIELD = "default|alto,txt"
 
 
-def _meta(domain: str = "", outputs: str = "alto,txt") -> dict[str, str]:
-    return {
-        "username": "alice",
-        "external_id": "x",
-        "fmt": "multi",
-        "domain": domain,
-        "outputs": outputs,
-        "submitted_at": str(time.time()),
-        "priority": "0",
-    }
+def _meta(domain: str = "default", outputs: str = "alto,txt") -> JobState:
+    return job_state(external_id="x", domain=domain, outputs=frozenset(outputs.split(",")))
 
 
 async def _counts(r: aioredis.Redis) -> tuple[dict[str, int], dict[str, int]]:
@@ -162,6 +154,6 @@ async def test_rebuild_with_nothing_queued_clears_counters(redis_client: aioredi
 @pytest.mark.asyncio
 async def test_get_jobs_reads_many_in_one_round_trip(redis_client: aioredis.Redis) -> None:
     await enqueue_job(redis_client, "g1", _meta("kramarky"), TTL)
-    metas = await get_jobs(redis_client, ["g1", "missing"])
-    assert metas["g1"] is not None and metas["g1"]["domain"] == "kramarky"
-    assert metas["missing"] is None
+    states = await get_jobs(redis_client, ["g1", "missing"])
+    assert states["g1"] is not None and states["g1"].domain == "kramarky"
+    assert states["missing"] is None

@@ -19,6 +19,7 @@ from app.engines.base import EngineAdapter, EngineFullError
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
+from app.schemas.redis import JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
@@ -31,11 +32,7 @@ from app.services.redis_jobs import (
     claim_pending,
     get_backends_state,
     get_jobs,
-    job_domain,
     job_event_payload,
-    job_options,
-    job_outputs,
-    parse_avoid,
     peek_pending,
     promote_due_retries,
     publish_event,
@@ -56,7 +53,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import AdapterId, FailureStage, JobEventName, JobStatus
+from app.vocabulary import DEFAULT_DOMAIN, AdapterId, FailureStage, Fmt, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -88,6 +85,23 @@ class BackendSlot:
     inflight: int = 0
     batches: dict[str, int] = field(default_factory=dict)
     assigned: int = 0
+
+
+def pending_job(job_id: str, score: float, state: JobState | None) -> PendingJob:
+    """A peeked job as dispatch sees it. One whose state is gone is offered as a default
+    job, as it always was: claimed by a backend, its dispatch then finds no state and
+    drops it."""
+    if state is None:
+        return PendingJob(job_id, score, DEFAULT_DOMAIN, Fmt.MULTI.outputs)
+    return PendingJob(
+        job_id,
+        score,
+        state.domain,
+        state.outputs,
+        state.avoid_backends,
+        megapixels=state.megapixels,
+        batch_id=state.batch_id,
+    )
 
 
 def serves(domains: dict[str, frozenset[str]], domain: str, outputs: frozenset[str]) -> bool:
@@ -366,28 +380,28 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
-        meta: dict[str, str] | None,
+        state: JobState | None,
     ) -> None:
-        # meta was read this tick, with every other dequeued job's, in one round trip.
-        if not meta:
+        # state was read this tick, with every other dequeued job's, in one round trip.
+        if state is None:
             logger.warning(f"Job {job_id} not found in Redis, skipping")
             return
         # A child of the job's submit trace, so the engine calls below land in it.
-        with job_span("dispatch", job_id, meta, backend_id=backend.id):
-            await dispatch_job(job_id, original_score, backend, backend_domains, meta)
+        with job_span("dispatch", job_id, state, backend_id=backend.id):
+            await dispatch_job(job_id, original_score, backend, backend_domains, state)
 
     async def dispatch_job(  # noqa: C901, PLR0915 - split up on refactor/complexity
         job_id: str,
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
-        meta: dict[str, str],
+        state: JobState,
     ) -> None:
-        username = meta["username"]
-        external_id = meta.get("external_id") or None
-        ext = meta.get("ext", ".jpg")
-        domain = job_domain(meta)
-        outputs = job_outputs(meta)
+        username = state.username
+        external_id = state.external_id
+        ext = state.ext
+        domain = state.domain
+        outputs = state.outputs
 
         def event(name: JobEventName, **fields: Any) -> JobEvent:
             return JobEvent(
@@ -437,14 +451,14 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         **append_attempt(attempt),
                     )
                 )
-                await batch_store.finish_if_done(db, meta.get("batch_id"))
+                await batch_store.finish_if_done(db, state.batch_id)
                 await db.commit()
             emitter.emit(event(JobEventName.FAILED, **failure(FailureStage.DISPATCH, None)))
             await publish_event(
                 r,
                 username,
                 job_event_payload(
-                    job_id, external_id, JobStatus.FAILED, batch_id=meta.get("batch_id"), error=msg
+                    job_id, external_id, JobStatus.FAILED, batch_id=state.batch_id, error=msg
                 ),
             )
             if batch is not None:
@@ -457,7 +471,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             adapter = adapter_for(backend)
             with timer.stage("engine_submit"):
                 engine_job_id = await adapter.submit(
-                    image_bytes, filename, domain, outputs, job_options(meta)
+                    image_bytes, filename, domain, outputs, state.options
                 )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
             with timer.stage("engine_version"):
@@ -480,7 +494,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         )
                     )
                     await db.commit()
-            submitted_at = float(meta.get("submitted_at") or time.time())
+            submitted_at = state.submitted_at
             emitter.emit(
                 event(
                     JobEventName.DISPATCHED,
@@ -503,7 +517,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-            requeues = int(meta.get("requeues", 0))
+            requeues = state.requeues
 
             # Transient failure (backend down/overloaded) with budget left: sideline this
             # backend for the health-cache window so the retry lands elsewhere, bump the
@@ -578,14 +592,14 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         **append_attempt(attempt),
                     )
                 )
-                await batch_store.finish_if_done(db, meta.get("batch_id"))
+                await batch_store.finish_if_done(db, state.batch_id)
                 await db.commit()
             emitter.emit(event(JobEventName.FAILED, **failed_fields))
             await publish_event(
                 r,
                 username,
                 job_event_payload(
-                    job_id, external_id, JobStatus.FAILED, batch_id=meta.get("batch_id"), error=msg
+                    job_id, external_id, JobStatus.FAILED, batch_id=state.batch_id, error=msg
                 ),
             )
             if batch is not None:
@@ -670,23 +684,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         break  # nothing pending — lower tiers have nothing to do either
 
                     with timer.stage("meta"):
-                        metas = await get_jobs(r, [job_id for job_id, _, _ in entries])
+                        states = await get_jobs(r, [job_id for job_id, _, _ in entries])
                     priorities = {job_id: prio for job_id, _, prio in entries}
-                    pending: list[PendingJob] = []
-                    for job_id, score, _ in entries:
-                        meta = metas[job_id] or {}
-                        domain, outputs = job_domain(meta), job_outputs(meta)
-                        pending.append(
-                            PendingJob(
-                                job_id,
-                                score,
-                                domain,
-                                outputs,
-                                parse_avoid(meta),
-                                megapixels=float(meta.get("mp") or 1.0),
-                                batch_id=meta.get("batch_id") or None,
-                            )
-                        )
+                    pending = [
+                        pending_job(job_id, score, states[job_id]) for job_id, score, _ in entries
+                    ]
 
                     # Speed scores for this tier's backends and these jobs' domains, once.
                     job_domains = {job.domain for job in pending}
@@ -734,7 +736,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                                     job.score,
                                     slot.backend,
                                     slot.domains,
-                                    metas[job.job_id],
+                                    states[job.job_id],
                                 )
                                 for job, slot in assignments
                             ],

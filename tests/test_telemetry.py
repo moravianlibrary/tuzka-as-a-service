@@ -16,7 +16,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E4
 )
 
 from app import telemetry  # noqa: E402
+from app.schemas.redis import JobState  # noqa: E402
 from app.telemetry import inject_trace_context, job_span, setup_telemetry  # noqa: E402
+from tests.factories import job_state  # noqa: E402
 
 _exporter = InMemorySpanExporter()
 
@@ -36,11 +38,12 @@ def spans() -> InMemorySpanExporter:
 def test_job_span_continues_the_trace_stored_at_submit(spans) -> None:
     tracer = trace.get_tracer("test")
     with tracer.start_as_current_span("submit_job") as submit:
-        meta = {"username": "alice", "domain": "kramarky", **inject_trace_context()}
-    assert "traceparent" in meta
+        state = job_state(domain="kramarky", trace=inject_trace_context())
+    assert "traceparent" in state.to_hash()
 
     # Another process later: no current span, only the job's hash.
-    with job_span("dispatch", "job-1", meta, backend_id=3):
+    stored = JobState.from_hash(state.to_hash())
+    with job_span("dispatch", "job-1", stored, backend_id=3):
         pass
 
     dispatch = next(s for s in spans.get_finished_spans() if s.name == "dispatch")
@@ -53,7 +56,7 @@ def test_job_span_continues_the_trace_stored_at_submit(spans) -> None:
 
 
 def test_job_without_trace_context_gets_a_root_span(spans) -> None:
-    with job_span("harvest", "job-2", {"username": "bob"}):
+    with job_span("harvest", "job-2", job_state(username="bob")):
         pass
 
     (harvest,) = spans.get_finished_spans()

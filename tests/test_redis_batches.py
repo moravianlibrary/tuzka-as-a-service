@@ -1,11 +1,10 @@
 """Tests for batch progress counters and events (step 7, D8/D12). The event shapes are
 pure; the counters use the ``redis_client`` fixture (skip if Redis is unreachable)."""
 
-import time
-
 import pytest
 import redis.asyncio as aioredis
 
+from app.schemas.redis import JobState
 from app.services.redis_jobs import (
     BatchCounts,
     batch_event,
@@ -17,6 +16,8 @@ from app.services.redis_jobs import (
     set_failed,
     set_running,
 )
+from app.vocabulary import JobStatus
+from tests.factories import job_state
 
 TTL = 3600
 
@@ -36,14 +37,8 @@ def test_page_events_carry_the_batch_id() -> None:
     assert "batch_id" not in job_event_payload("j2", None, "done")
 
 
-def _page(batch_id: str) -> dict[str, str]:
-    return {
-        "username": "alice",
-        "external_id": "",
-        "batch_id": batch_id,
-        "submitted_at": str(time.time()),
-        "priority": "0",
-    }
+def _page(batch_id: str | None) -> JobState:
+    return job_state(batch_id=batch_id)
 
 
 @pytest.mark.asyncio
@@ -55,7 +50,7 @@ async def test_three_pages_two_done_one_failed(redis_client: aioredis.Redis) -> 
 
     assert await set_done(redis_client, "p1", TTL) == BatchCounts("b1", 3, 1, 0)
     # A stale snapshot from the poller still must not count the finished page again.
-    stale = {"batch_id": "b1", "backend_id": "1", "status": "running"}
+    stale = job_state(batch_id="b1", backend_id=1, status=JobStatus.RUNNING)
     assert await set_done(redis_client, "p1", TTL, stale) is None
     assert await set_failed(redis_client, "p2", "boom", TTL) == BatchCounts("b1", 3, 1, 1)
     assert await set_done(redis_client, "p3", TTL) == BatchCounts("b1", 3, 2, 1)
@@ -65,8 +60,7 @@ async def test_three_pages_two_done_one_failed(redis_client: aioredis.Redis) -> 
 
 @pytest.mark.asyncio
 async def test_single_jobs_have_no_batch_counts(redis_client: aioredis.Redis) -> None:
-    meta = _page("")
-    await enqueue_job(redis_client, "solo", meta, TTL)
+    await enqueue_job(redis_client, "solo", _page(None), TTL)
     assert await set_failed(redis_client, "solo", "boom", TTL) is None
 
 

@@ -12,6 +12,7 @@ from app.services.redis_jobs import (
     signal_submit,
     wait_for_submit_signal,
 )
+from tests.factories import job_state
 
 
 async def _token_count(r) -> int:
@@ -29,7 +30,7 @@ async def test_enqueue_signals_the_worker(redis_client) -> None:
     await redis_jobs.enqueue_job(
         redis_client,
         "job-1",
-        {"priority": "0", "submitted_at": "1.0", "username": "alice", "external_id": "x"},
+        job_state(submitted_at=1.0, external_id="x"),
         state_ttl=60,
     )
 
@@ -37,6 +38,7 @@ async def test_enqueue_signals_the_worker(redis_client) -> None:
 
 
 async def test_set_done_signals_on_freed_slot(redis_client) -> None:
+    await redis_jobs.enqueue_job(redis_client, "job-2", job_state(), state_ttl=60)
     await redis_jobs.set_running(redis_client, "job-2", "eng-1", "http://b", 7, state_ttl=60)
     await redis_client.delete(_SUBMIT_WAKEUP_KEY)  # ignore any earlier tokens
 
@@ -49,7 +51,7 @@ async def test_stored_result_frees_a_global_dispatch_credit(redis_client) -> Non
     await redis_jobs.enqueue_job(
         redis_client,
         "job-3",
-        {"priority": "0", "submitted_at": "1.0", "username": "alice"},
+        job_state(submitted_at=1.0),
         state_ttl=60,
     )
     await redis_jobs.set_running(redis_client, "job-3", "eng-3", "http://b", 7, 60)

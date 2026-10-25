@@ -14,6 +14,7 @@ from app.workers.poller import (
     poll_attempt,
     poll_failure_message,
 )
+from tests.factories import job_state
 
 
 def _http_error(code: int) -> httpx.HTTPStatusError:
@@ -25,7 +26,7 @@ def _outcome(**kw) -> PollOutcome:
     base = {
         "job_id": "j",
         "status": "failed",
-        "meta": {"backend_id": "7"},
+        "state": job_state(backend_id=7),
         "times": {},
         "retryable": False,
         "http_status": None,
@@ -108,7 +109,7 @@ def test_poll_attempt_stage_and_backend():
         "retry": True,
         "stage": "engine",
     }
-    poll = poll_attempt(_outcome(status="unreachable", meta={}), False, "t")
+    poll = poll_attempt(_outcome(status="unreachable", state=job_state()), False, "t")
     assert poll["stage"] == "poll"
     assert poll["backend_id"] is None
     assert poll["error"] == "unreachable"

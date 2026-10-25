@@ -68,9 +68,14 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
 
 ### 2. Boundaries
 
-- [ ] B1 + D1: `JobState` parsed once in `redis_jobs`; replaces three hand-built job
+- [x] B1 + D1: `JobState` parsed once in `redis_jobs`; replaces three hand-built job
       dicts (`routers/jobs.py`, `routers/batches.py` ×2), `job_domain`/`job_outputs`/
-      `job_options`/`parse_avoid`, the ~60 raw `meta[...]` reads, `PendingJob`'s parsing
+      `job_options`/`parse_avoid`, the ~60 raw `meta[...]` reads, `PendingJob`'s parsing.
+      Building the dicts in one place found the batch retry dropping megapixels (fixed).
+- [ ] B1 rest: `BatchCounts` from the batch hash; `harvest_times` as a typed model; the
+      poller's own `next_poll_at`/`last_poll` HSET moves into `redis_jobs`
+- [ ] Follow-up: a pending entry whose state is gone is offered as a default job and
+      dropped only once a backend claims it; drop it from its queue outright instead
 - [ ] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
       `ClassLimits` + `FALLBACK_LIMITS`/`USER_OVERRIDE_COLUMNS`
 - [ ] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +33,8 @@ except ImportError:  # the packages aren't installed: telemetry stays off
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from app.schemas.redis import JobState
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +125,18 @@ def inject_trace_context() -> dict[str, str]:
 
 
 @contextmanager
-def job_span(name: str, job_id: str, meta: Mapping[str, str], **attributes: Any) -> Iterator[None]:
+def job_span(name: str, job_id: str, state: JobState, **attributes: Any) -> Iterator[None]:
     """A span for work on one job, continuing the trace whose ``traceparent`` was
     stored in the job's Redis hash at submit. Without telemetry it costs a context
     lookup and nothing is recorded."""
     if trace is None or propagate is None:
         yield
         return
-    parent = propagate.extract(meta)
+    parent = propagate.extract(state.trace)
     attrs = {
         "taas.job_id": job_id,
-        "taas.domain": meta.get("domain") or "default",
-        "taas.username": meta.get("username"),
+        "taas.domain": state.domain,
+        "taas.username": state.username,
         **{f"taas.{k}": v for k, v in attributes.items()},
     }
     tracer = trace.get_tracer("taas")

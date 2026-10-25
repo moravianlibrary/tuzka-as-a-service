@@ -2,17 +2,21 @@
 
 import contextlib
 import json
+import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
 import redis.asyncio as aioredis
 
 from app.config import Settings
+from app.schemas.redis import JobState
 from app.services.load import ewma, load_field
-from app.vocabulary import DEFAULT_DOMAIN, TERMINAL_JOB_STATUSES, Fmt, JobStatus
+from app.vocabulary import TERMINAL_JOB_STATUSES, JobStatus
 
 settings = Settings()
+logger = logging.getLogger("redis-jobs")
 
 # Priority queue key. Priority 0 is the default; higher numbers are drained first.
 _PENDING_KEY = "jobs:pending:{priority}"
@@ -95,41 +99,8 @@ def _pending_key(priority: int) -> str:
     return _PENDING_KEY.format(priority=priority)
 
 
-def parse_avoid(meta: dict[str, str]) -> frozenset[int]:
-    """Parse ``avoid_backends`` from job metadata into a frozenset of backend ids.
-
-    The field is comma-separated numeric ids (deduplicated by the caller).
-    Returns an empty frozenset for missing or empty values.
-    """
-    raw = meta.get("avoid_backends", "")
-    if not raw:
-        return frozenset()
-    return frozenset(int(v) for v in raw.split(",") if v.strip())
-
-
-def job_domain(meta: dict[str, str]) -> str:
-    """The job's domain from its hash; a domain-less job is a ``default`` job."""
-    return meta.get("domain") or DEFAULT_DOMAIN
-
-
-def job_outputs(meta: dict[str, str]) -> frozenset[str]:
-    """The job's requested outputs from its hash. A job enqueued before outputs were
-    stored only has ``fmt``, which maps onto the same set."""
-    raw = meta.get("outputs")
-    if raw:
-        return frozenset(o for o in raw.split(",") if o)
-    return Fmt(meta.get("fmt") or Fmt.MULTI).outputs
-
-
-def job_options(meta: dict[str, str]) -> dict[str, Any]:
-    """The job's engine options from its hash (validated at submit); ``{}`` if none."""
-    raw = meta.get("options")
-    options: dict[str, Any] = json.loads(raw) if raw else {}
-    return options
-
-
-def _job_load_field(meta: dict[str, str]) -> str:
-    return load_field(job_domain(meta), job_outputs(meta))
+def _job_load_field(state: JobState) -> str:
+    return load_field(state.domain, state.outputs)
 
 
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
@@ -190,32 +161,27 @@ async def promote_due_retries(r: aioredis.Redis, now: float) -> int:
         if removed != 1:
             continue  # another worker already promoted it
 
-        meta = await get_job(r, job_id)
-        if meta is None:
+        state = await get_job(r, job_id)
+        if state is None:
             continue
-        priority = int(meta.get("priority", 0))
-        queue_score = float(meta.get("queue_score", time.time()))
-        await _add_pending(r, priority, job_id, queue_score)
+        queue_score = state.queue_score if state.queue_score is not None else time.time()
+        await _add_pending(r, state.priority, job_id, queue_score)
         count += 1
     return count
 
 
-async def enqueue_job(
-    r: aioredis.Redis, job_id: str, metadata: dict[str, str], state_ttl: int
-) -> None:
-    priority = int(metadata.get("priority", 0))
+async def enqueue_job(r: aioredis.Redis, job_id: str, state: JobState, state_ttl: int) -> None:
+    """Store a new job's state and put it on its priority queue. Its status (queued) lets
+    set_failed tell a job that never ran (queued count) from one that did (inflight)."""
     key = f"job:{job_id}"
     # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
     # does not upcast; cast around the third-party stub friction (values are all strings).
-    # The status lets set_failed tell a job that never ran (queued count) from one that
-    # did (inflight count).
-    fields = {"status": JobStatus.QUEUED, **metadata}
     async with r.pipeline(transaction=True) as pipe:
-        pipe.hset(key, mapping=cast("dict[Any, Any]", fields))
+        pipe.hset(key, mapping=cast("dict[Any, Any]", state.to_hash()))
         pipe.expire(key, state_ttl)
-        pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(metadata), 1)
+        pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(state), 1)
         await pipe.execute()
-    await _add_pending(r, priority, job_id, float(metadata.get("submitted_at", time.time())))
+    await _add_pending(r, state.priority, job_id, state.submitted_at)
 
 
 async def _pending_levels(r: aioredis.Redis) -> list[int]:
@@ -302,31 +268,30 @@ async def requeue_orphans(
     return requeued
 
 
-async def get_job(r: aioredis.Redis, job_id: str) -> dict[str, str] | None:
-    data = await r.hgetall(f"job:{job_id}")
-    if not data:
-        return None
-    return {
-        k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
-        for k, v in data.items()
-    }
+async def get_job(r: aioredis.Redis, job_id: str) -> JobState | None:
+    """The job's state; None when its hash expired or isn't a whole job's."""
+    return _parse_state(job_id, await r.hgetall(f"job:{job_id}"))
 
 
-async def get_jobs(r: aioredis.Redis, job_ids: list[str]) -> dict[str, dict[str, str] | None]:
+async def get_jobs(r: aioredis.Redis, job_ids: list[str]) -> dict[str, JobState | None]:
     """``get_job`` for many jobs in one round trip (a pipeline of HGETALLs)."""
     async with r.pipeline(transaction=False) as pipe:
         for job_id in job_ids:
             pipe.hgetall(f"job:{job_id}")
         raw = await pipe.execute()
-    return {
-        job_id: {
-            k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
-            for k, v in data.items()
-        }
-        if data
-        else None
-        for job_id, data in zip(job_ids, raw, strict=True)
-    }
+    return {job_id: _parse_state(job_id, data) for job_id, data in zip(job_ids, raw, strict=True)}
+
+
+def _parse_state(job_id: str, data: Mapping[Any, Any]) -> JobState | None:
+    if not data:
+        return None
+    try:
+        return JobState.from_hash(data)
+    except ValueError as exc:  # a ValidationError, or JSON taas didn't write
+        # A write after the hash's TTL expired recreates a partial one (no submit
+        # fields); the job is as gone as with no hash, and the reaper fails its row.
+        logger.warning("Job %s has an unreadable state hash, treated as expired: %s", job_id, exc)
+        return None
 
 
 async def set_running(
@@ -352,17 +317,17 @@ async def set_running(
     # Only a job that really entered the in-flight set moves from queued to inflight,
     # so a repeated call can't skew the load counters.
     if await r.sadd("jobs:inflight", job_id):
-        meta = await get_job(r, job_id)
+        state = await get_job(r, job_id)
         async with r.pipeline(transaction=True) as pipe:
             pipe.incr(f"backend:{backend_id}:inflight")
-            if meta is not None:
-                field = _job_load_field(meta)
+            if state is not None:
+                field = _job_load_field(state)
                 pipe.hincrby(LOAD_QUEUED_KEY, field, -1)
                 pipe.hincrby(LOAD_INFLIGHT_KEY, field, 1)
-                if meta.get("batch_id"):
+                if state.batch_id:
                     # Which batches this backend is working on, for dispatch affinity
                     # (step 8, D7).
-                    pipe.hincrby(_backend_batches_key(backend_id), _s(meta["batch_id"]), 1)
+                    pipe.hincrby(_backend_batches_key(backend_id), state.batch_id, 1)
             await pipe.execute()
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
@@ -390,20 +355,20 @@ async def init_batch(r: aioredis.Redis, batch_id: str, total: int, ttl: int) -> 
 
 
 async def _count_batch_page(
-    r: aioredis.Redis, meta: dict[str, str] | None, status: JobStatus
+    r: aioredis.Redis, state: JobState | None, status: JobStatus
 ) -> BatchCounts | None:
     """Count one finished page of a batch, unless the job had already finished (a
     re-run of a state function mustn't count it twice). None if it isn't a batch page."""
-    if not meta or not meta.get("batch_id") or meta.get("status") in TERMINAL_JOB_STATUSES:
+    if state is None or state.batch_id is None or state.status in TERMINAL_JOB_STATUSES:
         return None
-    key = _batch_key(meta["batch_id"])
+    key = _batch_key(state.batch_id)
     async with r.pipeline(transaction=True) as pipe:
         pipe.hincrby(key, status, 1)  # pages per terminal status
         pipe.hgetall(key)
         _, raw = await pipe.execute()
     counts = {_s(k): int(v) for k, v in raw.items()}
     return BatchCounts(
-        meta["batch_id"], counts.get("total", 0), counts.get("done", 0), counts.get("failed", 0)
+        state.batch_id, counts.get("total", 0), counts.get("done", 0), counts.get("failed", 0)
     )
 
 
@@ -451,7 +416,7 @@ return 1
 async def release_done(
     r: aioredis.Redis,
     job_id: str,
-    meta: dict[str, str],
+    state: JobState,
     times: dict[str, Any] | None = None,
     now: float | None = None,
 ) -> bool:
@@ -462,8 +427,8 @@ async def release_done(
     rows (seconds at load). The job waits in ``PENDING_HARVEST_KEY`` until ``set_done``
     or ``set_failed`` removes it. Returns True when this call made the transition; a
     duplicate done-poll returns False and changes nothing."""
-    backend_id = meta.get("backend_id") or ""
-    batch_id = meta.get("batch_id") or ""
+    backend_id = str(state.backend_id) if state.backend_id is not None else ""
+    batch_id = state.batch_id or ""
     sha = await r.script_load(_RELEASE_DONE_LUA)
     released = await r.evalsha(
         sha,
@@ -476,7 +441,7 @@ async def release_done(
         _backend_batches_key(backend_id) if backend_id else "backend:0:batches",
         job_id,
         now if now is not None else time.time(),
-        _job_load_field(meta),
+        _job_load_field(state),
         backend_id,
         batch_id,
         json.dumps(times or {}, default=str),
@@ -544,7 +509,7 @@ async def set_done(
     r: aioredis.Redis,
     job_id: str,
     state_ttl: int,
-    meta: dict[str, str] | None = None,
+    state: JobState | None = None,
 ) -> BatchCounts | None:
     """Mark the job done and drop it from the harvest queue. For a page of a batch,
     returns the batch's new counts, for the caller to publish as a batch event.
@@ -554,10 +519,10 @@ async def set_done(
     caller's snapshot of the job hash. A batch page still re-reads the hash, because a
     re-run must see the finished status to avoid counting the page twice."""
     key = f"job:{job_id}"
-    if meta is None or meta.get("batch_id"):
-        meta = await get_job(r, job_id)
-    batch = await _count_batch_page(r, meta, JobStatus.DONE)
-    backend_id = meta.get("backend_id") if meta else None
+    if state is None or state.batch_id is not None:
+        state = await get_job(r, job_id)
+    batch = await _count_batch_page(r, state, JobStatus.DONE)
+    backend_id = state.backend_id if state else None
     # The status write and the slot release don't depend on each other, so send them in
     # one round trip; only the SREM result decides the counters after it.
     async with r.pipeline(transaction=False) as pipe:
@@ -578,8 +543,8 @@ async def set_done(
     # so a re-run (e.g. reaper re-processing after a failed commit) can't double-decrement
     # the backend counter.
     async with r.pipeline(transaction=False) as pipe:
-        if meta is not None:
-            pipe.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
+        if state is not None:
+            pipe.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(state), -1)
         if backend_id:
             pipe.decr(f"backend:{backend_id}:inflight")
             # A slot just freed — let the submit worker refill it now.
@@ -587,7 +552,7 @@ async def set_done(
             pipe.expire(_SUBMIT_WAKEUP_KEY, _SUBMIT_WAKEUP_TTL_SECONDS)
         await pipe.execute()
     if backend_id:
-        await _release_batch(r, backend_id, meta)
+        await _release_batch(r, backend_id, state)
     return batch
 
 
@@ -597,9 +562,9 @@ async def set_failed(
     """Mark the job failed and release its slot; like ``set_done``, returns a batch
     page's new batch counts."""
     key = f"job:{job_id}"
-    meta = await get_job(r, job_id)
-    batch = await _count_batch_page(r, meta, JobStatus.FAILED)
-    backend_id = meta.get("backend_id") if meta else None
+    state = await get_job(r, job_id)
+    batch = await _count_batch_page(r, state, JobStatus.FAILED)
+    backend_id = state.backend_id if state else None
     async with r.pipeline(transaction=True) as pipe:
         pipe.hset(
             key,
@@ -615,26 +580,25 @@ async def set_failed(
     # idempotent, so a re-run (e.g. reaper re-processing after a failed commit)
     # can't double-decrement the backend counter.
     removed = await r.srem("jobs:inflight", job_id)
-    if meta is not None:
+    if state is not None:
         # A job that never ran (failed at dispatch, timed out in the queue) leaves the
         # queued count; one that ran leaves inflight. Already failed/done: nothing.
         if removed:
-            await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
-        elif meta.get("status") == JobStatus.QUEUED:
-            await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(meta), -1)
+            await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(state), -1)
+        elif state.status == JobStatus.QUEUED:
+            await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(state), -1)
     if harvest_removed:
         await signal_submit(r)
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
-        await _release_batch(r, backend_id, meta)
+        await _release_batch(r, backend_id, state)
         await signal_submit(r)  # a slot just freed — let the worker refill it now
     return batch
 
 
 async def requeue_job(r: aioredis.Redis, job_id: str, original_score: float) -> None:
-    meta = await get_job(r, job_id)
-    priority = int(meta.get("priority", 0)) if meta else 0
-    await _add_pending(r, priority, job_id, original_score)
+    state = await get_job(r, job_id)
+    await _add_pending(r, state.priority if state else 0, job_id, original_score)
 
 
 async def release_and_requeue(
@@ -655,18 +619,18 @@ async def release_and_requeue(
     ``avoid_backend_id``) instead of being re-added immediately.
     """
     key = f"job:{job_id}"
-    meta = await get_job(r, job_id)
-    backend_id = meta.get("backend_id") if meta else None
+    state = await get_job(r, job_id)
+    backend_id = state.backend_id if state else None
     removed = await r.srem("jobs:inflight", job_id)
-    if removed and meta is not None:
-        field = _job_load_field(meta)
+    if removed and state is not None:
+        field = _job_load_field(state)
         async with r.pipeline(transaction=True) as pipe:
             pipe.hincrby(LOAD_INFLIGHT_KEY, field, -1)
             pipe.hincrby(LOAD_QUEUED_KEY, field, 1)
             await pipe.execute()
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
-        await _release_batch(r, backend_id, meta)
+        await _release_batch(r, backend_id, state)
     await r.hset(key, mapping={"status": JobStatus.QUEUED})
     await r.hdel(
         key,
@@ -682,8 +646,7 @@ async def release_and_requeue(
     if delay_s > 0:
         await schedule_retry(r, job_id, score, delay_s, avoid_backend_id)
     else:
-        priority = int(meta.get("priority", 0)) if meta else 0
-        await _add_pending(r, priority, job_id, score)
+        await _add_pending(r, state.priority if state else 0, job_id, score)
 
 
 async def rebuild_load_counters(r: aioredis.Redis) -> None:
@@ -711,9 +674,10 @@ async def rebuild_load_counters(r: aioredis.Redis) -> None:
                 pipe.hgetall(f"job:{job_id}")
             hashes = await pipe.execute()
         counts: dict[str, int] = {}
-        for raw in hashes:
-            if raw:
-                field = _job_load_field({_s(k): _s(v) for k, v in raw.items()})
+        for job_id, raw in zip(job_ids, hashes, strict=True):
+            state = _parse_state(job_id, raw)
+            if state is not None:
+                field = _job_load_field(state)
                 counts[field] = counts.get(field, 0) + 1
         return counts
 
@@ -794,13 +758,11 @@ def _backend_batches_key(backend_id: int | str) -> str:
     return f"backend:{backend_id}:batches"
 
 
-async def _release_batch(
-    r: aioredis.Redis, backend_id: int | str, meta: dict[str, str] | None
-) -> None:
+async def _release_batch(r: aioredis.Redis, backend_id: int, state: JobState | None) -> None:
     """One page of a batch left the backend; drop the batch when it was the last. Only
     called when the job really left the in-flight set, so the count can't go negative."""
-    batch_id = meta.get("batch_id") if meta else None
-    if not batch_id:
+    batch_id = state.batch_id if state else None
+    if batch_id is None:
         return
     left = await r.hincrby(_backend_batches_key(backend_id), batch_id, -1)
     if left <= 0:

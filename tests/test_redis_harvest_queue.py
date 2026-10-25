@@ -7,12 +7,10 @@ released exactly once, that the job survives on the queue until its harvest fini
 (or fails for good), and that a retry is backed off.
 """
 
-import json
-import time
-
 import pytest
 import redis.asyncio as aioredis
 
+from app.schemas.redis import JobState
 from app.services.redis_jobs import (
     _SUBMIT_WAKEUP_KEY,
     LOAD_INFLIGHT_KEY,
@@ -33,25 +31,14 @@ from app.services.redis_jobs import (
     set_running,
     unstored_depth,
 )
+from tests.factories import job_state
 
 TTL = 3600
 FIELD = "default|alto,txt"
 
 
-def _meta(batch_id: str = "", backend_id: str = "1") -> dict[str, str]:
-    meta = {
-        "username": "alice",
-        "external_id": "",
-        "fmt": "multi",
-        "domain": "",
-        "outputs": "alto,txt",
-        "submitted_at": str(time.time()),
-        "priority": "0",
-        "backend_id": backend_id,
-    }
-    if batch_id:
-        meta["batch_id"] = batch_id
-    return meta
+def _meta(batch_id: str | None = None, backend_id: int = 1) -> JobState:
+    return job_state(batch_id=batch_id, backend_id=backend_id)
 
 
 @pytest.mark.asyncio
@@ -80,8 +67,8 @@ async def test_release_done_frees_the_slot_and_queues_the_harvest(
     assert await redis_client.llen(_SUBMIT_WAKEUP_KEY) == 1  # the freed slot wakes submit
     stored = await get_job(redis_client, "j1")
     assert stored is not None
-    assert stored["status"] == "storing"
-    assert json.loads(stored["harvest_times"]) == times
+    assert stored.status == "storing"
+    assert stored.harvest_times == times
     assert await due_harvest_ids(redis_client, 10) == ["j1"]
     assert await next_harvest_at(redis_client) is not None
     assert await pending_harvest_members(redis_client, ["j1", "other"]) == {"j1"}
@@ -152,7 +139,7 @@ async def test_reschedule_harvest_backs_off(redis_client: aioredis.Redis) -> Non
 
     job = await get_job(redis_client, "j5")
     assert job is not None
-    assert job["harvest_attempts"] == "1"
+    assert job.harvest_attempts == 1
     after = await next_harvest_at(redis_client)
     assert after is not None
     assert after >= before + 25

@@ -20,6 +20,7 @@ from app.services.redis_jobs import (
     schedule_retry,
     set_running,
 )
+from tests.factories import job_state
 
 TTL = 3600
 
@@ -39,14 +40,7 @@ async def test_get_backends_state_handles_missing_counters_and_batches(
 
 
 async def _enqueue(r: aioredis.Redis, job_id: str, priority: int, submitted_at: float) -> None:
-    meta = {
-        "username": "alice",
-        "fmt": "multi",
-        "outputs": "alto,txt",
-        "submitted_at": str(submitted_at),
-        "priority": str(priority),
-    }
-    await enqueue_job(r, job_id, meta, TTL)
+    await enqueue_job(r, job_id, job_state(submitted_at=submitted_at, priority=priority), TTL)
 
 
 @pytest.mark.asyncio

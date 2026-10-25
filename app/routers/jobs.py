@@ -1,6 +1,5 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
-import json
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -52,6 +51,7 @@ from app.schemas.api.job import (
     JobStatusResponse,
     JobSubmitResponse,
 )
+from app.schemas.redis import JobState
 from app.services import config as config_service
 from app.services import redis_jobs, storage
 from app.services.event_emitter import get_emitter
@@ -200,20 +200,20 @@ async def submit_job(
     await redis_jobs.enqueue_job(
         r,
         str(job.id),
-        {
-            "username": username,
-            "external_id": label or "",
-            "fmt": job_fmt,
-            "domain": spec.domain,
-            "outputs": ",".join(sorted(spec.outputs)),
-            "options": json.dumps(spec.options),
-            "ext": ext,
-            "mp": str(megapixels),
-            "submitted_at": str(time.time()),
-            "priority": str(user_priority),
+        JobState(
+            username=username,
+            external_id=label,
+            fmt=job_fmt,
+            domain=spec.domain,
+            outputs=spec.outputs,
+            options=spec.options,
+            ext=ext,
+            megapixels=megapixels,
+            submitted_at=time.time(),
+            priority=user_priority,
             # The workers continue this request's trace from here (empty when off).
-            **inject_trace_context(),
-        },
+            trace=inject_trace_context(),
+        ),
         state_ttl,
     )
 

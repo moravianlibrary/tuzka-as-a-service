@@ -10,13 +10,14 @@ from collections.abc import Callable
 import pytest
 
 from app.workers.poller import PollOutcome, drain_poll_queue
+from tests.factories import job_state
 
 
 def _outcome(job_id: str, status: str = "running") -> PollOutcome:
     return PollOutcome(
         job_id=job_id,
         status=status,
-        meta={},
+        state=job_state(),
         times={},
         retryable=False,
         http_status=None,
@@ -144,7 +145,7 @@ async def test_a_failed_status_request_does_not_stop_the_other_checks() -> None:
             return PollOutcome(
                 job_id=job_id,
                 status="unreachable",
-                meta={},
+                state=job_state(),
                 times={},
                 retryable=True,
                 http_status=None,
