@@ -32,7 +32,7 @@ from app.schemas.api.user import (
 from app.services import config as config_service
 from app.services.auth import encrypt_backend_key, generate_key, hash_key
 from app.services.domain_sync import apply_declared_capabilities
-from app.vocabulary import JobStatus
+from app.vocabulary import JobStatus, LimitClass
 
 # --- Users ---
 
@@ -101,25 +101,13 @@ async def update_user(db: AsyncSession, username: str, body: UserUpdate) -> User
     await db.refresh(user)
     config_service.invalidate_user(username)
 
-    # Resolve each class and flatten back into the override column names, so the
-    # effective view mirrors the overrides shape (every field non-null).
-    resolved: dict[str, int] = {}
-    for cls, (per_col, burst_col) in config_service.USER_OVERRIDE_COLUMNS.items():
-        limits = await config_service.effective_limits(db, username, cls)
-        resolved[per_col] = limits.per_minute
-        resolved[burst_col] = limits.burst
-
+    effective = {
+        cls: await config_service.effective_limits(db, username, cls) for cls in LimitClass
+    }
     return UserLimitsResponse(
         username=username,
-        overrides=UserLimitOverrides(
-            rate_submit_per_minute=user.rate_submit_per_minute,
-            burst_submit=user.burst_submit,
-            rate_query_per_minute=user.rate_query_per_minute,
-            burst_query=user.burst_query,
-            rate_ws_per_minute=user.rate_ws_per_minute,
-            burst_ws=user.burst_ws,
-        ),
-        effective=EffectiveLimits(**resolved),
+        overrides=UserLimitOverrides.model_validate(user, from_attributes=True),
+        effective=EffectiveLimits.from_limits(effective),
     )
 
 

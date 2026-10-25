@@ -27,7 +27,7 @@ app/
   schemas/              pydantic, by boundary
     api/                HTTP request/response: job, batch, backend, user, domain
     redis.py            JobState (job hash), BatchCounts, HarvestTimes
-    runtime_config.py   RuntimeConfig, RateLimits (the config table)
+    runtime_config.py   RuntimeConfig, RateLimit (the config table)
     attempt.py          Attempt (Job.attempts JSONB)
   models/               SQLAlchemy only; types.py holds the pydantic JSONB TypeDecorator
   engines/
@@ -77,7 +77,7 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
       into `redis_jobs`, which is now the only writer of a job's hash
 - [ ] Follow-up: a pending entry whose state is gone is offered as a default job and
       dropped only once a backend claims it; drop it from its queue outright instead
-- [ ] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
+- [x] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
       `ClassLimits` + `FALLBACK_LIMITS`/`USER_OVERRIDE_COLUMNS`
 - [ ] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters
 - [ ] B4 + D6: `Attempt` for `Job.attempts` (built in `retry_policy`, read in

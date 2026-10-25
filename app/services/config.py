@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.config import ConfigEntry
 from app.models.domain import Domain
 from app.models.user import User
+from app.schemas.api.user import UserLimitOverrides
+from app.schemas.runtime_config import FALLBACK_RATE_LIMITS, RateLimit
 from app.vocabulary import LimitClass
 
 # Short in-process cache: hot path must not hit Postgres per request,
@@ -36,47 +38,6 @@ AFFINITY_TOLERANCE_DEFAULT = 0.15
 STATE_TTL_MARGIN_SECONDS = 60
 # Seconds per page /load assumes for a domain with no measured pages yet.
 LOAD_DEFAULT_SECONDS_PER_PAGE = 10.0
-
-
-@dataclass(frozen=True)
-class ClassLimits:
-    per_minute: int
-    burst: int
-
-
-# TODO(rrandiak): Into the pydantic model(s)
-FALLBACK_LIMITS: dict[LimitClass, ClassLimits] = {
-    LimitClass.SUBMIT: ClassLimits(per_minute=60, burst=10),
-    LimitClass.QUERY: ClassLimits(per_minute=120, burst=20),
-    LimitClass.WS_CONNECT: ClassLimits(per_minute=5, burst=2),
-}
-
-# limit class -> (users.<per-minute column>, users.<burst column>)
-USER_OVERRIDE_COLUMNS: dict[LimitClass, tuple[str, str]] = {
-    LimitClass.SUBMIT: ("rate_submit_per_minute", "burst_submit"),
-    LimitClass.QUERY: ("rate_query_per_minute", "burst_query"),
-    LimitClass.WS_CONNECT: ("rate_ws_per_minute", "burst_ws"),
-}
-
-
-def resolve(
-    per_minute_override: int | None,
-    burst_override: int | None,
-    default: ClassLimits,
-) -> ClassLimits:
-    return ClassLimits(
-        per_minute=per_minute_override if per_minute_override is not None else default.per_minute,
-        burst=burst_override if burst_override is not None else default.burst,
-    )
-
-
-def parse_default_limits(value: Any, fallback: ClassLimits) -> ClassLimits:
-    if not isinstance(value, dict):
-        return fallback
-    return ClassLimits(
-        per_minute=int(value.get("per_minute", fallback.per_minute)),
-        burst=int(value.get("burst", fallback.burst)),
-    )
 
 
 def _cache_get(key: str) -> tuple[Any, bool]:
@@ -126,33 +87,34 @@ def invalidate_user(username: str) -> None:
     _cache.pop(f"user:{username}", None)
 
 
-async def get_default_limits(db: AsyncSession, limit_class: LimitClass) -> ClassLimits:
+async def get_default_limits(db: AsyncSession, limit_class: LimitClass) -> RateLimit:
     value = await get_value(db, f"rate_limit.{limit_class}")
-    return parse_default_limits(value, FALLBACK_LIMITS[limit_class])
+    return RateLimit.from_config(value, FALLBACK_RATE_LIMITS[limit_class])
 
 
-async def _get_user_overrides(db: AsyncSession, username: str) -> dict[str, int | None]:
+async def _get_user_overrides(db: AsyncSession, username: str) -> UserLimitOverrides:
     cached, ok = _cache_get(f"user:{username}")
     if ok:
-        cached_overrides: dict[str, int | None] = cached
+        cached_overrides: UserLimitOverrides = cached
         return cached_overrides
-    columns = [c for pair in USER_OVERRIDE_COLUMNS.values() for c in pair]
-    result = await db.execute(
-        select(*(getattr(User, c) for c in columns)).where(User.username == username)
-    )
-    row = result.one_or_none()
-    overrides: dict[str, int | None] = (
-        dict(zip(columns, row, strict=True)) if row else {c: None for c in columns}
+    user = await db.scalar(select(User).where(User.username == username))
+    # Read back as stored, unvalidated: a value set by hand in SQL must not 500 the hot
+    # path (the limiter itself handles a non-positive rate).
+    overrides = (
+        UserLimitOverrides.model_construct(
+            **{field: getattr(user, field) for field in UserLimitOverrides.model_fields}
+        )
+        if user
+        else UserLimitOverrides()
     )
     _cache_put(f"user:{username}", overrides)
     return overrides
 
 
-async def effective_limits(db: AsyncSession, username: str, limit_class: LimitClass) -> ClassLimits:
+async def effective_limits(db: AsyncSession, username: str, limit_class: LimitClass) -> RateLimit:
     default = await get_default_limits(db, limit_class)
     overrides = await _get_user_overrides(db, username)
-    per_col, burst_col = USER_OVERRIDE_COLUMNS[limit_class]
-    return resolve(overrides[per_col], overrides[burst_col], default)
+    return overrides.apply(limit_class, default)
 
 
 async def get_storage_ttl_minutes(db: AsyncSession, buckets: list[str]) -> dict[str, int]:

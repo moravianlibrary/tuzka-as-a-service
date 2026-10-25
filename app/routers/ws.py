@@ -101,10 +101,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     try:
         async with async_session() as db:
-            limits = await config_service.effective_limits(db, username, LimitClass.WS_CONNECT)
-        allowance = await rate_limit.check(
-            r, LimitClass.WS_CONNECT, username, limits.per_minute, limits.burst
-        )
+            limit = await config_service.effective_limits(db, username, LimitClass.WS_CONNECT)
+        allowance = await rate_limit.check(r, LimitClass.WS_CONNECT, username, limit)
         if not allowance.allowed:
             await ws.close(code=1008, reason="Rate limit exceeded")
             return

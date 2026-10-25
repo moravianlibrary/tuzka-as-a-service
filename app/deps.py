@@ -136,8 +136,8 @@ def _rate_limit_dep(limit_class: LimitClass) -> Callable[..., Awaitable[str]]:
         r: aioredis.Redis = Depends(get_redis),
         db: AsyncSession = Depends(get_db),
     ) -> str:
-        limits = await config_service.effective_limits(db, username, limit_class)
-        result = await rate_limit.check(r, limit_class, username, limits.per_minute, limits.burst)
+        limit = await config_service.effective_limits(db, username, limit_class)
+        result = await rate_limit.check(r, limit_class, username, limit)
         if not result.allowed:
             raise RateLimited(retry_after=math.ceil(result.retry_after))
         return username

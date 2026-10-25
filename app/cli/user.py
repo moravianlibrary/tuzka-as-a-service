@@ -3,8 +3,9 @@
 import typer
 
 from app.cli.common import JsonOption, build, output, row, run, secret_from_env
-from app.schemas.api.user import UserCreate, UserUpdate
+from app.schemas.api.user import LIMIT_FIELD_NAMES, UserCreate, UserUpdate, limit_fields
 from app.services import admin_ops
+from app.vocabulary import LimitClass
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -106,18 +107,19 @@ def set_limits(
 ) -> None:
     """Override the user's rate limits; options left out stay as they are."""
     fields: dict[str, object] = {}
-    for cls, per_minute, burst in (
-        ("submit", submit_per_minute, submit_burst),
-        ("query", query_per_minute, query_burst),
-        ("ws", ws_per_minute, ws_burst),
+    for limit_class, per_minute, burst in (
+        (LimitClass.SUBMIT, submit_per_minute, submit_burst),
+        (LimitClass.QUERY, query_per_minute, query_burst),
+        (LimitClass.WS_CONNECT, ws_per_minute, ws_burst),
     ):
-        if cls in clear:
-            fields[f"rate_{cls}_per_minute"] = None
-            fields[f"burst_{cls}"] = None
+        per_minute_field, burst_field = limit_fields(limit_class)
+        if LIMIT_FIELD_NAMES[limit_class] in clear:
+            fields[per_minute_field] = None
+            fields[burst_field] = None
         if per_minute is not None:
-            fields[f"rate_{cls}_per_minute"] = per_minute
+            fields[per_minute_field] = per_minute
         if burst is not None:
-            fields[f"burst_{cls}"] = burst
+            fields[burst_field] = burst
     if not fields:
         typer.echo("error: nothing to change", err=True)
         raise typer.Exit(2)

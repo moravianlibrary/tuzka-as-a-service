@@ -2,43 +2,51 @@
 
 import pytest
 
+from app.schemas.api.user import EffectiveLimits, UserLimitOverrides
+from app.schemas.runtime_config import FALLBACK_RATE_LIMITS, RateLimit
 from app.services import config as cfg
-from app.services.config import (
-    FALLBACK_LIMITS,
-    ClassLimits,
-    parse_default_limits,
-    resolve,
-)
+from app.vocabulary import LimitClass
+
+DEFAULT = RateLimit(per_minute=100, burst=5)
 
 
-def test_resolve_no_overrides_uses_default():
-    default = ClassLimits(per_minute=100, burst=5)
-    assert resolve(None, None, default) == default
+def test_no_overrides_uses_default():
+    assert UserLimitOverrides().apply(LimitClass.QUERY, DEFAULT) == DEFAULT
 
 
-def test_resolve_partial_override():
-    default = ClassLimits(per_minute=100, burst=5)
-    assert resolve(10, None, default) == ClassLimits(per_minute=10, burst=5)
-    assert resolve(None, 9, default) == ClassLimits(per_minute=100, burst=9)
+def test_partial_override():
+    assert DEFAULT.overridden(10, None) == RateLimit(per_minute=10, burst=5)
+    assert DEFAULT.overridden(None, 9) == RateLimit(per_minute=100, burst=9)
 
 
-def test_resolve_full_override():
-    default = ClassLimits(per_minute=100, burst=5)
-    assert resolve(10, 1, default) == ClassLimits(per_minute=10, burst=1)
+def test_override_applies_to_its_own_class_only():
+    overrides = UserLimitOverrides(rate_ws_per_minute=10, burst_ws=1)
+
+    assert overrides.apply(LimitClass.WS_CONNECT, DEFAULT) == RateLimit(per_minute=10, burst=1)
+    assert overrides.apply(LimitClass.SUBMIT, DEFAULT) == DEFAULT
 
 
-def test_parse_default_limits_valid():
-    parsed = parse_default_limits({"per_minute": 30, "burst": 3}, FALLBACK_LIMITS["query"])
-    assert parsed == ClassLimits(per_minute=30, burst=3)
-
-
-def test_parse_default_limits_missing_or_malformed_falls_back():
-    fb = FALLBACK_LIMITS["submit"]
-    assert parse_default_limits(None, fb) == fb
-    assert parse_default_limits("garbage", fb) == fb
-    assert parse_default_limits({"per_minute": 30}, fb) == ClassLimits(
-        per_minute=30, burst=fb.burst
+def test_rate_limit_from_config_row():
+    parsed = RateLimit.from_config(
+        {"per_minute": 30, "burst": 3}, FALLBACK_RATE_LIMITS[LimitClass.QUERY]
     )
+    assert parsed == RateLimit(per_minute=30, burst=3)
+
+
+def test_rate_limit_missing_or_malformed_falls_back():
+    fb = FALLBACK_RATE_LIMITS[LimitClass.SUBMIT]
+    assert RateLimit.from_config(None, fb) == fb
+    assert RateLimit.from_config("garbage", fb) == fb
+    assert RateLimit.from_config({"per_minute": "lots"}, fb) == fb
+    assert RateLimit.from_config({"per_minute": 30}, fb) == RateLimit(per_minute=30, burst=fb.burst)
+
+
+def test_effective_limits_flatten_to_the_override_fields():
+    effective = EffectiveLimits.from_limits(FALLBACK_RATE_LIMITS)
+
+    assert effective.rate_ws_per_minute == 5
+    assert effective.burst_ws == 2
+    assert effective.burst_submit == 10
 
 
 class _FakeDB:

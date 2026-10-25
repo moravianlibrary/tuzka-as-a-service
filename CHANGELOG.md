@@ -283,6 +283,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A `rate_limit.*` config value with a non-numeric rate or burst falls back to the
+  built-in limit instead of failing every request of that class with a 500.
 - A retried batch page keeps its megapixels. Retry left them out of the job row and its
   Redis state, so dispatch scored the page as 1 MP and the poller recorded the
   backend's seconds per megapixel against the wrong size.
