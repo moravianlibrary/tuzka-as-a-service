@@ -283,6 +283,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A retried batch page keeps its megapixels. Retry left them out of the job row and its
+  Redis state, so dispatch scored the page as 1 MP and the poller recorded the
+  backend's seconds per megapixel against the wrong size.
 - `taas-admin backend update --adapter` rejects an unknown adapter instead of storing
   it, which broke dispatch to that backend. `--device` and `--adapter` list their
   allowed values in `--help`.

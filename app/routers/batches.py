@@ -425,9 +425,15 @@ async def retry_batch(
         for job_id, name, status, _ in await batch_store.pages(db, batch_id)
         if status == JobStatus.FAILED
     ]
+    # A retried page is the same image: dispatch scoring and the per-backend speed
+    # divide by its megapixels.
+    rows = await db.execute(
+        select(Job.id, Job.megapixels).where(Job.id.in_([job_id for job_id, _ in failed]))
+    )
+    megapixels = {job_id: mp for job_id, mp in rows.tuples()}
     incoming = request.app.state.incoming_client
     bucket = settings.minio_incoming_bucket
-    retried: list[tuple[UUID, str]] = []  # (new job id, extension)
+    retried: list[tuple[UUID, str, float | None]] = []  # (new job id, extension, MP)
     expired: list[str] = []
     for old_id, name in failed:
         ext = PurePosixPath(name).suffix.lower()
@@ -447,9 +453,10 @@ async def retry_batch(
                 domain=batch.domain,
                 outputs=batch.outputs,
                 options=batch.options,
+                megapixels=megapixels.get(old_id),
             )
         )
-        retried.append((new_id, ext))
+        retried.append((new_id, ext, megapixels.get(old_id)))
     if not retried:
         return BatchRetryResponse(batch_id=batch_id, retried=0, expired=expired)
 
@@ -468,7 +475,7 @@ async def retry_batch(
         mapping={status: counts.get(status, 0) for status in TERMINAL_JOB_STATUSES},
     )
     submitted = time.time()
-    for index, (job_id, ext) in enumerate(retried):
+    for index, (job_id, ext, page_megapixels) in enumerate(retried):
         await redis_jobs.enqueue_job(
             r,
             str(job_id),
@@ -481,6 +488,7 @@ async def retry_batch(
                 "outputs": ",".join(batch.outputs),
                 "options": json.dumps(batch.options),
                 "ext": ext,
+                "mp": str(page_megapixels or 1.0),
                 "submitted_at": str(page_score(submitted, index)),
                 "priority": str(priority),
             },
