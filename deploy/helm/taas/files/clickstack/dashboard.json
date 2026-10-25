@@ -16,8 +16,8 @@
         "select": [
           {
             "aggFn": "count",
-            "where": "event:done",
-            "whereLanguage": "lucene"
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "domain"
@@ -38,16 +38,16 @@
             "valueExpression": "total_s",
             "level": 0.5,
             "alias": "p50",
-            "where": "event:done",
-            "whereLanguage": "lucene"
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
           },
           {
             "aggFn": "quantile",
             "valueExpression": "total_s",
             "level": 0.95,
             "alias": "p95",
-            "where": "event:done",
-            "whereLanguage": "lucene"
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "domain",
@@ -74,8 +74,8 @@
         "select": [
           {
             "aggFn": "count",
-            "where": "event:failed",
-            "whereLanguage": "lucene"
+            "where": "event = 'failed'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "error_class"
@@ -94,11 +94,11 @@
           {
             "aggFn": "avg",
             "valueExpression": "run_s",
-            "where": "event:done",
-            "whereLanguage": "lucene"
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
           }
         ],
-        "groupBy": "backend_id",
+        "groupBy": "if(backend = '', toString(backend_id), backend)",
         "numberFormat": {
           "output": "number",
           "mantissa": 2,
@@ -123,8 +123,8 @@
           {
             "aggFn": "max",
             "valueExpression": "value",
-            "where": "metric:queued",
-            "whereLanguage": "lucene"
+            "where": "metric = 'queued'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "labels['domain']",
@@ -153,8 +153,8 @@
           {
             "aggFn": "max",
             "valueExpression": "value",
-            "where": "metric:backend_inflight",
-            "whereLanguage": "lucene"
+            "where": "metric = 'backend_inflight'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "labels['backend']"
@@ -172,8 +172,8 @@
         "select": [
           {
             "aggFn": "count",
-            "where": "event:done AND domain:maps",
-            "whereLanguage": "lucene"
+            "where": "event = 'done' AND domain = 'maps'",
+            "whereLanguage": "sql"
           }
         ],
         "groupBy": "extra['georef.status']",
@@ -202,10 +202,87 @@
             "valueExpression": "toFloat64OrNull(extra['georef.residual_m'])",
             "level": 0.5,
             "alias": "p50",
-            "where": "event:done AND domain:maps",
-            "whereLanguage": "lucene"
+            "where": "event = 'done' AND domain = 'maps'",
+            "whereLanguage": "sql"
           }
         ],
+        "numberFormat": {
+          "output": "number",
+          "mantissa": 2,
+          "thousandSeparated": true,
+          "average": false,
+          "decimalBytes": false,
+          "factor": 1
+        },
+        "alignDateRangeToGranularity": true
+      }
+    },
+    {
+      "name": "Pages done per user",
+      "x": 0,
+      "y": 36,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "displayType": "stacked_bar",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "count",
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
+          }
+        ],
+        "groupBy": "username"
+      }
+    },
+    {
+      "name": "Failures per user",
+      "x": 12,
+      "y": 36,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "displayType": "stacked_bar",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "count",
+            "where": "event = 'failed'",
+            "whereLanguage": "sql"
+          }
+        ],
+        "groupBy": "username"
+      }
+    },
+    {
+      "name": "Total time p50 / p95 per user (s)",
+      "x": 0,
+      "y": 44,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "displayType": "line",
+        "sourceId": "Job Events",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "valueExpression": "total_s",
+            "level": 0.5,
+            "alias": "p50",
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
+          },
+          {
+            "aggFn": "quantile",
+            "valueExpression": "total_s",
+            "level": 0.95,
+            "alias": "p95",
+            "where": "event = 'done'",
+            "whereLanguage": "sql"
+          }
+        ],
+        "groupBy": "username",
         "numberFormat": {
           "output": "number",
           "mantissa": 2,

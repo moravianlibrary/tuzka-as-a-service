@@ -71,5 +71,7 @@ def test_shipped_dashboard_fits_hyperdx_v2_and_the_chart_sources() -> None:
                 "any",
                 "none",
             }
+            assert item.get("whereLanguage") in (None, "sql"), tile["name"]
+            assert "lucene" not in item.values(), tile["name"]
             if item["aggFn"] == "quantile":
                 assert item["level"] in (0.5, 0.9, 0.95, 0.99), tile["name"]
