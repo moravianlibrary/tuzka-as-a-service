@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 import pytest
 
+from app.schemas.redis import EngineRun
 from app.workers.poller import PollOutcome, drain_poll_queue
 from tests.factories import job_state
 
@@ -18,7 +19,7 @@ def _outcome(job_id: str, status: str = "running") -> PollOutcome:
         job_id=job_id,
         status=status,
         state=job_state(),
-        times={},
+        run=EngineRun(),
         retryable=False,
         http_status=None,
         error=None,
@@ -146,7 +147,7 @@ async def test_a_failed_status_request_does_not_stop_the_other_checks() -> None:
                 job_id=job_id,
                 status="unreachable",
                 state=job_state(),
-                times={},
+                run=EngineRun(),
                 retryable=True,
                 http_status=None,
                 error="ConnectError()",

@@ -44,7 +44,7 @@ from app.schemas.api.batch import (
     BatchStatusResponse,
     BatchSubmitResponse,
 )
-from app.schemas.redis import JobState
+from app.schemas.redis import BatchCounts, JobState
 from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
@@ -63,7 +63,6 @@ from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
 from app.vocabulary import (
     DEFAULT_DOMAIN,
-    TERMINAL_JOB_STATUSES,
     BatchStatus,
     Fmt,
     JobEventName,
@@ -213,7 +212,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
 
     state_ttl = await config_service.get_state_ttl_seconds(db)
     priority = await _user_priority(db, username)
-    await redis_jobs.init_batch(r, str(batch_id), len(pages), state_ttl)
+    await redis_jobs.init_batch(r, BatchCounts(batch_id=str(batch_id), total=len(pages)), state_ttl)
     trace = inject_trace_context()
     emitter = get_emitter()
     for index, (job_id, ext, megapixels) in enumerate(pages):
@@ -468,11 +467,13 @@ async def retry_batch(
     counts = await batch_store.page_counts(db, batch_id)
     state_ttl = await config_service.get_state_ttl_seconds(db)
     priority = await _user_priority(db, username)
-    await redis_jobs.init_batch(r, str(batch_id), batch.total, state_ttl)
-    await r.hset(
-        f"batch:{batch_id}",
-        mapping={status: counts.get(status, 0) for status in TERMINAL_JOB_STATUSES},
+    restarted = BatchCounts(
+        batch_id=str(batch_id),
+        total=batch.total,
+        done=counts.get(JobStatus.DONE, 0),
+        failed=counts.get(JobStatus.FAILED, 0),
     )
+    await redis_jobs.init_batch(r, restarted, state_ttl)
     submitted = time.time()
     for index, (job_id, ext, page_megapixels) in enumerate(retried):
         await redis_jobs.enqueue_job(

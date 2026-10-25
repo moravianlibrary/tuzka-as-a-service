@@ -72,8 +72,9 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
       dicts (`routers/jobs.py`, `routers/batches.py` ×2), `job_domain`/`job_outputs`/
       `job_options`/`parse_avoid`, the ~60 raw `meta[...]` reads, `PendingJob`'s parsing.
       Building the dicts in one place found the batch retry dropping megapixels (fixed).
-- [ ] B1 rest: `BatchCounts` from the batch hash; `harvest_times` as a typed model; the
-      poller's own `next_poll_at`/`last_poll` HSET moves into `redis_jobs`
+- [x] B1 rest: `BatchCounts` from the batch hash; `harvest_times` as `EngineRun`; the
+      poller's `next_poll_at`/`last_poll` HSET and both workers' `requeues` HINCRBY move
+      into `redis_jobs`, which is now the only writer of a job's hash
 - [ ] Follow-up: a pending entry whose state is gone is offered as a default job and
       dropped only once a backend claims it; drop it from its queue outright instead
 - [ ] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/

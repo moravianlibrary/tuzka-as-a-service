@@ -10,15 +10,43 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from app.vocabulary import DEFAULT_DOMAIN, Fmt, JobStatus
 
 # Hash fields holding comma-separated values or JSON.
 _CSV_FIELDS = frozenset({"outputs", "avoid_backends"})
 _JSON_FIELDS = frozenset({"options", "harvest_times"})
+# The engine-clock timestamps of an EngineRun; every other key of it is a metric.
+_RUN_STAMPS = ("created_at", "started_at", "finished_at")
 # W3C trace context headers, stored as top-level hash fields.
 _TRACE_FIELDS = frozenset({"traceparent", "tracestate", "baggage"})
+
+
+class EngineRun(BaseModel):
+    """The engine's last status of a job's run, which the harvest stores the job with: its
+    timestamps (engine clock, ISO strings as the engine sent them) and its metrics
+    (``n_lines``, ``mean_conf`` and whatever else the adapter reports). Stored flat, the
+    timestamps beside the metrics, which is the JSON older releases wrote."""
+
+    model_config = ConfigDict(frozen=True)
+
+    created_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    metrics: dict[str, int | float | str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_flat(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "metrics" in data:
+            return data
+        metrics = {k: v for k, v in data.items() if k not in _RUN_STAMPS and v is not None}
+        return {k: data[k] for k in _RUN_STAMPS if k in data} | {"metrics": metrics}
+
+    @model_serializer
+    def _to_flat(self) -> dict[str, Any]:
+        return {**self.metrics, **{stamp: getattr(self, stamp) for stamp in _RUN_STAMPS}}
 
 
 class JobState(BaseModel):
@@ -65,7 +93,7 @@ class JobState(BaseModel):
     last_poll: float | None = None
 
     # Storing: the engine's last status, and failed harvest attempts so far.
-    harvest_times: dict[str, Any] | None = None
+    harvest_times: EngineRun | None = None
     harvest_attempts: int = 0
 
     # Finished.
@@ -100,6 +128,28 @@ class JobState(BaseModel):
         dumped = self.model_dump(by_alias=True, exclude_none=True, exclude={"trace"})
         fields = {name: _encode(value) for name, value in dumped.items()}
         return fields | {name: value for name, value in self.trace.items() if name in _TRACE_FIELDS}
+
+
+class BatchCounts(BaseModel):
+    """A batch's ``batch:<id>`` progress counters. ``done`` and ``failed`` are named after
+    the terminal job statuses, which the state functions increment by name."""
+
+    model_config = ConfigDict(frozen=True)
+
+    batch_id: str
+    total: int = 0
+    done: int = 0
+    failed: int = 0
+
+    @classmethod
+    def from_hash(cls, batch_id: str, raw: Mapping[Any, Any]) -> "BatchCounts":
+        """Parse an HGETALL reply of the batch's hash."""
+        return cls.model_validate(
+            {"batch_id": batch_id} | {_text(k): _text(v) for k, v in raw.items()}
+        )
+
+    def to_hash(self) -> dict[str, int]:
+        return self.model_dump(exclude={"batch_id"})
 
 
 def _text(value: bytes | str) -> str:

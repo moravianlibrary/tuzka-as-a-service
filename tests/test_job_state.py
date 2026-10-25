@@ -1,6 +1,8 @@
 """Pins the job hash encoding: what JobState writes, it reads back, and it still reads the
 hashes an older release wrote (bytes keys, empty strings for none, only a legacy fmt)."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -140,3 +142,20 @@ def test_options_come_from_the_hash(stored, options) -> None:
 )
 def test_avoid_backends_parse_to_ids(stored, avoid) -> None:
     assert JobState.from_hash(_SUBMITTED | stored).avoid_backends == avoid
+
+
+def test_engine_run_is_stored_flat_as_older_releases_wrote_it() -> None:
+    raw = dict(_SUBMITTED, harvest_times='{"n_lines": 42, "started_at": "2026-10-22T10:00:00"}')
+
+    run = JobState.from_hash(raw).harvest_times
+
+    assert run is not None
+    assert run.started_at == "2026-10-22T10:00:00"
+    assert run.metrics == {"n_lines": 42}
+    stored = JobState.from_hash(raw).to_hash()["harvest_times"]
+    assert json.loads(stored) == {  # flat again, timestamps beside the metrics
+        "n_lines": 42,
+        "created_at": None,
+        "started_at": "2026-10-22T10:00:00",
+        "finished_at": None,
+    }

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
 from app.workers.poller import (
     PollOutcome,
@@ -27,7 +28,7 @@ def _outcome(**kw) -> PollOutcome:
         "job_id": "j",
         "status": "failed",
         "state": job_state(backend_id=7),
-        "times": {},
+        "run": EngineRun(),
         "retryable": False,
         "http_status": None,
         "error": None,

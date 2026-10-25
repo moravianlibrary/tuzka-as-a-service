@@ -30,6 +30,7 @@ from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
     claim_pending,
+    count_requeue,
     get_backends_state,
     get_jobs,
     job_event_payload,
@@ -535,7 +536,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     msg,
                 )
                 health_cache[backend.id] = (False, time.time())
-                await r.hincrby(f"job:{job_id}", "requeues", 1)
+                await count_requeue(r, job_id)
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 await perf.record_failure(r, backend.id, domain)
                 attempt = attempt_entry(

@@ -5,13 +5,12 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, cast
 
 import redis.asyncio as aioredis
 
 from app.config import Settings
-from app.schemas.redis import JobState
+from app.schemas.redis import BatchCounts, EngineRun, JobState
 from app.services.load import ewma, load_field
 from app.vocabulary import TERMINAL_JOB_STATUSES, JobStatus
 
@@ -332,25 +331,17 @@ async def set_running(
     await signal_poll(r)  # a job just went in-flight — start polling it promptly
 
 
-@dataclass(frozen=True)
-class BatchCounts:
-    """A batch's progress, from its Redis counters."""
-
-    batch_id: str
-    total: int
-    done: int
-    failed: int
-
-
 def _batch_key(batch_id: str) -> str:
     return f"batch:{batch_id}"
 
 
-async def init_batch(r: aioredis.Redis, batch_id: str, total: int, ttl: int) -> None:
-    """Start a batch's progress counters (D8); the state functions move them."""
+async def init_batch(r: aioredis.Redis, counts: BatchCounts, ttl: int) -> None:
+    """Start (or, for a retry, restart) a batch's progress counters (D8); the state
+    functions move them."""
+    key = _batch_key(counts.batch_id)
     async with r.pipeline(transaction=True) as pipe:
-        pipe.hset(_batch_key(batch_id), mapping={"total": total, "done": 0, "failed": 0})
-        pipe.expire(_batch_key(batch_id), ttl)
+        pipe.hset(key, mapping=cast("dict[Any, Any]", counts.to_hash()))
+        pipe.expire(key, ttl)
         await pipe.execute()
 
 
@@ -366,10 +357,7 @@ async def _count_batch_page(
         pipe.hincrby(key, status, 1)  # pages per terminal status
         pipe.hgetall(key)
         _, raw = await pipe.execute()
-    counts = {_s(k): int(v) for k, v in raw.items()}
-    return BatchCounts(
-        state.batch_id, counts.get("total", 0), counts.get("done", 0), counts.get("failed", 0)
-    )
+    return BatchCounts.from_hash(state.batch_id, raw)
 
 
 def batch_event(counts: BatchCounts) -> dict[str, Any]:
@@ -417,7 +405,7 @@ async def release_done(
     r: aioredis.Redis,
     job_id: str,
     state: JobState,
-    times: dict[str, Any] | None = None,
+    run: EngineRun | None = None,
     now: float | None = None,
 ) -> bool:
     """Release a finished job's engine slot and queue its harvest, atomically.
@@ -444,7 +432,7 @@ async def release_done(
         _job_load_field(state),
         backend_id,
         batch_id,
-        json.dumps(times or {}, default=str),
+        json.dumps(run.model_dump() if run else {}, default=str),
     )
     if released:
         await signal_submit(r)  # the engine slot is free — refill it now
@@ -747,6 +735,16 @@ async def record_page_seconds(r: aioredis.Redis, domain: str, seconds: float) ->
     prev = await r.hget(LOAD_SPP_KEY, domain)
     value = ewma(float(prev) if prev is not None else None, seconds)
     await r.hset(LOAD_SPP_KEY, domain, str(value))
+
+
+async def count_requeue(r: aioredis.Redis, job_id: str) -> None:
+    """Count one more requeue of the job against its retry budget."""
+    await r.hincrby(f"job:{job_id}", "requeues", 1)
+
+
+async def schedule_next_poll(r: aioredis.Redis, job_id: str, at: float, now: float) -> None:
+    """Record a status check of a running job and when the next one is due."""
+    await r.hset(f"job:{job_id}", mapping={"next_poll_at": str(at), "last_poll": str(now)})
 
 
 async def get_inflight_ids(r: aioredis.Redis) -> set[str]:

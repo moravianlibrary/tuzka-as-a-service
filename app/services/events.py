@@ -130,9 +130,8 @@ def ch_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-# Engine metrics that have columns of their own (or are timestamps); the rest go to
-# ``extra``.
-_COLUMN_METRICS = frozenset({"n_lines", "mean_conf", "created_at", "started_at", "finished_at"})
+# Engine metrics that have columns of their own; the rest go to ``extra``.
+_COLUMN_METRICS = frozenset({"n_lines", "mean_conf"})
 
 
 def extra_metrics(metrics: dict[str, Any]) -> dict[str, str]:

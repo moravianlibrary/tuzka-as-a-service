@@ -24,7 +24,7 @@ from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
-from app.schemas.redis import JobState
+from app.schemas.redis import EngineRun, JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
@@ -39,6 +39,7 @@ from app.services.events import (
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
+    count_requeue,
     due_harvest_ids,
     forget_harvests,
     get_inflight_ids,
@@ -51,6 +52,7 @@ from app.services.redis_jobs import (
     release_and_requeue,
     release_done,
     reschedule_harvest,
+    schedule_next_poll,
     set_done,
     set_failed,
     signal_poll,
@@ -130,7 +132,7 @@ def _parse_engine_dt(value: str | None) -> datetime | None:
     return dt
 
 
-def engine_stamps(times: dict[str, Any]) -> dict[str, datetime]:
+def engine_stamps(run: EngineRun) -> dict[str, datetime]:
     """The engine's own created/started/finished (engine clock) as job columns, for
     the ones it reported. created_at goes to engine_received_at, so the engine-queue
     span (engine_received -> started) stays on one clock; the taas-clock dispatched_at
@@ -141,21 +143,21 @@ def engine_stamps(times: dict[str, Any]) -> dict[str, datetime]:
         ("started_at", "started_at"),
         ("finished_at", "finished_at"),
     ):
-        value = _parse_engine_dt(times.get(key))
+        value = _parse_engine_dt(getattr(run, key))
         if value is not None:
             stamps[column] = value
     return stamps
 
 
-def _status_times(status: EngineStatus) -> dict[str, Any]:
+def _engine_run(status: EngineStatus) -> EngineRun:
     """What harvest reads from a status: the engine's metrics plus its timestamps
     (engine clock), which feed the job's engine_received/started/finished columns."""
-    return {
-        **status.metrics,
-        "created_at": status.created_at,
-        "started_at": status.started_at,
-        "finished_at": status.finished_at,
-    }
+    return EngineRun(
+        created_at=status.created_at,
+        started_at=status.started_at,
+        finished_at=status.finished_at,
+        metrics=status.metrics,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +167,7 @@ class PollOutcome:
     job_id: str
     status: PollStatus
     state: JobState
-    times: dict[str, Any]
+    run: EngineRun
     retryable: bool  # a failure here may succeed on another backend
     http_status: int | None
     error: str | None
@@ -375,7 +377,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
             return PollOutcome(
-                job_id, PollStatus.UNREACHABLE, state, {}, True, None, describe_exception(e)
+                job_id,
+                PollStatus.UNREACHABLE,
+                state,
+                EngineRun(),
+                True,
+                None,
+                describe_exception(e),
             )
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
@@ -383,7 +391,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 job_id,
                 PollStatus.ERROR,
                 state,
-                {},
+                EngineRun(),
                 is_retryable_poll_error(e),
                 http_status_of(e),
                 describe_exception(e),
@@ -394,7 +402,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 job_id,
                 PollStatus(status_resp.state),
                 state,
-                _status_times(status_resp),
+                _engine_run(status_resp),
                 False,
                 None,
                 None,
@@ -408,19 +416,19 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             job_id,
             PollStatus(status_resp.state),
             state,
-            _status_times(status_resp),
+            _engine_run(status_resp),
             is_retryable_engine_failure(error_status),
             error_status,
             status_resp.error,
             stage=FailureStage.ENGINE,
         )
 
-    async def harvest(job_id: str, state: JobState, times: dict[str, Any]) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+    async def harvest(job_id: str, state: JobState, run: EngineRun | None) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         # The job was moved to the harvest queue at engine-done, together with the last
         # engine status, so a retry (or a pass after a poller restart) still has the
         # run's timestamps even though the poll outcome is long gone.
-        if not times and state.harvest_times:
-            times = state.harvest_times
+        if run is None:
+            run = state.harvest_times or EngineRun()
         username = state.username
         external_id = state.external_id
         engine_job_id = _engine_job_id(state)
@@ -445,7 +453,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
             # Line count comes straight from the engine's status — it reports n_lines for
             # every job (computed during OCR), so lines are populated regardless of fmt.
-            alto_lines = times.get("n_lines") if isinstance(times.get("n_lines"), int) else None
+            n_lines = run.metrics.get("n_lines")
+            alto_lines = n_lines if isinstance(n_lines, int) else None
             # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
             alto_blocks = alto_chars = None
             if alto_bytes_for_analytics:
@@ -459,8 +468,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 alto_chars = sum(1 for c in text if not c.isspace())
 
             mean_conf: float | None = None
-            if isinstance(times.get("mean_conf"), (int, float)):
-                mean_conf = float(times["mean_conf"])
+            reported_conf = run.metrics.get("mean_conf")
+            if isinstance(reported_conf, int | float):
+                mean_conf = float(reported_conf)
 
             event_data = job_event_payload(
                 job_id, external_id, JobStatus.DONE, batch_id=state.batch_id
@@ -516,7 +526,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     "status": JobStatus.DONE,
                     "stored_at": stored_at,
                 }
-                stamps = engine_stamps(times)
+                stamps = engine_stamps(run)
                 done_values.update(stamps)
                 engine_created = stamps.get("engine_received_at")
                 engine_started = stamps.get("started_at")
@@ -582,7 +592,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         blocks=alto_blocks,
                         chars=alto_chars,
                         mean_conf=mean_conf,
-                        extra=extra_metrics(times),
+                        extra=extra_metrics(run.metrics),
                         **durations(
                             job_rec.submitted_at if job_rec else None,
                             job_rec.dispatched_at if job_rec else None,
@@ -605,7 +615,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             attempt = attempt_entry(
                 FailureStage.HARVEST, backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
             )
-            await mark_failed(job_id, state, str(e), attempt=attempt, times=times)
+            await mark_failed(job_id, state, str(e), attempt=attempt, run=run)
         except Exception as e:
             # The engine already finished this job; a transient DB/storage error here is
             # not the job's fault. Keep it on the durable harvest queue and retry with
@@ -623,16 +633,16 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 return
             logger.exception("Failed to harvest job %s", job_id)
-            await mark_failed(job_id, state, str(e), times=times)
+            await mark_failed(job_id, state, str(e), run=run)
 
     async def mark_failed(
         job_id: str,
         state: JobState,
         error: str,
         attempt: dict[str, Any] | None = None,
-        times: dict[str, Any] | None = None,
+        run: EngineRun | None = None,
     ) -> None:
-        """Fail the job for good. ``times`` is the engine's last status, when it ran the
+        """Fail the job for good. ``run`` is the engine's last status, when it ran the
         job: its stamps are kept, so a job that failed after minutes of work shows them."""
         username = state.username
         external_id = state.external_id
@@ -657,7 +667,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 "status": JobStatus.FAILED,
                 "error": error,
                 "finished_at": failed_at,
-                **engine_stamps(times or {}),
+                **(engine_stamps(run) if run else {}),
             }
             finished_at = values["finished_at"]
             if attempt is not None:
@@ -718,12 +728,12 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             finally:
                 poll_sem.release()
 
-    async def harvest_with_sem(job_id: str, state: JobState, times: dict[str, Any]) -> None:
+    async def harvest_with_sem(job_id: str, state: JobState, run: EngineRun | None) -> None:
         with timer.stage("harvest_wait"):
             await sem.acquire()
         try:
             with job_span("harvest", job_id, state, backend_id=state.backend_id):
-                await harvest(job_id, state, times)
+                await harvest(job_id, state, run)
         finally:
             sem.release()
 
@@ -731,8 +741,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
     async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         nonlocal released_since_harvest
-        done_jobs: list[tuple[str, JobState, dict[str, Any]]] = []
-        failed_jobs: list[tuple[str, JobState, str, dict[str, Any], dict[str, Any]]] = []
+        done_jobs: list[tuple[str, JobState, EngineRun]] = []
+        failed_jobs: list[tuple[str, JobState, str, dict[str, Any], EngineRun]] = []
         requeue_jobs: list[tuple[str, JobState, float, int | None, dict[str, Any]]] = []
         running_jobs: list[tuple[str, JobState]] = []
 
@@ -744,11 +754,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     outcome.status, outcome.retryable, requeues, max_requeues
                 )
             if action == PollAction.HARVEST:
-                done_jobs.append((outcome.job_id, state, outcome.times))
+                done_jobs.append((outcome.job_id, state, outcome.run))
             elif action == PollAction.FAIL:
                 err = poll_failure_message(outcome, max_requeues)
                 attempt = poll_attempt(outcome, False, utcnow().isoformat())
-                failed_jobs.append((outcome.job_id, state, err, attempt, outcome.times))
+                failed_jobs.append((outcome.job_id, state, err, attempt, outcome.run))
             elif action == PollAction.REQUEUE:
                 delay = backoff_seconds(requeues)
                 avoid: int | None = state.backend_id
@@ -762,11 +772,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # below picks these up in this same pass when it has capacity.
         if done_jobs:
             released = await asyncio.gather(
-                *[release_done(r, jid, state, times) for jid, state, times in done_jobs],
+                *[release_done(r, jid, state, run) for jid, state, run in done_jobs],
                 return_exceptions=True,
             )
             storing_ids: list[UUID] = []
-            for (jid, _meta, _times), release_result in zip(done_jobs, released, strict=True):
+            for (jid, _state, _run), release_result in zip(done_jobs, released, strict=True):
                 if isinstance(release_result, Exception):
                     logger.error("Releasing job %s for harvest failed: %s", jid, release_result)
                 elif release_result:
@@ -791,21 +801,15 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 settings.poll_backoff_max,
             )
             new_deadline = time.time() + next_backoff
-            await r.hset(
-                f"job:{job_id}",
-                mapping={
-                    "next_poll_at": str(new_deadline),
-                    "last_poll": str(time.time()),
-                },
-            )
+            await schedule_next_poll(r, job_id, new_deadline, time.time())
 
         # Mark failed jobs
-        for job_id, state, error, attempt, times in failed_jobs:
+        for job_id, state, error, attempt, run in failed_jobs:
             with (
                 job_span("fail", job_id, state, backend_id=state.backend_id),
                 timer.stage("fail"),
             ):
-                await mark_failed(job_id, state, error, attempt=attempt, times=times)
+                await mark_failed(job_id, state, error, attempt=attempt, run=run)
 
         # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
         # another backend picks them up after a jittered backoff. Redis is
@@ -823,7 +827,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         delay_s=delay,
                         avoid_backend_id=avoid_id,
                     )
-                    await r.hincrby(f"job:{job_id}", "requeues", 1)
+                    await count_requeue(r, job_id)
                     if avoid_id is not None:  # retryable: the backend's fault
                         await perf.record_failure(r, avoid_id, state.domain)
                 logger.info(f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})")
@@ -924,7 +928,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         await forget_harvests(r, missing)
                     results = await asyncio.gather(
                         *[
-                            harvest_with_sem(jid, state, {})
+                            harvest_with_sem(jid, state, None)
                             for jid, state in harvest_states.items()
                             if state is not None
                         ],
