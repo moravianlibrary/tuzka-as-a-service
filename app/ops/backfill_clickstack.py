@@ -28,7 +28,7 @@ from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
 from app.models.db import make_engine
 from app.services.events import JobEvent, job_event_row
-from app.vocabulary import JobStatus
+from app.vocabulary import JobEventName, JobStatus
 
 BATCH_ROWS = 10_000
 
@@ -61,7 +61,7 @@ def event_from_analytics(row: Mapping[str, Any]) -> JobEvent:
         outputs = []
     return JobEvent(
         ts=ts,
-        event="failed" if row["status"] == JobStatus.FAILED else "done",
+        event=JobEventName.FAILED if row["status"] == JobStatus.FAILED else JobEventName.DONE,
         job_id=str(row["job_id"]),
         username=row["username"] or "",
         domain=row["domain"] or "default",

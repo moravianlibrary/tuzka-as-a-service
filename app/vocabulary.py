@@ -70,3 +70,38 @@ class PollAction(StrEnum):
     FAIL = "fail"
     # Not finished yet: poll it again later.
     RUNNING = "running"
+
+
+class FailureStage(StrEnum):
+    """Where a job's attempt failed (``jobs.attempts``, the event's ``error_class``)."""
+
+    DISPATCH = "dispatch"
+    # The status check failed (transport error, HTTP error from the status endpoint).
+    POLL = "poll"
+    # The engine reported the failure itself.
+    ENGINE = "engine"
+    HARVEST = "harvest"
+    # The reaper failed a job that sat too long; never an attempt.
+    TIMEOUT = "timeout"
+
+
+class JobEventName(StrEnum):
+    """The ``event`` of a ``taas.job_events`` row."""
+
+    SUBMITTED = "submitted"
+    DISPATCHED = "dispatched"
+    RETRIED = "retried"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class ErrorClass(StrEnum):
+    """What went wrong, coarse enough to chart (``taas.job_events.error_class``)."""
+
+    NONE = ""
+    HTTP_4XX = "http_4xx"
+    HTTP_5XX = "http_5xx"
+    TRANSPORT = "transport"
+    ENGINE_INPUT = "engine_input"
+    ENGINE_INTERNAL = "engine_internal"
+    TIMEOUT = "timeout"

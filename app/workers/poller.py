@@ -31,7 +31,6 @@ from app.services.alto_stats import parse_alto
 from app.services.auth import decrypt_backend_key
 from app.services.event_emitter import get_emitter
 from app.services.events import (
-    EventName,
     JobEvent,
     attempt_failure,
     durations,
@@ -61,7 +60,6 @@ from app.services.redis_jobs import (
 )
 from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
-    Stage,
     attempt_entry,
     backoff_seconds,
     describe_exception,
@@ -76,7 +74,14 @@ from app.services.storage import (
     put_object,
 )
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import EngineState, JobStatus, PollAction, PollStatus
+from app.vocabulary import (
+    EngineState,
+    FailureStage,
+    JobEventName,
+    JobStatus,
+    PollAction,
+    PollStatus,
+)
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -165,9 +170,8 @@ class PollOutcome:
     retryable: bool  # a failure here may succeed on another backend
     http_status: int | None
     error: str | None
-    # "engine" when the engine reported the failure itself, "poll" when the status
-    # check failed (transport error, HTTP error from the status endpoint).
-    stage: Stage = "poll"
+    # ENGINE when the engine reported the failure itself, POLL when the status check did.
+    stage: FailureStage = FailureStage.POLL
 
 
 def classify_poll_result(
@@ -335,7 +339,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         return adapters[cache_key]
 
     def job_event(
-        name: EventName, job_id: str, meta: dict[str, str], job_rec: Job | None, **fields: Any
+        name: JobEventName, job_id: str, meta: dict[str, str], job_rec: Job | None, **fields: Any
     ) -> JobEvent:
         """An event for a job the poller is finishing, from its hash and DB row."""
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
@@ -401,7 +405,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             is_retryable_engine_failure(error_status),
             error_status,
             status_resp.error,
-            stage="engine",
+            stage=FailureStage.ENGINE,
         )
 
     async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
@@ -565,7 +569,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             with timer.stage("events"):
                 emitter.emit(
                     job_event(
-                        "done",
+                        JobEventName.DONE,
                         job_id,
                         meta,
                         job_rec,
@@ -595,7 +599,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             # failed). Retrying gives the same answer, so the job fails for good.
             logger.warning("Job %s: %s", job_id, e)
             attempt = attempt_entry(
-                "harvest", backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
+                FailureStage.HARVEST, backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
             )
             await mark_failed(job_id, meta, str(e), attempt=attempt, times=times)
         except Exception as e:
@@ -670,7 +674,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             await db.commit()
         emitter.emit(
             job_event(
-                "failed",
+                JobEventName.FAILED,
                 job_id,
                 meta,
                 job_rec,
@@ -836,7 +840,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     )
                 await db.commit()
             for job_id, meta, _delay, _avoid, attempt in requeue_jobs:
-                emitter.emit(job_event("retried", job_id, meta, None, **attempt_failure(attempt)))
+                emitter.emit(
+                    job_event(JobEventName.RETRIED, job_id, meta, None, **attempt_failure(attempt))
+                )
         if done_jobs:
             released_since_harvest += len(done_jobs)
             await signal_poll(r)

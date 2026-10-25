@@ -68,7 +68,7 @@ from app.services.job_spec import (
 from app.services.scopes import Principal, check_scope, visible_outputs
 from app.services.uploads import UploadTooLarge, read_limited
 from app.telemetry import inject_trace_context
-from app.vocabulary import JobStatus
+from app.vocabulary import JobEventName, JobStatus
 
 router = APIRouter()
 
@@ -222,7 +222,7 @@ async def submit_job(
     get_emitter().emit(
         JobEvent(
             ts=utcnow(),
-            event="submitted",
+            event=JobEventName.SUBMITTED,
             job_id=str(job.id),
             username=username,
             domain=spec.domain,

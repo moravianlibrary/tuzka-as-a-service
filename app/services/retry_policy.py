@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
+from app.vocabulary import FailureStage
+
 logger = logging.getLogger(__name__)
 
-Stage = Literal["dispatch", "poll", "engine", "harvest"]
 
 # --- Constants (not config; see D6) ---
 _BACKOFF_BASE = 1.0  # seconds
@@ -92,7 +93,7 @@ def backoff_seconds(attempt: int, rng: random.Random | None = None) -> float:
 
 
 def attempt_entry(
-    stage: Stage,
+    stage: FailureStage,
     backend_id: int | None,
     http_status: int | None,
     error: str,

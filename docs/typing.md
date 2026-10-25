@@ -51,8 +51,8 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
 - [x] `BatchStatus` (open, queued, finished)
 - [x] `EngineState` (queued, running, done, failed, error, unknown); `PollStatus` adds
       unreachable; `PollAction` (harvest, requeue, fail, running)
-- [ ] `Stage` (dispatch, poll, engine, harvest, timeout — the `Literal` lacks timeout)
-- [ ] `EventName`, `ErrorClass` (from `Literal`s in `services/events.py`)
+- [x] `FailureStage` (dispatch, poll, engine, harvest, timeout — the `Literal` lacked timeout)
+- [x] `JobEventName`, `ErrorClass` (from `Literal`s in `services/events.py`)
 - [ ] `Device` (cpu, gpu): schema `Literal`, `Backend.device: str`
 - [ ] `AdapterId` (tuzkaocr, tuzkam): `ADAPTERS` keys, the default repeated 8×
 - [ ] `Fmt` (alto, txt, multi): two `Literal`s in `routers/jobs.py`

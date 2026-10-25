@@ -31,7 +31,7 @@ from app.services.redis_jobs import (
     publish_event,
     set_failed,
 )
-from app.vocabulary import ACTIVE_JOB_STATUSES, JobStatus
+from app.vocabulary import ACTIVE_JOB_STATUSES, FailureStage, JobEventName, JobStatus
 
 logger = logging.getLogger("reaper")
 
@@ -153,7 +153,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
             emitter.emit(
                 JobEvent(
                     ts=now,
-                    event="failed",
+                    event=JobEventName.FAILED,
                     job_id=str(job.id),
                     username=job.username,
                     domain=job.domain or "default",
@@ -162,7 +162,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     backend=backend_labels.get(job.backend_id or 0, ""),
                     engine_version=job.engine_version or "",
                     file_size_bytes=job.file_size_bytes,
-                    **failure("timeout", None),
+                    **failure(FailureStage.TIMEOUT, None),
                     **cast(
                         "dict[str, Any]",
                         durations(

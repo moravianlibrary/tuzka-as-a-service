@@ -62,7 +62,7 @@ from app.services.job_spec import (
 )
 from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
-from app.vocabulary import TERMINAL_JOB_STATUSES, BatchStatus, JobStatus
+from app.vocabulary import TERMINAL_JOB_STATUSES, BatchStatus, JobEventName, JobStatus
 
 router = APIRouter()
 
@@ -233,7 +233,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         emitter.emit(
             JobEvent(
                 ts=utcnow(),
-                event="submitted",
+                event=JobEventName.SUBMITTED,
                 job_id=str(job_id),
                 batch_id=str(batch_id),
                 username=username,

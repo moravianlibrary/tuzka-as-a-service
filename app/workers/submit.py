@@ -24,7 +24,7 @@ from app.services import config as config_service
 from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import all_served_capabilities, apply_domain_sync
 from app.services.event_emitter import get_emitter
-from app.services.events import EventName, JobEvent, failure
+from app.services.events import JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
     batch_event,
@@ -56,7 +56,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import JobStatus
+from app.vocabulary import FailureStage, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -389,7 +389,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         domain = job_domain(meta)
         outputs = job_outputs(meta)
 
-        def event(name: EventName, **fields: Any) -> JobEvent:
+        def event(name: JobEventName, **fields: Any) -> JobEvent:
             return JobEvent(
                 ts=utcnow(),
                 event=name,
@@ -422,7 +422,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
             attempt = attempt_entry(
-                "dispatch", backend.id, None, msg, retry=False, at=utcnow().isoformat()
+                FailureStage.DISPATCH, backend.id, None, msg, retry=False, at=utcnow().isoformat()
             )
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -439,7 +439,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
-            emitter.emit(event("failed", **failure("dispatch", None)))
+            emitter.emit(event(JobEventName.FAILED, **failure(FailureStage.DISPATCH, None)))
             await publish_event(
                 r,
                 username,
@@ -483,7 +483,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             submitted_at = float(meta.get("submitted_at") or time.time())
             emitter.emit(
                 event(
-                    "dispatched",
+                    JobEventName.DISPATCHED,
                     engine_version=engine_version or "",
                     queue_s=max(time.time() - submitted_at, 0.0),
                 )
@@ -497,7 +497,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             msg = describe_exception(e)
             transient = is_retryable_dispatch_error(e)
             http_st = http_status_of(e)
-            failed_fields = failure("dispatch", http_st, isinstance(e, httpx.TransportError))
+            failed_fields = failure(
+                FailureStage.DISPATCH, http_st, isinstance(e, httpx.TransportError)
+            )
             async with session_factory() as db:
                 max_requeues = await config_service.get_max_requeues(db)
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -523,7 +525,12 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 await perf.record_failure(r, backend.id, domain)
                 attempt = attempt_entry(
-                    "dispatch", backend.id, http_st, msg, retry=True, at=utcnow().isoformat()
+                    FailureStage.DISPATCH,
+                    backend.id,
+                    http_st,
+                    msg,
+                    retry=True,
+                    at=utcnow().isoformat(),
                 )
                 async with session_factory() as db:
                     await db.execute(
@@ -535,7 +542,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         )
                     )
                     await db.commit()
-                emitter.emit(event("retried", **failed_fields))
+                emitter.emit(event(JobEventName.RETRIED, **failed_fields))
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -550,7 +557,12 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             else:
                 logger.exception("Failed to dispatch job %s", job_id)
             attempt = attempt_entry(
-                "dispatch", backend.id, http_st, msg, retry=False, at=utcnow().isoformat()
+                FailureStage.DISPATCH,
+                backend.id,
+                http_st,
+                msg,
+                retry=False,
+                at=utcnow().isoformat(),
             )
             if perf.counts_against_backend(http_st):
                 await perf.record_failure(r, backend.id, domain)
@@ -568,7 +580,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 await batch_store.finish_if_done(db, meta.get("batch_id"))
                 await db.commit()
-            emitter.emit(event("failed", **failed_fields))
+            emitter.emit(event(JobEventName.FAILED, **failed_fields))
             await publish_event(
                 r,
                 username,

@@ -11,14 +11,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
-EventName = Literal["submitted", "dispatched", "retried", "done", "failed"]
-
-# What went wrong, coarse enough to chart; '' when nothing did.
-ErrorClass = Literal[
-    "http_4xx", "http_5xx", "transport", "engine_input", "engine_internal", "timeout", ""
-]
+from app.vocabulary import ErrorClass, FailureStage, JobEventName
 
 
 def _dur_s(a: datetime | None, b: datetime | None) -> float | None:
@@ -28,7 +23,7 @@ def _dur_s(a: datetime | None, b: datetime | None) -> float | None:
     return delta if delta >= 0 else None
 
 
-def error_class(stage: str, http_status: int | None, transport: bool) -> ErrorClass:
+def error_class(stage: FailureStage, http_status: int | None, transport: bool) -> ErrorClass:
     """Classify a failure for the ``error_class`` column.
 
     ``stage`` is a retry-policy stage (``dispatch``, ``poll``, ``engine``, ``harvest``)
@@ -36,16 +31,16 @@ def error_class(stage: str, http_status: int | None, transport: bool) -> ErrorCl
     engine blamed the input (4xx) and ``engine_internal`` otherwise, including when it
     gave no status. A transport failure (no HTTP response) is ``transport``.
     """
-    if stage == "timeout":
-        return "timeout"
+    if stage == FailureStage.TIMEOUT:
+        return ErrorClass.TIMEOUT
     if transport:
-        return "transport"
-    if stage == "engine":
+        return ErrorClass.TRANSPORT
+    if stage == FailureStage.ENGINE:
         blamed_input = http_status is not None and http_status < 500
-        return "engine_input" if blamed_input else "engine_internal"
+        return ErrorClass.ENGINE_INPUT if blamed_input else ErrorClass.ENGINE_INTERNAL
     if http_status is None:
-        return ""
-    return "http_5xx" if http_status >= 500 else "http_4xx"
+        return ErrorClass.NONE
+    return ErrorClass.HTTP_5XX if http_status >= 500 else ErrorClass.HTTP_4XX
 
 
 @dataclass(frozen=True)
@@ -53,7 +48,7 @@ class JobEvent:
     """One ``taas.job_events`` row (step 5, D2)."""
 
     ts: datetime
-    event: EventName
+    event: JobEventName
     job_id: str
     username: str
     domain: str
@@ -65,7 +60,7 @@ class JobEvent:
     engine_version: str = ""
     device: str = ""
     error_flag: bool = False
-    error_class: ErrorClass = ""
+    error_class: ErrorClass = ErrorClass.NONE
     http_status: int | None = None
     file_size_bytes: int | None = None
     # Durations in seconds; each spans one clock (see durations()).
@@ -82,7 +77,9 @@ class JobEvent:
     extra: dict[str, str] = field(default_factory=dict)
 
 
-def failure(stage: str, http_status: int | None, transport: bool = False) -> dict[str, Any]:
+def failure(
+    stage: FailureStage, http_status: int | None, transport: bool = False
+) -> dict[str, Any]:
     """The error columns of a ``retried``/``failed`` event, as ``JobEvent`` kwargs."""
     return {
         "error_flag": True,
@@ -91,7 +88,9 @@ def failure(stage: str, http_status: int | None, transport: bool = False) -> dic
     }
 
 
-def attempt_failure(attempt: dict[str, Any] | None, stage: str = "harvest") -> dict[str, Any]:
+def attempt_failure(
+    attempt: dict[str, Any] | None, stage: FailureStage = FailureStage.HARVEST
+) -> dict[str, Any]:
     """``failure()`` from a ``jobs.attempts`` entry. An attempt doesn't record whether
     the error was a transport one; a poll with no HTTP status is taken as one (the
     engine was unreachable), which is what it nearly always is."""
@@ -99,7 +98,7 @@ def attempt_failure(attempt: dict[str, Any] | None, stage: str = "harvest") -> d
         return failure(stage, None)
     status = attempt.get("http_status")
     stage = attempt.get("stage", stage)
-    return failure(stage, status, transport=status is None and stage == "poll")
+    return failure(stage, status, transport=status is None and stage == FailureStage.POLL)
 
 
 def durations(
