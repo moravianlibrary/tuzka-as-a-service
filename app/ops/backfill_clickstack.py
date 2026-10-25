@@ -28,6 +28,7 @@ from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
 from app.models.db import make_engine
 from app.services.events import JobEvent, job_event_row
+from app.vocabulary import JobStatus
 
 BATCH_ROWS = 10_000
 
@@ -60,7 +61,7 @@ def event_from_analytics(row: Mapping[str, Any]) -> JobEvent:
         outputs = []
     return JobEvent(
         ts=ts,
-        event="failed" if row["status"] == "failed" else "done",
+        event="failed" if row["status"] == JobStatus.FAILED else "done",
         job_id=str(row["job_id"]),
         username=row["username"] or "",
         domain=row["domain"] or "default",
@@ -71,7 +72,7 @@ def event_from_analytics(row: Mapping[str, Any]) -> JobEvent:
         adapter=row["adapter"] or "",
         engine_version=row["engine_version"] or "",
         device=row["device"] or "",
-        error_flag=row["status"] == "failed",
+        error_flag=row["status"] == JobStatus.FAILED,
         file_size_bytes=row["file_size_bytes"],
         queue_s=row["system_queue_s"],
         engine_queue_s=row["engine_queue_s"],

@@ -50,7 +50,7 @@ from app.schemas.job import (
     JobListResponse,
     JobResultEntry,
     JobResultResponse,
-    JobStatus,
+    JobStatusResponse,
     JobSubmitResponse,
 )
 from app.services import config as config_service
@@ -68,6 +68,7 @@ from app.services.job_spec import (
 from app.services.scopes import Principal, check_scope, visible_outputs
 from app.services.uploads import UploadTooLarge, read_limited
 from app.telemetry import inject_trace_context
+from app.vocabulary import JobStatus
 
 router = APIRouter()
 
@@ -182,7 +183,7 @@ async def submit_job(
         id=job_id,
         username=username,
         external_id=label,
-        status="queued",
+        status=JobStatus.QUEUED,
         fmt=job_fmt,
         domain=spec.domain,
         outputs=sorted(spec.outputs),
@@ -229,12 +230,12 @@ async def submit_job(
             file_size_bytes=len(image_bytes),
         )
     )
-    return JobSubmitResponse(job_id=job.id, external_id=label, status="queued")
+    return JobSubmitResponse(job_id=job.id, external_id=label, status=JobStatus.QUEUED)
 
 
 @router.get(
     "/jobs/{job_id}",
-    response_model=JobStatus,
+    response_model=JobStatusResponse,
     summary="Get job status",
     responses={
         401: {"description": "Missing or invalid X-API-Key header"},
@@ -246,7 +247,7 @@ async def get_job_status(
     job_id: UUID,
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
-) -> JobStatus:
+) -> JobStatusResponse:
     """Return the current status of one of your jobs.
 
     Requires a valid API key in the ``X-API-Key`` header and only resolves jobs owned by the
@@ -258,7 +259,7 @@ async def get_job_status(
     if job is None:
         raise NotFound("Job not found")
 
-    return JobStatus(
+    return JobStatusResponse(
         job_id=job.id,
         external_id=job.external_id,
         status=job.status,
@@ -304,9 +305,9 @@ async def get_job_result(
     if not job:
         raise NotFound("Job not found")
 
-    if job.status == "failed":
-        return JobResultResponse(status="failed", error=job.error or "Job failed")
-    if job.status != "done":
+    if job.status == JobStatus.FAILED:
+        return JobResultResponse(status=JobStatus.FAILED, error=job.error or "Job failed")
+    if job.status != JobStatus.DONE:
         raise NotReady("Job not completed yet")
 
     # Get results
@@ -335,7 +336,7 @@ async def get_job_result(
 
         entries.append(JobResultEntry(fmt=jr.fmt, url=jr.presigned_url))
 
-    return JobResultResponse(status="done", results=entries)
+    return JobResultResponse(status=JobStatus.DONE, results=entries)
 
 
 @router.get(
@@ -371,9 +372,9 @@ async def download_job_result(
     if not job:
         raise NotFound("Job not found")
 
-    if job.status == "failed":
+    if job.status == JobStatus.FAILED:
         raise Conflict(job.error or "Job failed")
-    if job.status != "done":
+    if job.status != JobStatus.DONE:
         raise NotReady("Job not completed yet")
 
     res = await db.execute(
@@ -401,7 +402,7 @@ async def download_job_result(
     },
 )
 async def list_jobs(
-    status: Literal["queued", "running", "storing", "done", "failed"] | None = None,
+    status: JobStatus | None = None,
     external_id: str | None = Query(
         None, max_length=255, description="Only jobs submitted with this external_id."
     ),
@@ -442,7 +443,7 @@ async def list_jobs(
 
     return JobListResponse(
         jobs=[
-            JobStatus(
+            JobStatusResponse(
                 job_id=j.id,
                 external_id=j.external_id,
                 status=j.status,

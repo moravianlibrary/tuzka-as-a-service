@@ -25,6 +25,7 @@ from app.models.job import Job, JobResult
 from app.services import config as config_service
 from app.services.batch_archive import batch_archive_path
 from app.services.storage import delete_objects
+from app.vocabulary import BatchStatus, JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,8 @@ async def delete_finished_jobs(db: AsyncSession, results_client: Minio, bucket: 
     done_cutoff, failed_cutoff = expired_job_cutoffs(utcnow(), done_ttl, failed_ttl)
     # Pages of a batch go with their batch (delete_expired_batches), all at once.
     expired = (
-        ((Job.status == "done") & (Job.finished_at < done_cutoff))
-        | ((Job.status == "failed") & (Job.finished_at < failed_cutoff))
+        ((Job.status == JobStatus.DONE) & (Job.finished_at < done_cutoff))
+        | ((Job.status == JobStatus.FAILED) & (Job.finished_at < failed_cutoff))
     ) & Job.batch_id.is_(None)
 
     deleted = 0
@@ -122,7 +123,7 @@ async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket
     any_failed = (
         select(func.count())
         .select_from(Job)
-        .where(Job.batch_id == Batch.id, Job.status == "failed")
+        .where(Job.batch_id == Batch.id, Job.status == JobStatus.FAILED)
         .correlate(Batch)
         .scalar_subquery()
         > 0
@@ -131,7 +132,7 @@ async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket
         await db.execute(
             select(Batch.id, Batch.username, Batch.finished_at, any_failed)
             .where(
-                Batch.status == "finished",
+                Batch.status == BatchStatus.FINISHED,
                 Batch.finished_at < now - timedelta(seconds=min(done_ttl, failed_ttl)),
             )
             .order_by(Batch.finished_at)

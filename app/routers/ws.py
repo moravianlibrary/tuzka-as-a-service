@@ -13,6 +13,7 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services import rate_limit
 from app.services.redis_jobs import job_event_payload
+from app.vocabulary import TERMINAL_JOB_STATUSES
 
 router = APIRouter()
 
@@ -117,7 +118,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 select(Job).where(
                     Job.username == username,
                     Job.finished_at >= cutoff,
-                    Job.status.in_(["done", "failed"]),
+                    Job.status.in_(TERMINAL_JOB_STATUSES),
                 )
             )
             for job in catchup.scalars().all():

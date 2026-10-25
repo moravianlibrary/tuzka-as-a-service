@@ -3,11 +3,11 @@
 from datetime import UTC, datetime, timedelta, timezone
 
 from app.clock import utc_iso
-from app.schemas.job import JobStatus
+from app.schemas.job import JobStatusResponse
 
 
-def _status(**times) -> JobStatus:
-    return JobStatus(
+def _status(**times) -> JobStatusResponse:
+    return JobStatusResponse(
         job_id="00000000-0000-0000-0000-000000000001",
         status="done",
         fmt="multi",

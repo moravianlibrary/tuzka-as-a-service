@@ -12,6 +12,7 @@ from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
 from app.models.job import Job, JobResult
+from app.vocabulary import JobStatus
 
 
 def estimate_eta(remaining_pages: int, seconds_per_page: float | None, slots: int) -> float | None:
@@ -34,7 +35,7 @@ def _latest_pages(batch_id: uuid.UUID) -> Any:
     )
 
 
-async def page_counts(db: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
+async def page_counts(db: AsyncSession, batch_id: uuid.UUID) -> dict[JobStatus, int]:
     """status → number of the batch's pages in it."""
     latest = _latest_pages(batch_id)
     rows = await db.execute(select(latest.c.status, func.count()).group_by(latest.c.status))

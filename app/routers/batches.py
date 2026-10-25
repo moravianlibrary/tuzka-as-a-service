@@ -42,7 +42,7 @@ from app.schemas.batch import (
     BatchPage,
     BatchResults,
     BatchRetryResponse,
-    BatchStatus,
+    BatchStatusResponse,
     BatchSubmitResponse,
 )
 from app.services import batch_store, redis_jobs, storage
@@ -62,6 +62,7 @@ from app.services.job_spec import (
 )
 from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
+from app.vocabulary import TERMINAL_JOB_STATUSES, BatchStatus, JobStatus
 
 router = APIRouter()
 
@@ -139,7 +140,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         domain=spec.domain,
         outputs=sorted(spec.outputs),
         options=spec.options,
-        status="open",
+        status=BatchStatus.OPEN,
     )
     db.add(batch)
     await db.commit()
@@ -177,7 +178,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
                     username=username,
                     batch_id=batch_id,
                     source_name=member.name,
-                    status="queued",
+                    status=JobStatus.QUEUED,
                     fmt=job_fmt,
                     domain=spec.domain,
                     outputs=sorted(spec.outputs),
@@ -201,7 +202,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         raise
 
     batch.total = len(pages)
-    batch.status = "queued"
+    batch.status = BatchStatus.QUEUED
     await db.commit()
 
     state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -277,7 +278,7 @@ async def _owned_batch(db: AsyncSession, batch_id: UUID, username: str) -> Batch
 
 @router.get(
     "/batches/{batch_id}",
-    response_model=BatchStatus,
+    response_model=BatchStatusResponse,
     summary="Get a batch's progress",
     responses={
         401: {"description": "Missing or invalid X-API-Key header"},
@@ -291,7 +292,7 @@ async def get_batch(
     username: str = Depends(rate_limit_query()),
     db: AsyncSession = Depends(get_db),
     r: aioredis.Redis = Depends(get_redis),
-) -> BatchStatus:
+) -> BatchStatusResponse:
     """A batch's progress: how many pages are queued, running, done and failed, and a
     rough ETA. ``pages=1`` lists every page (its path in your archive, job id, status,
     error)."""
@@ -299,8 +300,8 @@ async def get_batch(
     counts = await batch_store.page_counts(db, batch_id)
     # Keep the aggregate running count compatible with existing batch clients;
     # pages=1 exposes the more specific storing state per page.
-    queued = counts.get("queued", 0)
-    running = counts.get("running", 0) + counts.get("storing", 0)
+    queued = counts.get(JobStatus.QUEUED, 0)
+    running = counts.get(JobStatus.RUNNING, 0) + counts.get(JobStatus.STORING, 0)
     spp_raw = await r.hget("load:spp", batch.domain)  # seconds per page, if measured
     eta = batch_store.estimate_eta(
         queued + running,
@@ -313,7 +314,7 @@ async def get_batch(
             BatchPage(source_name=name or "", job_id=job_id, status=status, error=error)
             for job_id, name, status, error in await batch_store.pages(db, batch_id)
         ]
-    return BatchStatus(
+    return BatchStatusResponse(
         batch_id=batch.id,
         external_id=batch.external_id,
         status=batch.status,
@@ -322,11 +323,11 @@ async def get_batch(
         total=batch.total,
         queued=queued,
         running=running,
-        done=counts.get("done", 0),
-        failed=counts.get("failed", 0),
+        done=counts.get(JobStatus.DONE, 0),
+        failed=counts.get(JobStatus.FAILED, 0),
         submitted_at=batch.submitted_at,
         finished_at=batch.finished_at,
-        eta_s=eta if batch.status != "finished" else 0.0,
+        eta_s=eta if batch.status != BatchStatus.FINISHED else 0.0,
         pages=listed,
     )
 
@@ -360,12 +361,12 @@ async def get_batch_results(
     of whatever is done (not kept).
     """
     batch = await _owned_batch(db, batch_id, username)
-    if batch.status != "finished" and not partial:
+    if batch.status != BatchStatus.FINISHED and not partial:
         raise NotReady("The batch isn't finished yet")
 
     results = request.app.state.results_client
     bucket = settings.minio_results_bucket
-    final = batch.status == "finished" and not partial
+    final = batch.status == BatchStatus.FINISHED and not partial
     path = batch_archive_path(username, batch_id, partial=not final)
     if not (final and batch.archive_built_at is not None):
         stored = await batch_store.stored_results(db, batch_id)
@@ -410,13 +411,13 @@ async def retry_batch(
     listed in ``expired``.
     """
     batch = await _owned_batch(db, batch_id, username)
-    if batch.status != "finished":
+    if batch.status != BatchStatus.FINISHED:
         raise Conflict("Only a finished batch can be retried")
 
     failed = [
         (job_id, name or "")
         for job_id, name, status, _ in await batch_store.pages(db, batch_id)
-        if status == "failed"
+        if status == JobStatus.FAILED
     ]
     incoming = request.app.state.incoming_client
     bucket = settings.minio_incoming_bucket
@@ -435,7 +436,7 @@ async def retry_batch(
                 username=username,
                 batch_id=batch_id,
                 source_name=name,
-                status="queued",
+                status=JobStatus.QUEUED,
                 fmt=fmt_label(frozenset(batch.outputs)),
                 domain=batch.domain,
                 outputs=batch.outputs,
@@ -446,7 +447,7 @@ async def retry_batch(
     if not retried:
         return BatchRetryResponse(batch_id=batch_id, retried=0, expired=expired)
 
-    batch.status = "queued"
+    batch.status = BatchStatus.QUEUED
     batch.finished_at = None
     batch.archive_built_at = None  # rebuilt with the new results
     await db.commit()
@@ -458,7 +459,7 @@ async def retry_batch(
     await redis_jobs.init_batch(r, str(batch_id), batch.total, state_ttl)
     await r.hset(
         f"batch:{batch_id}",
-        mapping={"done": counts.get("done", 0), "failed": counts.get("failed", 0)},
+        mapping={status: counts.get(status, 0) for status in TERMINAL_JOB_STATUSES},
     )
     submitted = time.time()
     for index, (job_id, ext) in enumerate(retried):

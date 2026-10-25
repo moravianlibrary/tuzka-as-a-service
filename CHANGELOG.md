@@ -156,6 +156,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- The OpenAPI schema lists the allowed values of every job and batch `status` field
+  (job: queued, running, storing, done, failed; batch: open, queued, finished). The
+  status response schemas are renamed `JobStatusResponse` and `BatchStatusResponse`;
+  the JSON is unchanged.
 - **Engine API keys are now least-privilege and per engine.** They no longer live in
   the shared `<release>-secret` or reach every app pod through `envFrom`. Each
   `engines.<name>` takes an `auth` block: `env` names the variable the engine image

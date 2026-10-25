@@ -47,8 +47,8 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
 
 ### 0. Vocabulary
 
-- [ ] `JobStatus` (queued, running, storing, done, failed) — ~100 literals in 16 files
-- [ ] `BatchStatus` (open, queued, finished)
+- [x] `JobStatus` (queued, running, storing, done, failed) — ~100 literals in 16 files
+- [x] `BatchStatus` (open, queued, finished)
 - [ ] `EngineState` (queued, running, done, failed, error, unknown); `PollStatus` adds
       unreachable; `PollAction` (harvest, requeue, fail, running)
 - [ ] `Stage` (dispatch, poll, engine, harvest, timeout — the `Literal` lacks timeout)

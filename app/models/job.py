@@ -8,7 +8,10 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.vocabulary import JobStatus
+
 from .db import Base
+from .types import StrEnumType, check_values
 
 
 class Job(Base):
@@ -20,7 +23,9 @@ class Job(Base):
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=False)
     # The caller's own label for the job (any string, not unique); None = none given.
     external_id: Mapped[str | None] = mapped_column(default=None)
-    status: Mapped[str] = mapped_column(default="queued", nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        StrEnumType(JobStatus), default=JobStatus.QUEUED, nullable=False
+    )
     fmt: Mapped[str] = mapped_column(default="multi", nullable=False)
     domain: Mapped[str | None] = mapped_column(default=None)
     # A page of a batch: the batch, and the page's path inside the uploaded archive.
@@ -62,7 +67,7 @@ class Job(Base):
         Index("ix_jobs_backend_id", "backend_id"),
         Index("ix_jobs_batch_status", "batch_id", "status"),
         CheckConstraint(
-            "status IN ('queued', 'running', 'storing', 'done', 'failed')",
+            check_values("status", JobStatus),
             name="ck_jobs_status",
         ),
     )

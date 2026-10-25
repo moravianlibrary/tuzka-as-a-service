@@ -76,6 +76,7 @@ from app.services.storage import (
     put_object,
 )
 from app.telemetry import job_span, setup_telemetry
+from app.vocabulary import JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -444,7 +445,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 mean_conf = float(times["mean_conf"])
 
             event_data = job_event_payload(
-                job_id, external_id, "done", batch_id=meta.get("batch_id")
+                job_id, external_id, JobStatus.DONE, batch_id=meta.get("batch_id")
             )
 
             async with session_factory() as db:
@@ -494,7 +495,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
                 stored_at = utcnow()
                 done_values: dict[str, str | datetime] = {
-                    "status": "done",
+                    "status": JobStatus.DONE,
                     "stored_at": stored_at,
                 }
                 stamps = engine_stamps(times)
@@ -525,7 +526,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         )
                     claimed = await db.execute(
                         update(Job)
-                        .where(Job.id == job_id, Job.status != "done")
+                        .where(Job.id == job_id, Job.status != JobStatus.DONE)
                         .values(**done_values)
                     )
                     first_harvest = getattr(claimed, "rowcount", 1) == 1
@@ -622,7 +623,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             state_ttl = await config_service.get_state_ttl_seconds(db)
             # A job another harvest already finished stays done: a late failure (say a
             # second harvest that lost the race) mustn't overwrite its results.
-            done = await db.scalar(select(Job.status).where(Job.id == job_id)) == "done"
+            done = await db.scalar(select(Job.status).where(Job.id == job_id)) == JobStatus.DONE
             if done:
                 logger.warning("Job %s is already done; not failing it: %s", job_id, error)
                 await set_done(r, job_id, state_ttl, meta)
@@ -635,7 +636,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             ):
                 await perf.record_failure(r, int(attempt["backend_id"]), job_domain(meta))
             values: dict[str, Any] = {
-                "status": "failed",
+                "status": JobStatus.FAILED,
                 "error": error,
                 "finished_at": failed_at,
                 **engine_stamps(times or {}),
@@ -644,7 +645,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             if attempt is not None:
                 values.update(append_attempt(attempt))
             await db.execute(
-                update(Job).where(Job.id == job_id, Job.status != "done").values(**values)
+                update(Job).where(Job.id == job_id, Job.status != JobStatus.DONE).values(**values)
             )
 
             # The job as it ended, for its failed event.
@@ -679,7 +680,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             r,
             username,
             job_event_payload(
-                job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=error
+                job_id, external_id, JobStatus.FAILED, batch_id=meta.get("batch_id"), error=error
             ),
         )
         if batch is not None:
@@ -757,8 +758,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 async with session_factory() as db:
                     await db.execute(
                         update(Job)
-                        .where(Job.id.in_(storing_ids), Job.status == "running")
-                        .values(status="storing")
+                        .where(Job.id.in_(storing_ids), Job.status == JobStatus.RUNNING)
+                        .values(status=JobStatus.STORING)
                     )
                     await db.commit()
 
@@ -815,7 +816,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         update(Job)
                         .where(Job.id == job_id)
                         .values(
-                            status="queued",
+                            status=JobStatus.QUEUED,
                             engine_job_id=None,
                             backend_id=None,
                             dispatched_at=None,

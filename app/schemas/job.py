@@ -6,19 +6,20 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from app.clock import UtcDatetime
+from app.vocabulary import JobStatus
 
 
 class JobSubmitResponse(BaseModel):
     job_id: UUID
     # Your label from the submit, echoed back; None if you sent none.
     external_id: str | None = None
-    status: str
+    status: JobStatus
 
 
-class JobStatus(BaseModel):
+class JobStatusResponse(BaseModel):
     job_id: UUID
     external_id: str | None = None
-    status: str
+    status: JobStatus
     fmt: str
     domain: str | None
     # Requested outputs; None for jobs submitted before outputs were stored.
@@ -38,13 +39,13 @@ class JobResultResponse(BaseModel):
     # A failed job returns 200 with status="failed" + error and no results, rather than a
     # 5xx (an engine-side failure is not a fault of this API). The status endpoint already
     # exposes `error`, so this surfaces nothing new.
-    status: str = "done"
+    status: JobStatus = JobStatus.DONE
     error: str | None = None
     results: list[JobResultEntry] = []
 
 
 class JobListResponse(BaseModel):
-    jobs: list[JobStatus]
+    jobs: list[JobStatusResponse]
     total: int
 
 

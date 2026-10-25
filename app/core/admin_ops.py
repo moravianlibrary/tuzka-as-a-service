@@ -32,6 +32,7 @@ from app.models.user import User
 from app.services import config as config_service
 from app.services.auth import encrypt_backend_key, generate_key, hash_key
 from app.services.domain_sync import apply_declared_capabilities
+from app.vocabulary import JobStatus
 
 # --- Users ---
 
@@ -277,7 +278,10 @@ async def set_config(db: AsyncSession, values: dict[str, Any]) -> None:
 async def list_failed_jobs(db: AsyncSession, limit: int = 50) -> list[Job]:
     """The most recently failed jobs (their rows are kept for the failed-job TTL)."""
     result = await db.execute(
-        select(Job).where(Job.status == "failed").order_by(Job.finished_at.desc()).limit(limit)
+        select(Job)
+        .where(Job.status == JobStatus.FAILED)
+        .order_by(Job.finished_at.desc())
+        .limit(limit)
     )
     return list(result.scalars().all())
 

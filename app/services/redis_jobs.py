@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from app.config import Settings
 from app.engines.outputs import fmt_to_outputs
 from app.services.load import ewma, load_field
+from app.vocabulary import TERMINAL_JOB_STATUSES, JobStatus
 
 settings = Settings()
 
@@ -209,7 +210,7 @@ async def enqueue_job(
     # does not upcast; cast around the third-party stub friction (values are all strings).
     # The status lets set_failed tell a job that never ran (queued count) from one that
     # did (inflight count).
-    fields = {"status": "queued", **metadata}
+    fields = {"status": JobStatus.QUEUED, **metadata}
     async with r.pipeline(transaction=True) as pipe:
         pipe.hset(key, mapping=cast("dict[Any, Any]", fields))
         pipe.expire(key, state_ttl)
@@ -341,7 +342,7 @@ async def set_running(
     await r.hset(
         key,
         mapping={
-            "status": "running",
+            "status": JobStatus.RUNNING,
             "engine_job_id": engine_job_id,
             "backend_url": backend_url,
             "backend_id": str(backend_id),
@@ -390,15 +391,15 @@ async def init_batch(r: aioredis.Redis, batch_id: str, total: int, ttl: int) -> 
 
 
 async def _count_batch_page(
-    r: aioredis.Redis, meta: dict[str, str] | None, field: str
+    r: aioredis.Redis, meta: dict[str, str] | None, status: JobStatus
 ) -> BatchCounts | None:
     """Count one finished page of a batch, unless the job had already finished (a
     re-run of a state function mustn't count it twice). None if it isn't a batch page."""
-    if not meta or not meta.get("batch_id") or meta.get("status") in ("done", "failed"):
+    if not meta or not meta.get("batch_id") or meta.get("status") in TERMINAL_JOB_STATUSES:
         return None
     key = _batch_key(meta["batch_id"])
     async with r.pipeline(transaction=True) as pipe:
-        pipe.hincrby(key, field, 1)
+        pipe.hincrby(key, status, 1)  # pages per terminal status
         pipe.hgetall(key)
         _, raw = await pipe.execute()
     counts = {_s(k): int(v) for k, v in raw.items()}
@@ -556,14 +557,14 @@ async def set_done(
     key = f"job:{job_id}"
     if meta is None or meta.get("batch_id"):
         meta = await get_job(r, job_id)
-    batch = await _count_batch_page(r, meta, "done")
+    batch = await _count_batch_page(r, meta, JobStatus.DONE)
     backend_id = meta.get("backend_id") if meta else None
     # The status write and the slot release don't depend on each other, so send them in
     # one round trip; only the SREM result decides the counters after it.
     async with r.pipeline(transaction=False) as pipe:
         pipe.hset(
             key,
-            mapping={"status": "done", "finished_at": str(time.time())},
+            mapping={"status": JobStatus.DONE, "finished_at": str(time.time())},
         )
         pipe.expire(key, state_ttl)
         pipe.srem("jobs:inflight", job_id)
@@ -598,12 +599,12 @@ async def set_failed(
     page's new batch counts."""
     key = f"job:{job_id}"
     meta = await get_job(r, job_id)
-    batch = await _count_batch_page(r, meta, "failed")
+    batch = await _count_batch_page(r, meta, JobStatus.FAILED)
     backend_id = meta.get("backend_id") if meta else None
     async with r.pipeline(transaction=True) as pipe:
         pipe.hset(
             key,
-            mapping={"status": "failed", "error": error, "finished_at": str(time.time())},
+            mapping={"status": JobStatus.FAILED, "error": error, "finished_at": str(time.time())},
         )
         pipe.expire(key, state_ttl)
         # A harvest that failed for good leaves the durable queue; a poll failure was
@@ -620,7 +621,7 @@ async def set_failed(
         # queued count; one that ran leaves inflight. Already failed/done: nothing.
         if removed:
             await r.hincrby(LOAD_INFLIGHT_KEY, _job_load_field(meta), -1)
-        elif meta.get("status") == "queued":
+        elif meta.get("status") == JobStatus.QUEUED:
             await r.hincrby(LOAD_QUEUED_KEY, _job_load_field(meta), -1)
     if harvest_removed:
         await signal_submit(r)
@@ -667,7 +668,7 @@ async def release_and_requeue(
     if backend_id and removed:
         await r.decr(f"backend:{backend_id}:inflight")
         await _release_batch(r, backend_id, meta)
-    await r.hset(key, mapping={"status": "queued"})
+    await r.hset(key, mapping={"status": JobStatus.QUEUED})
     await r.hdel(
         key,
         "engine_job_id",
@@ -843,7 +844,7 @@ async def get_backends_state(
 def job_event_payload(
     job_id: str,
     external_id: str | None,
-    status: str,
+    status: JobStatus,
     *,
     batch_id: str | None = None,
     **fields: Any,

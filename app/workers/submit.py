@@ -56,6 +56,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
+from app.vocabulary import JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -430,7 +431,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     update(Job)
                     .where(Job.id == job_id)
                     .values(
-                        status="failed", error=msg, finished_at=utcnow(), **append_attempt(attempt)
+                        status=JobStatus.FAILED,
+                        error=msg,
+                        finished_at=utcnow(),
+                        **append_attempt(attempt),
                     )
                 )
                 await batch_store.finish_if_done(db, meta.get("batch_id"))
@@ -440,7 +444,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 r,
                 username,
                 job_event_payload(
-                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                    job_id, external_id, JobStatus.FAILED, batch_id=meta.get("batch_id"), error=msg
                 ),
             )
             if batch is not None:
@@ -468,7 +472,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         update(Job)
                         .where(Job.id == job_id)
                         .values(
-                            status="running",
+                            status=JobStatus.RUNNING,
                             dispatched_at=utcnow(),
                             engine_job_id=engine_job_id,
                             engine_version=engine_version,
@@ -556,7 +560,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     update(Job)
                     .where(Job.id == job_id)
                     .values(
-                        status="failed",
+                        status=JobStatus.FAILED,
                         error=msg,
                         finished_at=utcnow(),
                         **append_attempt(attempt),
@@ -569,7 +573,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 r,
                 username,
                 job_event_payload(
-                    job_id, external_id, "failed", batch_id=meta.get("batch_id"), error=msg
+                    job_id, external_id, JobStatus.FAILED, batch_id=meta.get("batch_id"), error=msg
                 ),
             )
             if batch is not None:

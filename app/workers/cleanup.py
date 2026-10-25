@@ -38,6 +38,7 @@ from app.services.storage import (
     list_expired_objects,
 )
 from app.telemetry import setup_telemetry
+from app.vocabulary import JobStatus
 from app.workers.shutdown import install_stop, sleep_unless_stopped
 
 logger = logging.getLogger("cleanup-worker")
@@ -58,7 +59,7 @@ async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     ids = (
         await db.scalars(
             select(Job.id)
-            .where(Job.status == "queued", Job.submitted_at < cutoff)
+            .where(Job.status == JobStatus.QUEUED, Job.submitted_at < cutoff)
             .limit(ORPHAN_SCAN_LIMIT)
         )
     ).all()

@@ -8,7 +8,10 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.vocabulary import BatchStatus
+
 from .db import Base
+from .types import StrEnumType, check_values
 
 
 class Batch(Base):
@@ -21,8 +24,9 @@ class Batch(Base):
     domain: Mapped[str] = mapped_column(nullable=False)
     outputs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     options: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    # open: pages still being read in; queued: all enqueued; finished: no page left to run
-    status: Mapped[str] = mapped_column(nullable=False, default="open")
+    status: Mapped[BatchStatus] = mapped_column(
+        StrEnumType(BatchStatus), nullable=False, default=BatchStatus.OPEN
+    )
     total: Mapped[int] = mapped_column(nullable=False, default=0)
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -30,7 +34,7 @@ class Batch(Base):
     archive_size_bytes: Mapped[int | None] = mapped_column(default=None)
 
     __table_args__ = (
-        CheckConstraint("status IN ('open', 'queued', 'finished')", name="ck_batches_status"),
+        CheckConstraint(check_values("status", BatchStatus), name="ck_batches_status"),
         Index("ix_batches_username_submitted", "username", "submitted_at"),
         Index("ix_batches_username_external_id", "username", "external_id"),
     )

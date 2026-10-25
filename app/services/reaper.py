@@ -31,6 +31,7 @@ from app.services.redis_jobs import (
     publish_event,
     set_failed,
 )
+from app.vocabulary import ACTIVE_JOB_STATUSES, JobStatus
 
 logger = logging.getLogger("reaper")
 
@@ -58,9 +59,9 @@ def select_stale_jobs(
     queued_cutoff = now - timedelta(seconds=queued_timeout)
     stale: list[tuple[Job, str]] = []
     for job in jobs:
-        if job.status == "queued" and job.submitted_at < queued_cutoff:
+        if job.status == JobStatus.QUEUED and job.submitted_at < queued_cutoff:
             stale.append((job, f"timed out in queue after {queued_timeout}s"))
-        elif job.status in ("running", "storing") and job.dispatched_at is not None:
+        elif job.status in (JobStatus.RUNNING, JobStatus.STORING) and job.dispatched_at is not None:
             running_timeout = running_timeout_for(job.domain)
             if job.dispatched_at < now - timedelta(seconds=running_timeout):
                 stale.append((job, f"timed out while processing after {running_timeout}s"))
@@ -79,7 +80,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     now = utcnow()
 
     result = await db.execute(
-        select(Job).where(Job.status.in_(("queued", "running", "storing"))).limit(REAP_MAX_PER_TICK)
+        select(Job).where(Job.status.in_(ACTIVE_JOB_STATUSES)).limit(REAP_MAX_PER_TICK)
     )
     candidates = result.scalars().all()
 
@@ -117,7 +118,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         *(_bounded(set_failed(r, str(job.id), reason, state_ttl)) for job, reason in stale)
     )
     for job, reason in stale:
-        job.status = "failed"
+        job.status = JobStatus.FAILED
         job.error = reason
         job.finished_at = now
     if stale:
@@ -133,7 +134,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                         job_event_payload(
                             str(job.id),
                             job.external_id,
-                            "failed",
+                            JobStatus.FAILED,
                             batch_id=str(job.batch_id) if job.batch_id else None,
                             error=reason,
                         ),

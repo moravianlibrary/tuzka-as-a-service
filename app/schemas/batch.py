@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.clock import UtcDatetime
+from app.vocabulary import BatchStatus, JobStatus
 
 
 class BatchSubmitResponse(BaseModel):
@@ -19,14 +20,14 @@ class BatchSubmitResponse(BaseModel):
 class BatchPage(BaseModel):
     source_name: str  # the page's path in the archive you sent
     job_id: UUID
-    status: str
+    status: JobStatus
     error: str | None = None
 
 
-class BatchStatus(BaseModel):
+class BatchStatusResponse(BaseModel):
     batch_id: UUID
     external_id: str | None = None
-    status: str = Field(description="open (still reading the archive), queued or finished")
+    status: BatchStatus = Field(description="open (still reading the archive), queued or finished")
     domain: str
     outputs: list[str]
     total: int
@@ -45,7 +46,7 @@ class BatchStatus(BaseModel):
 
 
 class BatchResults(BaseModel):
-    status: str = "finished"
+    status: BatchStatus = BatchStatus.FINISHED
     url: str
     expires_at: UtcDatetime
 
