@@ -87,7 +87,7 @@ COMMIT_EVERY = 100
         429: {"description": "Rate limit exceeded (one submit per batch)"},
     },
 )
-async def submit_batch(
+async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
     request: Request,
     archive: UploadFile = File(..., description="A .tar, .tar.gz, .tar.zst or .zip of pages."),
     external_id: str | None = Form(None, description="Your own label for the batch."),

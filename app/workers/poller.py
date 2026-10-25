@@ -216,7 +216,7 @@ def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
     return min(cap, max(0.0, min(deadlines) - now))
 
 
-async def drain_poll_queue(
+async def drain_poll_queue(  # noqa: C901 - split up on refactor/complexity
     due: Iterable[str],
     *,
     concurrency: int,
@@ -284,7 +284,7 @@ async def _probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> i
     return None
 
 
-async def main() -> None:
+async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
     logging.basicConfig(level=logging.INFO)
     # httpx emits one INFO line per request; at poll volume it floods the log and
     # rotates real errors out of `kubectl logs`.
@@ -393,7 +393,7 @@ async def main() -> None:
             stage="engine",
         )
 
-    async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:
+    async def harvest(job_id: str, meta: dict[str, str], times: dict[str, Any]) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         # The job was moved to the harvest queue at engine-done, together with the last
         # engine status, so a retry (or a pass after a poller restart) still has the
         # run's timestamps even though the poll outcome is long gone.
@@ -710,7 +710,7 @@ async def main() -> None:
 
     released_since_harvest = 0
 
-    async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:
+    async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         nonlocal released_since_harvest
         done_jobs: list[tuple[str, dict[str, str], dict[str, Any]]] = []
         failed_jobs: list[tuple[str, dict[str, str], str, dict[str, Any], dict[str, Any]]] = []

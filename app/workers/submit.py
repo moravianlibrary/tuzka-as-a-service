@@ -228,7 +228,7 @@ def allocate_scored(
     return assignments, leftovers
 
 
-async def main() -> None:
+async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
     logging.basicConfig(level=logging.INFO)
     # httpx emits one INFO line per request; at dispatch volume it floods the log and
     # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
@@ -375,7 +375,7 @@ async def main() -> None:
         with job_span("dispatch", job_id, meta, backend_id=backend.id):
             await dispatch_job(job_id, original_score, backend, backend_domains, meta)
 
-    async def dispatch_job(
+    async def dispatch_job(  # noqa: C901, PLR0915 - split up on refactor/complexity
         job_id: str,
         original_score: float,
         backend: Backend,

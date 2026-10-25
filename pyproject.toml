@@ -53,10 +53,17 @@ line-length = 100
 extend-exclude = ["TuzkaOCR", "bench", "alembic/versions"]
 
 [tool.ruff.lint]
-# TD keeps TODOs attributed (TODO(author): …).
-select = ["E", "F", "I", "W", "UP", "B", "SIM", "TD"]
+# C901/PLR0912/PLR0915 cap function size; TD keeps TODOs attributed (TODO(author): …).
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "C901", "PLR0912", "PLR0915", "TD"]
 # TD003: a TODO needs no issue link.
 ignore = ["E501", "TD003"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-branches = 12
+max-statements = 50
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's DI markers are call-in-default by design and are effectively immutable

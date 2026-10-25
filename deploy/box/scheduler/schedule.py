@@ -332,7 +332,7 @@ def log(message: str) -> None:
     print(f"[schedule] {datetime.now():%Y-%m-%d %H:%M:%S} {message}", flush=True)
 
 
-def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:
+def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:  # noqa: C901, PLR0912 - split up on refactor/complexity
     startable = cfg.engine_services + cfg.tunnel_services + cfg.gate_services
     deadline: datetime | None = None
     last_logged: str | None = None

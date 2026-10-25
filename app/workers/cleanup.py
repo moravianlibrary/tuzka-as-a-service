@@ -68,7 +68,7 @@ async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     return len(requeued)
 
 
-async def main() -> None:
+async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = make_engine(settings)
