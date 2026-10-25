@@ -16,8 +16,7 @@ from app.engines.base import (
     Result,
 )
 from app.engines.openapi import form_value, options_schema_from_openapi
-from app.engines.outputs import outputs_to_fmt
-from app.vocabulary import EngineState
+from app.vocabulary import DEFAULT_DOMAIN, EngineState, Fmt
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +108,10 @@ class TuzkaOcrAdapter:
             headers["X-API-Key"] = self._api_key
 
         files = {"image": (filename, image)}
-        data: dict[str, str] = {"fmt": outputs_to_fmt(outputs)}
+        data: dict[str, str] = {"fmt": Fmt.from_outputs(outputs)}
         # "default" is the engine's no-domain request; sending it would change nothing
         # but the request shape (D6).
-        if domain and domain != "default":
+        if domain and domain != DEFAULT_DOMAIN:
             data["domain"] = domain
         for key, value in options.items():
             if value is not None:

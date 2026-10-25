@@ -24,6 +24,7 @@ from app.services.job_spec import (
     parse_outputs,
     resolve_job_spec,
 )
+from app.vocabulary import Fmt
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 ALTO_TXT = frozenset({"alto", "txt"})
@@ -40,13 +41,13 @@ SCHEMA = options_schema_from_openapi(
 @pytest.mark.parametrize(
     ("raw", "fmt", "expected"),
     [
-        (None, "multi", ALTO_TXT),
-        (None, "alto", {"alto"}),
-        (None, "txt", {"txt"}),
-        ("alto", "multi", {"alto"}),  # outputs wins over fmt
-        ("ALTO, txt", "alto", ALTO_TXT),  # stripped + lowercased
-        ("geojson,json", "multi", {"geojson", "json"}),  # unknown names are fine here
-        ("alto,alto", "multi", {"alto"}),
+        (None, Fmt.MULTI, ALTO_TXT),
+        (None, Fmt.ALTO, {"alto"}),
+        (None, Fmt.TXT, {"txt"}),
+        ("alto", Fmt.MULTI, {"alto"}),  # outputs wins over fmt
+        ("ALTO, txt", Fmt.ALTO, ALTO_TXT),  # stripped + lowercased
+        ("geojson,json", Fmt.MULTI, {"geojson", "json"}),  # unknown names are fine here
+        ("alto,alto", Fmt.MULTI, {"alto"}),
     ],
 )
 def test_parse_outputs(raw, fmt, expected) -> None:
@@ -56,7 +57,7 @@ def test_parse_outputs(raw, fmt, expected) -> None:
 @pytest.mark.parametrize("raw", ["", " ", "alto,", ",txt", "alto,,txt"])
 def test_parse_outputs_rejects_empty_items(raw) -> None:
     with pytest.raises(ValueError):
-        parse_outputs(raw, "multi")
+        parse_outputs(raw, Fmt.MULTI)
 
 
 # ---- parse_options ----

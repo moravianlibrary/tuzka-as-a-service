@@ -58,7 +58,6 @@ from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
 from app.services.imageinfo import image_megapixels
 from app.services.job_spec import (
-    DEFAULT_DOMAIN,
     fmt_label,
     parse_external_id,
     parse_outputs,
@@ -67,7 +66,7 @@ from app.services.job_spec import (
 from app.services.scopes import Principal, check_scope, visible_outputs
 from app.services.uploads import UploadTooLarge, read_limited
 from app.telemetry import inject_trace_context
-from app.vocabulary import Fmt, JobEventName, JobStatus
+from app.vocabulary import DEFAULT_DOMAIN, Fmt, JobEventName, JobStatus
 
 router = APIRouter()
 

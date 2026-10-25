@@ -25,10 +25,9 @@ import httpx
 from sqlalchemy import text
 
 from app.config import Settings
-from app.engines.outputs import fmt_to_outputs
 from app.models.db import make_engine
 from app.services.events import JobEvent, job_event_row
-from app.vocabulary import JobEventName, JobStatus
+from app.vocabulary import Fmt, JobEventName, JobStatus
 
 BATCH_ROWS = 10_000
 
@@ -56,7 +55,7 @@ def event_from_analytics(row: Mapping[str, Any]) -> JobEvent:
     total_s = row["time_in_system_s"]
     ts = row["submitted_at"] + timedelta(seconds=total_s or 0)
     try:
-        outputs = sorted(fmt_to_outputs(row["fmt"] or "multi"))
+        outputs = sorted(Fmt(row["fmt"] or Fmt.MULTI).outputs)
     except ValueError:
         outputs = []
     return JobEvent(

@@ -18,14 +18,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines import ADAPTERS
-from app.engines.outputs import fmt_to_outputs, outputs_to_fmt
 from app.exceptions import Unprocessable
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
-from app.vocabulary import AdapterId
-
-DEFAULT_DOMAIN = "default"
+from app.vocabulary import DEFAULT_DOMAIN, AdapterId, Fmt
 
 # How long a domain's capabilities (outputs per enabled backend + options schema) are
 # reused across submits before the DB is asked again. Short: a backend disabled or
@@ -43,11 +40,11 @@ class JobSpec:
     options: dict[str, Any]
 
 
-def parse_outputs(raw: str | None, fmt: str) -> frozenset[str]:
+def parse_outputs(raw: str | None, fmt: Fmt) -> frozenset[str]:
     """The ``outputs`` form field (comma-separated) as a set; ``fmt`` decides when it's
     absent. Raises ``ValueError`` on an empty item or an empty set."""
     if raw is None:
-        return fmt_to_outputs(fmt)
+        return fmt.outputs
     items = [item.strip().lower() for item in raw.split(",")]
     if any(not item for item in items):
         raise ValueError("outputs must be a comma-separated list of output names")
@@ -86,7 +83,7 @@ def fmt_label(outputs: frozenset[str]) -> str:
     """``jobs.fmt`` for a set of outputs: its legacy fmt, or ``custom`` if it has none.
     Analytics and the dashboard still read ``fmt``."""
     try:
-        return outputs_to_fmt(outputs)
+        return Fmt.from_outputs(outputs)
     except ValueError:
         return "custom"
 

@@ -9,9 +9,8 @@ from typing import Any, cast
 import redis.asyncio as aioredis
 
 from app.config import Settings
-from app.engines.outputs import fmt_to_outputs
 from app.services.load import ewma, load_field
-from app.vocabulary import TERMINAL_JOB_STATUSES, JobStatus
+from app.vocabulary import DEFAULT_DOMAIN, TERMINAL_JOB_STATUSES, Fmt, JobStatus
 
 settings = Settings()
 
@@ -110,7 +109,7 @@ def parse_avoid(meta: dict[str, str]) -> frozenset[int]:
 
 def job_domain(meta: dict[str, str]) -> str:
     """The job's domain from its hash; a domain-less job is a ``default`` job."""
-    return meta.get("domain") or "default"
+    return meta.get("domain") or DEFAULT_DOMAIN
 
 
 def job_outputs(meta: dict[str, str]) -> frozenset[str]:
@@ -119,7 +118,7 @@ def job_outputs(meta: dict[str, str]) -> frozenset[str]:
     raw = meta.get("outputs")
     if raw:
         return frozenset(o for o in raw.split(",") if o)
-    return fmt_to_outputs(meta.get("fmt") or "multi")
+    return Fmt(meta.get("fmt") or Fmt.MULTI).outputs
 
 
 def job_options(meta: dict[str, str]) -> dict[str, Any]:

@@ -7,6 +7,9 @@ compare without conversion, and Redis, JSON and f-strings get the plain value.
 
 from enum import StrEnum
 
+# The domain of a job that names none; engines treat it as their no-domain request.
+DEFAULT_DOMAIN = "default"
+
 
 class JobStatus(StrEnum):
     QUEUED = "queued"
@@ -137,6 +140,21 @@ class Fmt(StrEnum):
     TXT = "txt"
     # ALTO and text.
     MULTI = "multi"
+
+    @property
+    def outputs(self) -> frozenset[str]:
+        """The outputs this fmt asks for."""
+        if self is Fmt.MULTI:
+            return frozenset({Fmt.ALTO.value, Fmt.TXT.value})
+        return frozenset({self.value})
+
+    @classmethod
+    def from_outputs(cls, outputs: frozenset[str]) -> "Fmt":
+        """The fmt that asks for exactly ``outputs``. Raises ``ValueError`` when none does."""
+        for fmt in cls:
+            if fmt.outputs == outputs:
+                return fmt
+        raise ValueError(f"Unknown outputs: {sorted(outputs)}")
 
 
 class LimitClass(StrEnum):
