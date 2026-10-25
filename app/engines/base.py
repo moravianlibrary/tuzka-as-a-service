@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.vocabulary import EngineState
+
 
 @dataclass(frozen=True)
 class DomainInfo:
@@ -21,7 +23,7 @@ class EngineInfo:
 
 @dataclass(frozen=True)
 class EngineStatus:
-    state: str  # queued | running | done | failed | error | unknown
+    state: EngineState
     error: str | None = None
     error_status: int | None = None
     created_at: str | None = None  # engine ISO strings, parsed by the poller

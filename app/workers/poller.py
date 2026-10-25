@@ -76,7 +76,7 @@ from app.services.storage import (
     put_object,
 )
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import JobStatus
+from app.vocabulary import EngineState, JobStatus, PollAction, PollStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -159,7 +159,7 @@ class PollOutcome:
     """What one status check of an in-flight job found, plus how to treat a failure."""
 
     job_id: str
-    status: str  # "done", "running", "failed", "error", "unreachable", "unknown"
+    status: PollStatus
     meta: dict[str, str]
     times: dict[str, Any]
     retryable: bool  # a failure here may succeed on another backend
@@ -170,23 +170,25 @@ class PollOutcome:
     stage: Stage = "poll"
 
 
-def classify_poll_result(status: str, retryable: bool, requeues: int, max_requeues: int) -> str:
+def classify_poll_result(
+    status: PollStatus, retryable: bool, requeues: int, max_requeues: int
+) -> PollAction:
     """Decide what to do with a polled job. Pure (no I/O) so it's unit-testable.
 
     Failures ('failed'/'error' from the engine or the status check, 'unreachable' when
     the pod couldn't be reached) requeue while they're retryable and the budget lasts,
     and fail otherwise. Whether a failure is retryable is the retry policy's call.
     """
-    if status == "done":
-        return "harvest"
-    if status in ("failed", "error", "unreachable"):
-        return "requeue" if retryable and requeues < max_requeues else "fail"
-    return "running"
+    if status == PollStatus.DONE:
+        return PollAction.HARVEST
+    if status in (PollStatus.FAILED, PollStatus.ERROR, PollStatus.UNREACHABLE):
+        return PollAction.REQUEUE if retryable and requeues < max_requeues else PollAction.FAIL
+    return PollAction.RUNNING
 
 
 def poll_failure_message(outcome: PollOutcome, max_requeues: int) -> str:
     """The job's ``error`` text when a poll outcome fails it. Pure."""
-    if outcome.status == "unreachable":
+    if outcome.status == PollStatus.UNREACHABLE:
         return f"engine unreachable, exceeded {max_requeues} requeue attempts"
     return outcome.error or outcome.meta.get("error") or "Engine error"
 
@@ -361,12 +363,14 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
-            return PollOutcome(job_id, "unreachable", meta, {}, True, None, describe_exception(e))
+            return PollOutcome(
+                job_id, PollStatus.UNREACHABLE, meta, {}, True, None, describe_exception(e)
+            )
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
             return PollOutcome(
                 job_id,
-                "error",
+                PollStatus.ERROR,
                 meta,
                 {},
                 is_retryable_poll_error(e),
@@ -374,9 +378,15 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 describe_exception(e),
             )
 
-        if status_resp.state not in ("failed", "error"):
+        if status_resp.state not in (EngineState.FAILED, EngineState.ERROR):
             return PollOutcome(
-                job_id, status_resp.state, meta, _status_times(status_resp), False, None, None
+                job_id,
+                PollStatus(status_resp.state),
+                meta,
+                _status_times(status_resp),
+                False,
+                None,
+                None,
             )
         # Engine-reported failure: error_status decides retry vs fail. Engines that
         # predate the field still expose it as the result endpoint's HTTP status (D3).
@@ -385,7 +395,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             error_status = await _probe_failure_status(adapter, engine_job_id)
         return PollOutcome(
             job_id,
-            status_resp.state,
+            PollStatus(status_resp.state),
             meta,
             _status_times(status_resp),
             is_retryable_engine_failure(error_status),
@@ -725,13 +735,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 action = classify_poll_result(
                     outcome.status, outcome.retryable, requeues, max_requeues
                 )
-            if action == "harvest":
+            if action == PollAction.HARVEST:
                 done_jobs.append((outcome.job_id, meta, outcome.times))
-            elif action == "fail":
+            elif action == PollAction.FAIL:
                 err = poll_failure_message(outcome, max_requeues)
                 attempt = poll_attempt(outcome, False, utcnow().isoformat())
                 failed_jobs.append((outcome.job_id, meta, err, attempt, outcome.times))
-            elif action == "requeue":
+            elif action == PollAction.REQUEUE:
                 delay = backoff_seconds(requeues)
                 avoid: int | None = int(meta["backend_id"]) if meta.get("backend_id") else None
                 attempt = poll_attempt(outcome, True, utcnow().isoformat())

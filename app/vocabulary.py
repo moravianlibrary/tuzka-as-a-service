@@ -29,3 +29,44 @@ class BatchStatus(StrEnum):
     QUEUED = "queued"
     # No page is left to run.
     FINISHED = "finished"
+
+
+class EngineState(StrEnum):
+    """A job's state as its engine reports it on the status endpoint."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    ERROR = "error"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def parse(cls, value: object) -> "EngineState":
+        """The engine's status string; one taas doesn't know is UNKNOWN, which the poller
+        keeps polling rather than failing the job over."""
+        return cls(value) if isinstance(value, str) and value in cls else cls.UNKNOWN
+
+
+class PollStatus(StrEnum):
+    """What one status check found: the engine's state, or why there was none."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    # The engine reported an error, or the status check itself failed.
+    ERROR = "error"
+    UNKNOWN = "unknown"
+    # The engine couldn't be reached (transport error).
+    UNREACHABLE = "unreachable"
+
+
+class PollAction(StrEnum):
+    """What the poller does with a job after a status check."""
+
+    HARVEST = "harvest"
+    REQUEUE = "requeue"
+    FAIL = "fail"
+    # Not finished yet: poll it again later.
+    RUNNING = "running"

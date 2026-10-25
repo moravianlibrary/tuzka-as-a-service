@@ -19,6 +19,7 @@ from app.engines.base import (
     Result,
 )
 from app.engines.openapi import form_value, options_schema_from_openapi
+from app.vocabulary import EngineState
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ class TuzkaMAdapter:
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return EngineStatus(
-            state=data.get("status", "unknown"),
+            state=EngineState.parse(data.get("status")),
             error=data.get("error"),
             error_status=data.get("error_status"),
             created_at=data.get("created_at"),

@@ -17,6 +17,7 @@ from app.engines.base import (
 )
 from app.engines.openapi import form_value, options_schema_from_openapi
 from app.engines.outputs import outputs_to_fmt
+from app.vocabulary import EngineState
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ class TuzkaOcrAdapter:
             if val is not None and isinstance(val, (int, float)):
                 metrics[key] = val
         return EngineStatus(
-            state=data.get("status", "unknown"),
+            state=EngineState.parse(data.get("status")),
             error=data.get("error"),
             error_status=data.get("error_status"),
             created_at=data.get("created_at"),
