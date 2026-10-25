@@ -2,26 +2,17 @@
 
 import typer
 
-from app.cli.common import JsonOption, output, row, run
+from app.cli.common import JsonOption, output, run
+from app.schemas.api.domain import DomainSettings
 from app.services import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
-
-# TODO(rrandiak): Use pydantic model
-COLUMNS = (
-    "name",
-    "label",
-    "description",
-    "legacy_engine_id",
-    "max_upload_bytes",
-    "running_timeout_seconds",
-)
 
 
 @app.command("list")
 def list_domains(as_json: bool = JsonOption) -> None:
     """List the domains engines have reported."""
-    output((row(d, COLUMNS) for d in run(admin_ops.list_domains)), COLUMNS, as_json)
+    output(DomainSettings, run(admin_ops.list_domains), as_json)
 
 
 @app.command("set-label")
@@ -31,7 +22,7 @@ def set_label(name: str, label: str, description: str | None = typer.Option(None
     if description is not None:
         fields["description"] = description
     domain = run(lambda db: admin_ops.update_domain(db, name, **fields))
-    output([row(domain, COLUMNS)], COLUMNS, as_json=False)
+    output(DomainSettings, [domain], as_json=False)
 
 
 @app.command("set-legacy-id")
@@ -41,7 +32,7 @@ def set_legacy_id(
 ) -> None:
     """Set the engine id the legacy (PERO) compat API exposes for this domain."""
     domain = run(lambda db: admin_ops.update_domain(db, name, legacy_engine_id=engine_id))
-    output([row(domain, COLUMNS)], COLUMNS, as_json=False)
+    output(DomainSettings, [domain], as_json=False)
 
 
 @app.command("set-limits")
@@ -72,4 +63,4 @@ def set_limits(
         )
         raise typer.Exit(2)
     domain = run(lambda db: admin_ops.update_domain(db, name, **fields))
-    output([row(domain, COLUMNS)], COLUMNS, as_json=False)
+    output(DomainSettings, [domain], as_json=False)

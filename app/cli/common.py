@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Awaitable, Callable, Iterable, Sequence
-from contextlib import suppress
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime
 from typing import Any
 
@@ -83,29 +82,16 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (set, frozenset)):
-        return sorted(value)
-    with suppress(TypeError):
-        json.dumps(value)
-        return value
-    return str(value)
-
-
-def output(rows: Iterable[dict[str, Any]], columns: Sequence[str], as_json: bool) -> None:
-    """Print rows as an aligned table, or as a JSON list with ``--json``."""
-    rows = list(rows)
+def output(model: type[BaseModel], objs: Iterable[object], as_json: bool) -> None:
+    """Print each object as a ``model`` row: a table with a column per field, or a JSON
+    list with ``--json``."""
+    rows = [model.model_validate(obj, from_attributes=True) for obj in objs]
     if as_json:
-        typer.echo(json.dumps([{c: _jsonable(r.get(c)) for c in columns} for r in rows], indent=2))
+        typer.echo(json.dumps([row.model_dump(mode="json") for row in rows], indent=2))
         return
-    cells = [[_cell(r.get(c)) for c in columns] for r in rows]
-    widths = [max([len(c), *(len(row[i]) for row in cells)]) for i, c in enumerate(columns)]
+    columns = list(model.model_fields)
+    cells = [[_cell(getattr(row, c)) for c in columns] for row in rows]
+    widths = [max([len(c), *(len(line[i]) for line in cells)]) for i, c in enumerate(columns)]
     typer.echo("  ".join(c.upper().ljust(w) for c, w in zip(columns, widths, strict=True)).rstrip())
-    for row in cells:
-        typer.echo("  ".join(v.ljust(w) for v, w in zip(row, widths, strict=True)).rstrip())
-
-
-def row(obj: Any, columns: Sequence[str]) -> dict[str, Any]:
-    return {c: getattr(obj, c, None) for c in columns}
+    for line in cells:
+        typer.echo("  ".join(v.ljust(w) for v, w in zip(line, widths, strict=True)).rstrip())

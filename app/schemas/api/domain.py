@@ -1,4 +1,5 @@
-"""Pydantic schemas for the domain list response (GET /api/v1/domains)."""
+"""Pydantic schemas for the domain list response (GET /api/v1/domains), and a domain's
+admin-set fields."""
 
 from typing import Any
 
@@ -19,3 +20,15 @@ class DomainEntry(BaseModel):
 
 class DomainListResponse(BaseModel):
     domains: list[DomainEntry]
+
+
+class DomainSettings(BaseModel):
+    """What an admin sets on a domain (``taas-admin domain …``); None = unset."""
+
+    name: str
+    label: str | None
+    description: str | None
+    legacy_engine_id: int | None
+    # Per-domain limits; None = the global ones.
+    max_upload_bytes: int | None
+    running_timeout_seconds: int | None

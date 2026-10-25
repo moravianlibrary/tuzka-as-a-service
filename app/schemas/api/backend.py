@@ -86,10 +86,10 @@ class BackendResponse(BaseModel):
     id: int
     url: str
     label: str | None
+    adapter: AdapterId = AdapterId.TUZKAOCR
     enabled: bool
     max_inflight: int
     priority: int = 0
     device: Device = Device.CPU
-    adapter: AdapterId = AdapterId.TUZKAOCR
     managed: bool = False
     created_at: datetime

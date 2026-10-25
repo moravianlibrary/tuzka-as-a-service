@@ -2,28 +2,12 @@
 
 import typer
 
-from app.cli.common import JsonOption, build, output, row, run, secret_from_env
-from app.schemas.api.user import LIMIT_FIELD_NAMES, UserCreate, UserUpdate, limit_fields
+from app.cli.common import JsonOption, build, output, run, secret_from_env
+from app.schemas.api.user import LIMIT_FIELD_NAMES, UserCreate, UserList, UserUpdate, limit_fields
 from app.services import admin_ops
 from app.vocabulary import LimitClass
 
 app = typer.Typer(no_args_is_help=True)
-
-# TODO(rrandiak): Use pydantic model
-COLUMNS = (
-    "username",
-    "active",
-    "priority",
-    "created_at",
-    "rate_submit_per_minute",
-    "burst_submit",
-    "rate_query_per_minute",
-    "burst_query",
-    "rate_ws_per_minute",
-    "burst_ws",
-    "allowed_domains",
-    "allowed_outputs",
-)
 
 ClearOption = typer.Option(
     [], help="Class to reset to the global default: submit, query or ws (repeatable)."
@@ -34,7 +18,7 @@ ClearOption = typer.Option(
 def list_users(as_json: bool = JsonOption) -> None:
     """List users, newest first."""
     users = run(admin_ops.list_users)
-    output((row(u, COLUMNS) for u in users), COLUMNS, as_json)
+    output(UserList, users, as_json)
 
 
 @app.command()
@@ -145,4 +129,4 @@ def set_scopes(
         typer.echo("error: give --domains and/or --outputs, or --all", err=True)
         raise typer.Exit(2)
     user = run(lambda db: admin_ops.set_scopes(db, username, _names(domains), _names(outputs)))
-    output([row(user, COLUMNS)], COLUMNS, as_json=False)
+    output(UserList, [user], as_json=False)

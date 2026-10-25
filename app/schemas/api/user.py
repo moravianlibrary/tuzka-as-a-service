@@ -81,11 +81,20 @@ class UserUpdate(UserLimitOverrides):
         return data
 
 
-class UserList(UserLimitOverrides):
+class _UserIdentity(BaseModel):
     username: str
     active: bool
-    created_at: datetime
     priority: int = 0
+    created_at: datetime
+
+
+class UserList(UserLimitOverrides, _UserIdentity):
+    """A user as ``taas-admin user list`` shows it. Fields go base-last-first, so the
+    identity columns lead, then the limit overrides, then the key's scopes."""
+
+    # None = any domain / output.
+    allowed_domains: list[str] | None = None
+    allowed_outputs: list[str] | None = None
 
 
 class EffectiveLimits(BaseModel):

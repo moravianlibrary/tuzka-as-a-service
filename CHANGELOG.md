@@ -156,6 +156,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `taas-admin job show` prints its timestamps as ISO 8601 (`2026-10-25T23:58:40`, like
+  `--json` elsewhere) instead of with a space.
 - The OpenAPI schema lists the allowed values of every job and batch `status` field
   (job: queued, running, storing, done, failed; batch: open, queued, finished). The
   status response schemas are renamed `JobStatusResponse` and `BatchStatusResponse`;

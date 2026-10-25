@@ -4,11 +4,17 @@ import json
 from typing import Any
 
 import typer
+from pydantic import BaseModel
 
 from app.cli.common import JsonOption, output, run
 from app.services import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
+
+
+class ConfigValue(BaseModel):
+    key: str
+    value: Any
 
 
 # TODO(rrandiak): all of this should be done using pydantic or Typer to type it.
@@ -24,7 +30,7 @@ def _parse(value: str) -> Any:
 def list_config(as_json: bool = JsonOption) -> None:
     """List every config key that has a value (unset keys use their built-in default)."""
     values = run(admin_ops.get_config)
-    output(({"key": k, "value": v} for k, v in values.items()), ("key", "value"), as_json)
+    output(ConfigValue, (ConfigValue(key=k, value=v) for k, v in values.items()), as_json)
 
 
 @app.command()

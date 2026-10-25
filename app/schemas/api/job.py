@@ -1,10 +1,13 @@
-"""Pydantic schemas for job submit/status/result responses."""
+"""Pydantic schemas for job submit/status/result responses, and the admin views of a job."""
 
+from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
 
 from app.clock import UtcDatetime
+from app.schemas.attempt import Attempt
 from app.vocabulary import JobStatus
 
 
@@ -46,3 +49,36 @@ class JobResultResponse(BaseModel):
 class JobListResponse(BaseModel):
     jobs: list[JobStatusResponse]
     total: int
+
+
+class FailedJob(BaseModel):
+    """A row of ``taas-admin job list-failed``."""
+
+    id: UUID
+    username: str
+    external_id: str | None
+    domain: str | None
+    backend_id: int | None
+    finished_at: datetime | None
+    error: str | None
+
+
+class JobDetail(BaseModel):
+    """``taas-admin job show``: the job row with every failed attempt."""
+
+    id: UUID
+    username: str
+    external_id: str | None
+    status: JobStatus
+    domain: str | None
+    outputs: list[str] | None
+    options: dict[str, Any] | None
+    backend_id: int | None
+    engine_version: str | None
+    requeues: int
+    submitted_at: datetime
+    dispatched_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    attempts: list[Attempt]

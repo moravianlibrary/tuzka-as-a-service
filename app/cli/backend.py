@@ -4,26 +4,12 @@ import json
 
 import typer
 
-from app.cli.common import JsonOption, build, output, row, run, secret_from_env, settings
-from app.schemas.api.backend import BackendCreate, BackendUpdate
+from app.cli.common import JsonOption, build, output, run, secret_from_env, settings
+from app.schemas.api.backend import BackendCreate, BackendResponse, BackendUpdate
 from app.services import admin_ops
 from app.vocabulary import AdapterId, Device
 
 app = typer.Typer(no_args_is_help=True)
-
-# TODO(rrandiak): Use pydantic model
-COLUMNS = (
-    "id",
-    "url",
-    "label",
-    "adapter",
-    "enabled",
-    "max_inflight",
-    "priority",
-    "device",
-    "managed",
-    "created_at",
-)
 
 ApiKeyEnv = typer.Option(
     None, help="Env var holding the engine's API key (never pass it in argv); empty clears it."
@@ -31,13 +17,13 @@ ApiKeyEnv = typer.Option(
 
 
 def _print(backend: object) -> None:
-    output([row(backend, COLUMNS)], COLUMNS, as_json=False)
+    output(BackendResponse, [backend], as_json=False)
 
 
 @app.command("list")
 def list_backends(as_json: bool = JsonOption) -> None:
     """List backends."""
-    output((row(b, COLUMNS) for b in run(admin_ops.list_backends)), COLUMNS, as_json)
+    output(BackendResponse, run(admin_ops.list_backends), as_json)
 
 
 @app.command()
