@@ -149,6 +149,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **ClickStack now tail-samples traces in the OTel collector.** It always keeps traces
+  with an error span or a failed job, samples the rest at
+  `clickstack.otel.traceSamplePercentage` (default 5%), and drops log records below WARN
+  before they reach `otel_logs`. Tail sampling waits `traceDecisionWait` (default 10m)
+  for a job's spans and holds them in memory, so the collector's memory limit and
+  `traceNumTraces` need to match the job rate. INFO logs remain on stdout.
 - **The engine slot is freed when the engine finishes, not after the harvest.** The
   poller moves a done job to a durable `jobs:pending_harvest` queue in the same atomic
   step that releases its slot and counters, keeping the engine's last status for the run

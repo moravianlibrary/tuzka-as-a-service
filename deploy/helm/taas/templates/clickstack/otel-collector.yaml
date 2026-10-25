@@ -4,7 +4,9 @@
 {{- $name := printf "%s-otel-collector" $full }}
 # Receives the api's and workers' OTLP traces and logs (app/telemetry.py) and writes
 # them to ClickHouse (otel_traces / otel_logs, created by the exporter), where HyperDX
-# reads them. No sampling here: the app already traces only jobs and API requests.
+# reads them. Tail-samples traces in the collector: keep every error/failed-job trace,
+# sample the rest. Drops logs below WARN. All spans of a trace must reach this single
+# collector replica; scale with a load-balancing layer if that changes.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -26,6 +28,40 @@ data:
         check_interval: 1s
         limit_percentage: 80
         spike_limit_percentage: 20
+      # Traces are one per job, and a job can run for minutes. Wait long enough to
+      # see its `fail` span; otherwise a late failure would miss the decision. This
+      # keeps traces in memory, so `traceNumTraces` and the memory limit must fit the
+      # expected trace rate.
+      tail_sampling:
+        decision_wait: {{ $o.traceDecisionWait | quote }}
+        num_traces: {{ int $o.traceNumTraces }}
+        expected_new_traces_per_sec: 50
+        decision_cache:
+          sampled_cache_size: 100000
+        policies:
+          # A failed job's trace has a `fail` span; a failed API/HTTP call has an
+          # ERROR status. Keep both without relying on app-side sampling.
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-job-failures
+            type: ottl_condition
+            ottl_condition:
+              error_mode: ignore
+              span:
+                - 'name == "fail"'
+          - name: sample-rest
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: {{ $o.traceSamplePercentage }}
+      # Keep WARN/ERROR log records; INFO is useful on stdout but too noisy for
+      # long-term ClickHouse storage.
+      filter/logs:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'severity_number < SEVERITY_NUMBER_WARN'
       batch:
         send_batch_size: 1000
         timeout: 1s
@@ -49,11 +85,11 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, tail_sampling, batch]
           exporters: [clickhouse]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, filter/logs, batch]
           exporters: [clickhouse]
 ---
 apiVersion: apps/v1

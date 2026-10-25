@@ -391,15 +391,21 @@ clickstack:
       repository: otel/opentelemetry-collector-contrib
       tag: "0.104.0"
     retentionDays: 30   # TTL of otel_traces / otel_logs
+    # Tail sampling in the collector. Keep every trace with an error span or a
+    # failed-job span; sample the rest. The app still sends 100%, so `decisionWait`
+    # must exceed the longest job trace (the collector holds those spans in memory).
+    traceSamplePercentage: 5
+    traceDecisionWait: "10m"
+    traceNumTraces: 30000
     # Extra OTEL_RESOURCE_ATTRIBUTES for the app, e.g. "deployment.environment=prod".
     resourceAttributes: ""
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
+        cpu: 200m
         memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
   mongodb:
     image:
       repository: mongo

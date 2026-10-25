@@ -188,6 +188,13 @@ parent-based sampler with root spans off), and drop the rest when they're create
 Python log records are exported from every process either way, carrying the trace id
 when there is one. See `app/telemetry.py`.
 
+The chart's OTel collector does the sampling, not the app: it keeps every trace with
+an error span or a job's `fail` span, and samples the rest at
+`clickstack.otel.traceSamplePercentage` (default 5%). It also drops log records below
+WARN, so INFO stays on stdout but does not grow `otel_logs`. Because a job trace can
+span minutes, `clickstack.otel.traceDecisionWait` (default 10m) must exceed the
+longest job; the collector holds traces in memory until then.
+
 ## Running
 
 Containers (with the rest of the stack): see the [root README](../README.md) (`make up`).
