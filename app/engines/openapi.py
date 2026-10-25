@@ -40,6 +40,13 @@ def options_schema_from_openapi(spec: dict[str, Any]) -> dict[str, Any] | None:
     return options
 
 
+def spec_version(spec: dict[str, Any] | None) -> str | None:
+    """The engine's version: ``info.version`` of its OpenAPI document."""
+    info = spec.get("info") if spec else None
+    version = info.get("version") if isinstance(info, dict) else None
+    return str(version) if version is not None else None
+
+
 def form_value(value: Any) -> str:
     """Render an option as a form field; booleans the way FastAPI parses them."""
     if isinstance(value, bool):

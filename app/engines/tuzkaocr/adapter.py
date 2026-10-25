@@ -15,8 +15,10 @@ from app.engines.base import (
     EngineStatus,
     Result,
 )
-from app.engines.openapi import form_value, options_schema_from_openapi
-from app.vocabulary import DEFAULT_DOMAIN, EngineState, Fmt
+from app.engines.openapi import form_value, options_schema_from_openapi, spec_version
+from app.engines.schemas import JobAccepted
+from app.engines.tuzkaocr.schemas import ModelsBody, TuzkaOcrStatus
+from app.vocabulary import DEFAULT_DOMAIN, Fmt
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,6 @@ class TuzkaOcrAdapter:
         every domain shares the one options schema derived from its OpenAPI.
         """
         spec = await self._openapi()
-        version = spec.get("info", {}).get("version") if spec else None
         options_schema = options_schema_from_openapi(spec) if spec else None
 
         try:
@@ -73,27 +74,24 @@ class TuzkaOcrAdapter:
                 headers["X-API-Key"] = self._api_key
             resp = await self._http.get(f"{self._url}/api/v1/models", headers=headers, timeout=5.0)
             resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-            domains_data = data.get("selectable_via_domain", [])
-            capabilities: dict[str, Any] = data.get("capabilities") or {}
+            models = ModelsBody.model_validate_json(resp.content)
+            capabilities = models.capabilities or {}
             domains: dict[str, DomainInfo] = {}
-            for d in domains_data:
+            for d in models.selectable_via_domain:
                 if not d:
                     continue
                 advertised = capabilities.get(d)
-                outputs = frozenset(str(o) for o in advertised) if advertised else _DEFAULT_OUTPUTS
-                domains[str(d)] = DomainInfo(outputs=outputs, options_schema=options_schema)
+                outputs = frozenset(advertised) if advertised else _DEFAULT_OUTPUTS
+                domains[d] = DomainInfo(outputs=outputs, options_schema=options_schema)
         except Exception as exc:
             logger.warning("describe failed for %s: %s", self._url, exc)
             domains = {}
 
-        return EngineInfo(domains=domains, version=version)
+        return EngineInfo(domains=domains, version=spec_version(spec))
 
     async def version(self) -> str | None:
         """The engine's reported version (``info.version`` from its OpenAPI schema)."""
-        spec = await self._openapi()
-        version = spec.get("info", {}).get("version") if spec else None
-        return str(version) if version is not None else None
+        return spec_version(await self._openapi())
 
     async def submit(
         self,
@@ -126,8 +124,7 @@ class TuzkaOcrAdapter:
         if resp.status_code == 503:
             raise EngineFullError(f"Engine at {self._url} is full")
         resp.raise_for_status()
-        job_id: str = resp.json()["job_id"]
-        return job_id
+        return JobAccepted.model_validate_json(resp.content).job_id
 
     async def status(self, engine_job_id: str) -> EngineStatus:
         headers = {}
@@ -139,21 +136,8 @@ class TuzkaOcrAdapter:
             headers=headers,
         )
         resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
-        metrics: dict[str, int | float | str] = {}
-        for key in ("n_lines", "mean_conf"):
-            val = data.get(key)
-            if val is not None and isinstance(val, (int, float)):
-                metrics[key] = val
-        return EngineStatus(
-            state=EngineState.parse(data.get("status")),
-            error=data.get("error"),
-            error_status=data.get("error_status"),
-            created_at=data.get("created_at"),
-            started_at=data.get("started_at"),
-            finished_at=data.get("finished_at"),
-            metrics=metrics,
-        )
+        body = TuzkaOcrStatus.model_validate_json(resp.content)
+        return body.engine_status(body.metrics())
 
     async def fetch(self, engine_job_id: str, output: str) -> Result:
         headers = {}

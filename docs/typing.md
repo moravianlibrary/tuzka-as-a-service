@@ -32,6 +32,7 @@ app/
   models/               SQLAlchemy only; types.py holds the pydantic JSONB TypeDecorator
   engines/
     base.py             EngineAdapter protocol + internal results (dataclasses)
+    schemas.py          the HTTP responses both engines share (job id, status)
     tuzkaocr/ tuzkam/   adapter.py + schemas.py (that engine's HTTP responses, private)
     cache.py            backend → adapter cache shared by the workers
   services/             logic; owns its internal dataclasses (JobEvent, LoadTotals, …)
@@ -83,7 +84,7 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 - [x] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters
 - [x] B4 + D6: `Attempt` for `Job.attempts` (built in `retry_policy`, read in
       `events`, `poller`)
-- [ ] B3: response models per engine endpoint; `resp.json()` no longer `dict[str, Any]`
+- [x] B3: response models per engine endpoint; `resp.json()` no longer `dict[str, Any]`
 - [ ] B5: `OTEL_*` (telemetry) and `HYPERDX_*` (import_dashboard) into Settings
 - [ ] B6: compat `CompatState.get_request` returns a model
 - [ ] B7 + D5: CLI rows from `schemas.api.*.model_validate`; drop the `COLUMNS` tuples

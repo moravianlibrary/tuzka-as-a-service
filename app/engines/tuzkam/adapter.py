@@ -18,8 +18,9 @@ from app.engines.base import (
     OutputUnavailable,
     Result,
 )
-from app.engines.openapi import form_value, options_schema_from_openapi
-from app.vocabulary import EngineState
+from app.engines.openapi import form_value, options_schema_from_openapi, spec_version
+from app.engines.schemas import JobAccepted
+from app.engines.tuzkam.schemas import TuzkaMStatus
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,6 @@ _TYPED_OPTIONS: dict[str, dict[str, Any]] = {
     "source_identifier": {"type": "string"},
 }
 
-# Status keys copied into EngineStatus.metrics (D7/D8). The georef summary is flattened
-# to dotted keys; `residual_m` is TuzkaM's RMS in meters.
-_METRIC_KEYS = ("n_words", "mean_conf", "progress", "eta_s")
-_GEOREF_METRIC_KEYS = ("status", "control_points", "inliers", "residual_m")
-
 
 @lru_cache(maxsize=1)
 def _configured_domains() -> tuple[str, ...]:
@@ -64,22 +60,6 @@ def tuzkam_options_schema(spec: dict[str, Any] | None) -> dict[str, Any] | None:
         if name in properties:
             properties[name] = typed
     return schema
-
-
-def tuzkam_metrics(data: dict[str, Any]) -> dict[str, int | float | str]:
-    """The numbers (and georef status) worth keeping from a TuzkaM status payload."""
-    metrics: dict[str, int | float | str] = {}
-    for key in _METRIC_KEYS:
-        value = data.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            metrics[key] = value
-    georef = data.get("georef")
-    if isinstance(georef, dict):
-        for key in _GEOREF_METRIC_KEYS:
-            value = georef.get(key)
-            if isinstance(value, (int, float, str)) and not isinstance(value, bool):
-                metrics[f"georef.{key}"] = value
-    return metrics
 
 
 class TuzkaMAdapter:
@@ -127,18 +107,15 @@ class TuzkaMAdapter:
         spec = await self._openapi()
         if spec is None:
             return EngineInfo(domains={}, version=None)
-        version = spec.get("info", {}).get("version")
         schema = tuzkam_options_schema(spec)
         domains = {
             d: DomainInfo(outputs=_OUTPUTS, options_schema=schema) for d in _configured_domains()
         }
-        return EngineInfo(domains=domains, version=str(version) if version is not None else None)
+        return EngineInfo(domains=domains, version=spec_version(spec))
 
     async def version(self) -> str | None:
         """The engine's reported version (``info.version`` from its OpenAPI schema)."""
-        spec = await self._openapi()
-        version = spec.get("info", {}).get("version") if spec else None
-        return str(version) if version is not None else None
+        return spec_version(await self._openapi())
 
     async def submit(
         self,
@@ -160,8 +137,7 @@ class TuzkaMAdapter:
         if resp.status_code == 503:
             raise EngineFullError(f"Engine at {self._url} is full")
         resp.raise_for_status()
-        job_id: str = resp.json()["job_id"]
-        return job_id
+        return JobAccepted.model_validate_json(resp.content).job_id
 
     async def status(self, engine_job_id: str) -> EngineStatus:
         resp = await self._http.get(
@@ -169,16 +145,8 @@ class TuzkaMAdapter:
             headers=self._headers(),
         )
         resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
-        return EngineStatus(
-            state=EngineState.parse(data.get("status")),
-            error=data.get("error"),
-            error_status=data.get("error_status"),
-            created_at=data.get("created_at"),
-            started_at=data.get("started_at"),
-            finished_at=data.get("finished_at"),
-            metrics=tuzkam_metrics(data),
-        )
+        body = TuzkaMStatus.model_validate_json(resp.content)
+        return body.engine_status(body.metrics())
 
     async def fetch(self, engine_job_id: str, output: str) -> Result:
         resp = await self._http.get(

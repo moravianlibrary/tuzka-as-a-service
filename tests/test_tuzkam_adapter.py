@@ -15,7 +15,8 @@ import httpx
 import pytest
 
 from app.engines.base import EngineFullError, OutputUnavailable
-from app.engines.tuzkam.adapter import TuzkaMAdapter, tuzkam_metrics, tuzkam_options_schema
+from app.engines.tuzkam.adapter import TuzkaMAdapter, tuzkam_options_schema
+from app.engines.tuzkam.schemas import TuzkaMStatus
 
 OPENAPI_FIXTURE = Path(__file__).parent / "fixtures" / "tuzkam_openapi.json"
 
@@ -86,7 +87,7 @@ def test_options_schema_without_openapi() -> None:
 
 
 def test_metrics_flatten_the_georef_summary() -> None:
-    assert tuzkam_metrics(DONE_STATUS) == {
+    assert TuzkaMStatus.model_validate(DONE_STATUS).metrics() == {
         "n_words": 412,
         "mean_conf": 0.87,
         "progress": 1.0,
@@ -96,7 +97,13 @@ def test_metrics_flatten_the_georef_summary() -> None:
         "georef.inliers": 24,
         "georef.residual_m": 812.5,
     }
-    assert tuzkam_metrics({"status": "running", "georef": None, "n_words": None}) == {}
+    running = {"status": "running", "georef": None, "n_words": None}
+    assert TuzkaMStatus.model_validate(running).metrics() == {}
+
+
+def test_metrics_of_the_wrong_type_are_dropped() -> None:
+    body = {"status": "running", "n_words": "many", "progress": True, "georef": "pending"}
+    assert TuzkaMStatus.model_validate(body).metrics() == {}  # the poll still succeeds
 
 
 # ---- validate_request (D3) ----
