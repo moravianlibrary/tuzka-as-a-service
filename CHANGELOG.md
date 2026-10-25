@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Generic Helm engine pools.** The chart now takes an `engines` map keyed by engine
+  name. Every enabled entry becomes a StatefulSet, headless Service, autoscaler and
+  per-ordinal backend registration, so TuzkaOCR, TuzkaM and any additional image or
+  hardware class can run together. Each engine independently supports `mode: none`,
+  `hpa` or `keda`. TuzkaOCR and TuzkaM ship as `engines.ocr-engine` and
+  `engines.tuzkam`; the old top-level `ocrEngine`/`tuzkam` values are replaced.
+  Engine API keys are now per engine through `auth` (see the credential change below).
 - Job events carry the backend's label (`backend`: `backends.label`, else the id), in
   `taas.job_events` and the ClickStack backfill. The post-upgrade schema Job adds the
   column to existing installs.
@@ -75,7 +82,7 @@ All notable changes to this project are documented here. The format is based on
   for `gcp` fails (no partial results) and isn't retried; `geojson` comes back as an empty
   FeatureCollection and the job is done. Domains can have their own
   upload limit and running timeout (`maps`: 150 MiB, 1800 s). Locally with
-  `docker compose --profile maps`; in the chart with `tuzkam.enabled`, scaled from zero
+  `docker compose --profile maps`; in the chart with `engines.tuzkam.enabled`, scaled from zero
   by KEDA. See `docs/maps.md`.
 - `GET /load` for autoscalers: `{queued, inflight, backlog_s}`, where `backlog_s` is the
   queued and in-flight pages times the measured seconds per page of their domain (an average of recent
@@ -87,7 +94,7 @@ All notable changes to this project are documented here. The format is based on
   minutes by the cleanup worker.
 - Scaling from zero: a backend keeps its last reported domains while its engine is down,
   and `taas-admin backend upsert --declared` takes capabilities (`{domain: [outputs]}`) for an
-  engine that hasn't run yet; the Helm register hook declares `ocrEngine.declaredDomains`
+  engine that hasn't run yet; the Helm register hook declares `engines.<name>.declaredDomains`
   for every in-cluster engine. The engine's own report replaces declared ones.
 - API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
   flight, a new connection per page, 3 s polling) against the taas client (all pages
@@ -149,6 +156,22 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Engine API keys are now least-privilege and per engine.** They no longer live in
+  the shared `<release>-secret` or reach every app pod through `envFrom`. Each
+  `engines.<name>` takes an `auth` block: `env` names the variable the engine image
+  reads, and the value comes from `auth.existingSecret.{name,key}` (recommended, e.g.
+  External Secrets) or `auth.generate: true`, which creates a dedicated
+  `<release>-<engine>-api-key` Secret and preserves its key across upgrades via
+  `lookup`. The engine pod and the backend-register hook get explicit `secretKeyRef`
+  env vars; omitting `auth` runs the engine without a key and clears a key stored on
+  that managed backend by an earlier release. Tunnel engines use
+  `tunnelBoxesDefaults.auth` (or a per-engine override), only `existingSecret`, with
+  `<release>-tunnel-engine-key` as the default name, because the off-cluster box must
+  share the value. When Helm can query the cluster, an `existingSecret` (including the
+  default tunnel Secret) is validated before apply: a missing Secret, missing key, or
+  empty key fails the install/upgrade instead of leaving the engine pod unable to
+  start. **Breaking:** the temporary `secrets.engineApiKeys` map and
+  `apiKeyEnv`/`apiKeySecretKey` engine fields are gone.
 - **ClickHouse thread pools are capped for the chart's 2-CPU pod.** ClickHouse 24.8
   defaults to a 512-thread background-schedule pool and keeps up to 1000 idle threads,
   which left ~700 mostly-sleeping threads in `taas-clickhouse-0` even with two queries

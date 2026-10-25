@@ -35,6 +35,355 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+True when Helm can actually query the cluster. `lookup` silently returns an empty
+result under `helm template` and under GitOps controllers that disable it, so use a
+sentinel lookup to distinguish "Secret is missing" from "lookup is unavailable".
+The cluster-scoped kube-system Namespace covers normal installs/upgrades; the
+kube-root-ca.crt ConfigMap covers namespace-scoped credentials.
+*/}}
+{{- define "taas.lookupReady" -}}
+{{- if or (lookup "v1" "Namespace" "" "kube-system") (lookup "v1" "ConfigMap" .Release.Namespace "kube-root-ca.crt") -}}true{{- end -}}
+{{- end }}
+
+{{/*
+Normalize an engine auth block. The engine key is never rendered into the shared
+<release>-secret: an in-cluster engine either points at an existing Secret
+(auth.existingSecret) or gets a dedicated generated Secret (auth.generate).
+
+Inputs:
+  root               chart root context
+  name               engine name, used for the generated Secret name
+  path               values path, for error messages
+  auth               the raw auth map (empty => no auth)
+  requireEnv         in-cluster engines need auth.env; tunnel engines ignore it
+  allowGenerate      true for in-cluster engines, false for tunnel engines
+  defaultSecretName  fallback Secret name when existingSecret.name is empty
+                     (tunnel engines use <release>-tunnel-engine-key)
+
+Returns a YAML map with env, secretName, secretKey and generated; an empty map when
+auth is not configured.
+*/}}
+{{- define "taas.auth" -}}
+{{- $root := .root -}}
+{{- $path := .path -}}
+{{- $auth := .auth | default dict -}}
+{{- if ne (kindOf $auth) "map" -}}
+{{- fail (printf "%s.auth must be a map" $path) -}}
+{{- end -}}
+{{- if $auth -}}
+{{- $env := $auth.env | default "" -}}
+{{- if and $env (not (kindIs "string" $env)) -}}
+{{- fail (printf "%s.auth.env must be a string" $path) -}}
+{{- end -}}
+{{- if and .requireEnv (not $env) -}}
+{{- fail (printf "%s.auth.env is required (the env var the engine container reads)" $path) -}}
+{{- end -}}
+{{- if and (not .requireEnv) $env -}}
+{{- fail (printf "%s.auth.env is not used for tunnel engines; set it on the box instead" $path) -}}
+{{- end -}}
+{{- if $env -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $env) -}}
+{{- fail (printf "%s.auth.env=%q is not a valid environment variable name" $path $env) -}}
+{{- end -}}
+{{- end -}}
+
+{{- $existing := $auth.existingSecret | default dict -}}
+{{- if ne (kindOf $existing) "map" -}}
+{{- fail (printf "%s.auth.existingSecret must be a map" $path) -}}
+{{- end -}}
+{{- $existingName := $existing.name | default "" -}}
+{{- if and $existingName (not (kindIs "string" $existingName)) -}}
+{{- fail (printf "%s.auth.existingSecret.name must be a string" $path) -}}
+{{- end -}}
+{{- $secretKey := $existing.key | default "api-key" -}}
+{{- if not (kindIs "string" $secretKey) -}}
+{{- fail (printf "%s.auth.existingSecret.key must be a string" $path) -}}
+{{- end -}}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]+$" $secretKey) -}}
+{{- fail (printf "%s.auth.existingSecret.key=%q is not a valid Kubernetes Secret key" $path $secretKey) -}}
+{{- end -}}
+{{- $generate := $auth.generate | default false -}}
+{{- if not (kindIs "bool" $generate) -}}
+{{- fail (printf "%s.auth.generate must be true or false" $path) -}}
+{{- end -}}
+{{- if and $generate $existingName -}}
+{{- fail (printf "%s.auth: set either existingSecret.name (with generate: false) or generate: true, not both" $path) -}}
+{{- end -}}
+{{- if and $generate (not .allowGenerate) -}}
+{{- fail (printf "%s.auth: tunnel engines need existingSecret; the box must share the key" $path) -}}
+{{- end -}}
+
+{{- $secretName := "" -}}
+{{- if $existingName -}}
+{{- $secretName = $existingName -}}
+{{- else if $generate -}}
+{{- $secretName = printf "%s-%s-api-key" (include "taas.fullname" $root) .name -}}
+{{- if gt (len $secretName) 63 -}}
+{{- fail (printf "%s: generated Secret name %q is %d chars (>63); set auth.existingSecret.name to a shorter name" $path $secretName (len $secretName)) -}}
+{{- end -}}
+{{- else if .defaultSecretName -}}
+{{- $secretName = .defaultSecretName -}}
+{{- else -}}
+{{- fail (printf "%s.auth: set existingSecret.name or generate: true" $path) -}}
+{{- end -}}
+
+{{- /*
+Existing Secrets are checked before anything is applied: a typo in the name or key
+should fail the release, not leave an engine pod in CreateContainerConfigError.
+Generated Secrets are exempt because engine-secret.yaml creates them on install.
+*/}}
+{{- if and (not $generate) $secretName (include "taas.lookupReady" $root) }}
+{{- $secretObj := lookup "v1" "Secret" $root.Release.Namespace $secretName }}
+{{- if not $secretObj }}
+{{- fail (printf "%s.auth: existing Secret %q not found in namespace %q" $path $secretName $root.Release.Namespace) }}
+{{- end }}
+{{- if not (hasKey $secretObj.data $secretKey) }}
+{{- fail (printf "%s.auth: existing Secret %q has no key %q" $path $secretName $secretKey) }}
+{{- end }}
+{{- if not (index $secretObj.data $secretKey) }}
+{{- fail (printf "%s.auth: existing Secret %q key %q is empty" $path $secretName $secretKey) }}
+{{- end }}
+{{- end -}}
+
+{{- toYaml (dict "env" $env "secretName" $secretName "secretKey" $secretKey "generated" $generate) -}}
+{{- else -}}
+{{- toYaml (dict) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Normalize and validate the named in-cluster engine pools in .Values.engines.
+Each key is used as the StatefulSet/Service/backend prefix, so TuzkaOCR and TuzkaM
+are just two entries (ocr-engine and tuzkam) and any number of additional engines
+can be added without touching the templates.
+
+Returns a YAML list of enabled engines with defaults filled in. Callers use:
+  {{- $engines := include "taas.engines" . | fromYamlArray }}
+*/}}
+{{- define "taas.engines" -}}
+{{- $root := . -}}
+{{- $engines := .Values.engines | default dict -}}
+{{- if ne (kindOf $engines) "map" -}}
+{{- fail "engines must be a map keyed by engine name (e.g. engines.ocr-engine)" -}}
+{{- end -}}
+{{- $labelRe := "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" -}}
+{{- $full := include "taas.fullname" $root -}}
+{{- $out := list -}}
+{{- range $name, $raw := $engines -}}
+{{- if $raw.enabled -}}
+{{- if not (regexMatch $labelRe $name) -}}
+{{- fail (printf "engines.%s: name %q is not a valid DNS-1123 label" $name $name) -}}
+{{- end -}}
+{{- $resourceName := printf "%s-%s" $full $name -}}
+{{- if gt (len $resourceName) 63 -}}
+{{- fail (printf "engines.%s: StatefulSet/Service name %q is %d chars (>63 limit); shorten the release or engine name" $name $resourceName (len $resourceName)) -}}
+{{- end -}}
+
+{{- $adapter := required (printf "engines.%s.adapter is required" $name) $raw.adapter -}}
+{{- $image := $raw.image | default dict -}}
+{{- if ne (kindOf $image) "map" -}}
+{{- fail (printf "engines.%s.image must be a map" $name) -}}
+{{- end -}}
+{{- $repository := required (printf "engines.%s.image.repository is required" $name) $image.repository -}}
+{{- $tag := $image.tag | default $root.Values.image.tag | default "latest" -}}
+{{- $registry := $image.registry | default "" | trimSuffix "/" -}}
+{{- $imageRef := ternary (printf "%s/%s:%s" $registry $repository $tag) (printf "%s:%s" $repository $tag) (not (empty $registry)) -}}
+
+{{- $port := 8000 -}}
+{{- if hasKey $raw "port" -}}
+{{- $port = int $raw.port -}}
+{{- end -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "engines.%s.port must be 1-65535" $name) -}}
+{{- end -}}
+{{- $maxInflight := 1 -}}
+{{- if hasKey $raw "maxInflight" -}}
+{{- $maxInflight = int $raw.maxInflight -}}
+{{- end -}}
+{{- if lt $maxInflight 1 -}}
+{{- fail (printf "engines.%s.maxInflight must be >= 1" $name) -}}
+{{- end -}}
+
+{{- $auth := include "taas.auth" (dict
+  "root" $root
+  "name" $name
+  "path" (printf "engines.%s" $name)
+  "auth" ($raw.auth | default dict)
+  "requireEnv" true
+  "allowGenerate" true
+  "defaultSecretName" ""
+) | fromYaml -}}
+
+{{- $env := $raw.env | default dict -}}
+{{- if ne (kindOf $env) "map" -}}
+{{- fail (printf "engines.%s.env must be a map" $name) -}}
+{{- end -}}
+{{- if and $auth (hasKey $env $auth.env) -}}
+{{- fail (printf "engines.%s.env.%s is set, but auth.env uses the same variable; remove the raw key from env and put it in a Secret" $name $auth.env) -}}
+{{- end -}}
+{{- $resources := $raw.resources | default dict -}}
+{{- if ne (kindOf $resources) "map" -}}
+{{- fail (printf "engines.%s.resources must be a map" $name) -}}
+{{- end -}}
+{{- $declaredDomains := $raw.declaredDomains | default dict -}}
+{{- if ne (kindOf $declaredDomains) "map" -}}
+{{- fail (printf "engines.%s.declaredDomains must be a map of domain -> output list" $name) -}}
+{{- end -}}
+
+{{- $volumes := $raw.volumes | default dict -}}
+{{- if ne (kindOf $volumes) "map" -}}
+{{- fail (printf "engines.%s.volumes must be a map keyed by volume name" $name) -}}
+{{- end -}}
+{{- range $volName, $vol := $volumes -}}
+{{- if not (regexMatch $labelRe $volName) -}}
+{{- fail (printf "engines.%s.volumes.%s: volume name is not a valid DNS-1123 label" $name $volName) -}}
+{{- end -}}
+{{- $_ := required (printf "engines.%s.volumes.%s.mountPath is required" $name $volName) $vol.mountPath -}}
+{{- $hasEmptyDir := hasKey $vol "emptyDir" -}}
+{{- $hasPVC := hasKey $vol "persistentVolumeClaim" -}}
+{{- if eq $hasEmptyDir $hasPVC -}}
+{{- fail (printf "engines.%s.volumes.%s: set exactly one of emptyDir or persistentVolumeClaim" $name $volName) -}}
+{{- end -}}
+{{- if $hasPVC -}}
+{{- $_ := required (printf "engines.%s.volumes.%s.persistentVolumeClaim.claimName is required" $name $volName) $vol.persistentVolumeClaim.claimName -}}
+{{- end -}}
+{{- end -}}
+
+{{- $as := $raw.autoscaling | default dict -}}
+{{- if ne (kindOf $as) "map" -}}
+{{- fail (printf "engines.%s.autoscaling must be a map" $name) -}}
+{{- end -}}
+{{- $mode := $as.mode | default "none" -}}
+{{- if not (has $mode (list "none" "hpa" "keda")) -}}
+{{- fail (printf "engines.%s.autoscaling.mode must be none, hpa or keda (got %q)" $name $mode) -}}
+{{- end -}}
+{{- $replicas := 1 -}}
+{{- if hasKey $as "replicas" -}}
+{{- $replicas = int $as.replicas -}}
+{{- end -}}
+{{- $minReplicas := 1 -}}
+{{- if hasKey $as "minReplicas" -}}
+{{- $minReplicas = int $as.minReplicas -}}
+{{- end -}}
+{{- $maxReplicas := 1 -}}
+{{- if hasKey $as "maxReplicas" -}}
+{{- $maxReplicas = int $as.maxReplicas -}}
+{{- end -}}
+{{- if eq $mode "none" -}}
+{{- if lt $replicas 1 -}}
+{{- fail (printf "engines.%s.autoscaling.replicas must be >= 1 for mode=none" $name) -}}
+{{- end -}}
+{{- $minReplicas = $replicas -}}
+{{- $maxReplicas = $replicas -}}
+{{- else if eq $mode "hpa" -}}
+{{- if lt $minReplicas 1 -}}
+{{- fail (printf "engines.%s.autoscaling.minReplicas must be >= 1 for mode=hpa (HPAs cannot scale below 1)" $name) -}}
+{{- end -}}
+{{- if lt $maxReplicas $minReplicas -}}
+{{- fail (printf "engines.%s.autoscaling.maxReplicas must be >= minReplicas" $name) -}}
+{{- end -}}
+{{- else if eq $mode "keda" -}}
+{{- if lt $minReplicas 0 -}}
+{{- fail (printf "engines.%s.autoscaling.minReplicas must be >= 0" $name) -}}
+{{- end -}}
+{{- if lt $maxReplicas 1 -}}
+{{- fail (printf "engines.%s.autoscaling.maxReplicas must be >= 1" $name) -}}
+{{- end -}}
+{{- if lt $maxReplicas $minReplicas -}}
+{{- fail (printf "engines.%s.autoscaling.maxReplicas must be >= minReplicas" $name) -}}
+{{- end -}}
+{{- if not $root.Values.secrets.loadToken -}}
+{{- fail (printf "engines.%s.autoscaling.mode=keda needs secrets.loadToken: KEDA reads the API's /load with it" $name) -}}
+{{- end -}}
+{{- end -}}
+
+{{- $hpa := mergeOverwrite (dict "targetCPUUtilizationPercentage" 70 "scaleDownStabilizationSeconds" 300) ($as.hpa | default dict) -}}
+{{- $hpaCPU := int ($hpa.targetCPUUtilizationPercentage | default 70) -}}
+{{- if or (lt $hpaCPU 1) (gt $hpaCPU 100) -}}
+{{- fail (printf "engines.%s.autoscaling.hpa.targetCPUUtilizationPercentage must be 1-100" $name) -}}
+{{- end -}}
+{{- $keda := mergeOverwrite (dict
+  "loadFilter" (printf "adapter=%s" $adapter)
+  "targetBacklogSeconds" 600
+  "activationBacklogSeconds" 0
+  "pollingInterval" 15
+  "cooldownPeriod" 300
+) ($as.keda | default dict) -}}
+{{- if lt (int $keda.targetBacklogSeconds) 1 -}}
+{{- fail (printf "engines.%s.autoscaling.keda.targetBacklogSeconds must be >= 1" $name) -}}
+{{- end -}}
+{{- if lt (int $keda.activationBacklogSeconds) 0 -}}
+{{- fail (printf "engines.%s.autoscaling.keda.activationBacklogSeconds must be >= 0" $name) -}}
+{{- end -}}
+{{- if lt (int $keda.pollingInterval) 1 -}}
+{{- fail (printf "engines.%s.autoscaling.keda.pollingInterval must be >= 1" $name) -}}
+{{- end -}}
+{{- if lt (int $keda.cooldownPeriod) 0 -}}
+{{- fail (printf "engines.%s.autoscaling.keda.cooldownPeriod must be >= 0" $name) -}}
+{{- end -}}
+
+{{- $pmp := $raw.podManagementPolicy | default "Parallel" -}}
+{{- if not (has $pmp (list "OrderedReady" "Parallel")) -}}
+{{- fail (printf "engines.%s.podManagementPolicy must be OrderedReady or Parallel" $name) -}}
+{{- end -}}
+
+{{- $terminationGrace := 120 -}}
+{{- if hasKey $raw "terminationGracePeriodSeconds" -}}
+{{- $terminationGrace = int $raw.terminationGracePeriodSeconds -}}
+{{- end -}}
+{{- $readinessDelay := 30 -}}
+{{- if hasKey $raw "readinessInitialDelaySeconds" -}}
+{{- $readinessDelay = int $raw.readinessInitialDelaySeconds -}}
+{{- end -}}
+{{- $livenessDelay := 60 -}}
+{{- if hasKey $raw "livenessInitialDelaySeconds" -}}
+{{- $livenessDelay = int $raw.livenessInitialDelaySeconds -}}
+{{- end -}}
+{{- $preStopSleep := 5 -}}
+{{- if hasKey $raw "preStopSleepSeconds" -}}
+{{- $preStopSleep = int $raw.preStopSleepSeconds -}}
+{{- end -}}
+
+{{- $engine := dict
+  "name" $name
+  "adapter" $adapter
+  "imageRef" $imageRef
+  "port" $port
+  "maxInflight" $maxInflight
+  "auth" $auth
+  "env" $env
+  "volumes" $volumes
+  "resources" $resources
+  "terminationGracePeriodSeconds" $terminationGrace
+  "readinessInitialDelaySeconds" $readinessDelay
+  "livenessInitialDelaySeconds" $livenessDelay
+  "preStopSleepSeconds" $preStopSleep
+  "podManagementPolicy" $pmp
+  "podSecurityContext" ($raw.podSecurityContext | default dict)
+  "securityContext" ($raw.securityContext | default dict)
+  "podAnnotations" ($raw.podAnnotations | default dict)
+  "nodeSelector" ($raw.nodeSelector | default dict)
+  "tolerations" ($raw.tolerations | default list)
+  "affinity" ($raw.affinity | default dict)
+  "healthPath" ($raw.healthPath | default "/healthz")
+  "declaredDomains" $declaredDomains
+  "device" ($raw.device | default "")
+  "autoscaling" (dict
+    "mode" $mode
+    "replicas" $replicas
+    "minReplicas" $minReplicas
+    "maxReplicas" $maxReplicas
+    "hpa" $hpa
+    "keda" $keda
+  )
+-}}
+{{- $out = append $out $engine -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $out -}}
+{{- end }}
+
+{{/*
 Build the list of exposure targets (api, minio-results, and legacy
 when compat is enabled). Each entry: name, cfg, service, port, strip.
 minio-results is exposed so external download clients can reach presigned result URLs

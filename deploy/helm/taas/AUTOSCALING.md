@@ -1,19 +1,20 @@
-# OCR engine autoscaling (HPA / KEDA) — and the GitOps `replicas` gotcha
+# Engine autoscaling (HPA / KEDA) — and the GitOps `replicas` gotcha
 
-The in-cluster OCR engine (`ocrEngine` in `values.yaml`) is a **StatefulSet** behind a
-headless Service. It can scale three ways via `ocrEngine.autoscaling.mode`:
+Every enabled entry in `engines` (TuzkaOCR, TuzkaM, or any additional engine) is a
+**StatefulSet** behind a headless Service. Each one can scale three ways via
+`engines.<name>.autoscaling.mode`:
 
 | mode   | scales by | owns `replicas` |
 |--------|-----------|-----------------|
-| `none` | nothing — static `ocrEngine.replicas` (default 1) | the manifest |
+| `none` | nothing — static `engines.<name>.autoscaling.replicas` (default 1) | the manifest |
 | `hpa`  | CPU utilisation (`autoscaling/v2` HorizontalPodAutoscaler) | the **HPA** |
 | `keda` | queued work in seconds from the API's `GET /load` (KEDA `metrics-api` `ScaledObject`) | **KEDA** |
 
 `minReplicas` / `maxReplicas` bound the autoscaler; `maxReplicas` also caps how many
 backend rows taas pre-registers for the engine.
 
-Templates: `templates/ocr-engine.yaml` (StatefulSet + Service),
-`templates/ocr-engine-hpa.yaml` (HPA or KEDA ScaledObject).
+Templates: `templates/engine.yaml` (StatefulSet + Service for every enabled engine),
+`templates/engine-autoscaler.yaml` (HPA or KEDA ScaledObject per engine).
 
 ## The rule: under hpa/keda the chart must NOT declare `spec.replicas`
 
@@ -23,7 +24,7 @@ autoscaler's `minReplicas` is the real floor.
 
 ### Symptom if this rule is broken
 
-> HPA-spawned pods (`<release>-ocr-engine-1`, `-2`, …) shut down (gracefully drain and
+> HPA-spawned pods (`<release>-<engine>-1`, `-2`, …) shut down (gracefully drain and
 > exit) **right after starting**, and the engine never scales past `minReplicas`.
 
 ### Why
@@ -55,7 +56,7 @@ spec:
   ignoreDifferences:
     - group: apps
       kind: StatefulSet
-      name: <release>-ocr-engine        # e.g. taas-ocr-engine
+      name: <release>-<engine>          # e.g. taas-ocr-engine or taas-tuzkam
       jsonPointers:
         - /spec/replicas
 ```
@@ -73,14 +74,14 @@ spec:
 
 ```sh
 # StatefulSet name + that the HPA/ScaledObject targets it
-kubectl get statefulset,hpa -l app.kubernetes.io/component=ocr-engine -n <ns>
+kubectl get statefulset,hpa -l taas.io/engine=ocr-engine -n <ns>
 
 # Rendered manifest must have NO `replicas:` under the ocr-engine StatefulSet (hpa/keda)
-helm template <release> deploy/helm/taas --set ocrEngine.enabled=true \
+helm template <release> deploy/helm/taas --set engines.ocr-engine.enabled=true \
   | awk '/kind: StatefulSet/,/^---/' | grep -E 'name:|replicas:'
 
 # After applying: scaled-up pods should stay Running, not terminate seconds after start
-kubectl get pods -l app.kubernetes.io/component=ocr-engine -n <ns> -w
+kubectl get pods -l taas.io/engine=ocr-engine -n <ns> -w
 ```
 
 ## KEDA setup & when to use it
@@ -114,7 +115,7 @@ isn't lost).
   renders a `TriggerAuthentication` for it. Rendering fails without it. Without a token,
   `/load` answers 404, so the metric isn't public even though the ingress exposes the
   API.
-- `keda.loadFilter` picks the work that counts (`adapter=tuzkaocr` by default;
+- `keda.loadFilter` picks the work that counts (`adapter=<engine adapter>` by default;
   `domain=a,b` narrows it to domains).
 - Tune `keda.targetBacklogSeconds` (≈1 replica per this many seconds of queued pages),
   `keda.activationBacklogSeconds`, `keda.pollingInterval`, `keda.cooldownPeriod`.
@@ -125,7 +126,7 @@ isn't lost).
 
 A pod that isn't running can't tell taas what it serves, so taas remembers: a backend
 keeps its last reported domains while it's down, and the register hook **declares**
-`ocrEngine.declaredDomains` for each engine before it has ever run (the engine's own
+`engines.<name>.declaredDomains` for each engine before it has ever run (the engine's own
 report replaces them on its first sync). That's what makes its queued jobs count in
 `/load`, and what lets the API accept them while nothing is running.
 

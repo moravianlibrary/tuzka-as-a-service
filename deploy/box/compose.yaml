@@ -18,7 +18,8 @@
 x-tuzkaocr-common: &tuzkaocr-common
   restart: unless-stopped
   environment:
-    # MUST match the cluster's secrets.ocrEngineApiKey so taas can authenticate.
+    # MUST match the cluster Secret in tunnelBoxesDefaults.auth (default
+    # <release>-tunnel-engine-key, key api-key) so taas can authenticate.
     TUZKAOCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY in .env}
     TUZKAOCR_DEVICE: ${OCR_DEVICE:-cpu}
   # No published ports: the engine is reached ONLY through the tunnel.

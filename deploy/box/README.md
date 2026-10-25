@@ -27,12 +27,23 @@ tunnel:
   service: { type: NodePort, nodePort: 32700 }   # or LoadBalancer
 secrets:
   frpToken: "<a-strong-shared-secret>"
-  ocrEngineApiKey: "<engine-api-key>"
+tunnelBoxesDefaults:
+  auth:
+    existingSecret:
+      name: taas-tunnel-engine-key   # or "" for <release>-tunnel-engine-key
+      key: api-key
 tunnelBoxes:
   - name: box1
     engines:
       - name: gpu1
         remotePort: 8000    # unique across all boxes; must match the box's REMOTE_PORT
+```
+
+Create the key once (the same value goes into the box's `.env`):
+
+```sh
+kubectl create secret generic taas-tunnel-engine-key \
+  --from-literal=api-key='<engine-api-key>'
 ```
 
 `helm upgrade` and note a node IP (`kubectl get nodes -o wide`) the box can reach on
@@ -45,7 +56,7 @@ Prereqs: Docker + Compose.
 ```sh
 cp .env.example .env
 # edit .env: FRP_SERVER_ADDR (node IP), FRP_TOKEN (== secrets.frpToken),
-#            OCR_API_KEY (== secrets.ocrEngineApiKey), REMOTE_PORT (== remotePort)
+#            OCR_API_KEY (== key `api-key` in the tunnel engine Secret), REMOTE_PORT (== remotePort)
 ```
 
 ## Run
@@ -74,7 +85,8 @@ Then submit a job through the taas API and confirm it returns ALTO produced on t
 ## Notes
 
 - **Keys must match**: box `FRP_TOKEN` == cluster `secrets.frpToken`; box `OCR_API_KEY`
-  == cluster `secrets.ocrEngineApiKey`.
+  == the cluster Secret referenced by `tunnelBoxesDefaults.auth` (default
+  `<release>-tunnel-engine-key`, key `api-key`).
 - **`REMOTE_PORT` is unique across all boxes** and must equal that engine's
   `tunnelBoxes[].engines[].remotePort`. Add more boxes by adding `tunnelBoxes` entries
   (each engine/exporter a distinct `remotePort`) and running this stack on each with the

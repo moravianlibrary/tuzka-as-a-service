@@ -85,7 +85,7 @@ WHERE name = 'maps';
 - **Locally:** `docker compose --profile maps up -d tuzkam` builds it from a TuzkaM
   checkout (`TUZKAM_DIR`, default `../../../gitlab.mzk.cz/osdd/tuzkam`); `make seed`
   registers it.
-- **Kubernetes:** `tuzkam.enabled=true` in the Helm chart: a StatefulSet that KEDA
+- **Kubernetes:** `engines.tuzkam.enabled=true` in the Helm chart: a StatefulSet that KEDA
   scales from zero on `/load?adapter=tuzkam` (see the chart README). Set
   `jobs.queued_timeout_seconds` to at least twice TuzkaM's cold start (35–44 s on k3d
   with the image cached; the 900 s default covers it), or sheets submitted while it's

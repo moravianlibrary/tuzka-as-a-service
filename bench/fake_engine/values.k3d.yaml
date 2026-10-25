@@ -5,27 +5,39 @@
 #   helm upgrade --install taas deploy/helm/taas -f deploy/local/values.local.yaml \
 #     -f bench/fake_engine/values.k3d.yaml
 #
-# Every replica is a separate backend (the register hook registers maxReplicas of
-# them), so this is how to test 50 backends without 50 GPUs.
-ocrEngine:
-  enabled: true
-  image:
-    repository: fake-tuzkaocr
-    tag: local
-  maxInflight: 8
-  env:
-    FAKE_LATENCY_S: "0.05"
-    FAKE_CAPACITY: "8"
-    FAKE_WORKERS: "8"
-  storage:
-    results: { type: memory, size: 16Mi }
-    spool:   { type: memory, size: 16Mi }
-  # The fake engine needs a sliver of what TuzkaOCR does.
-  resources:
-    requests: { cpu: 50m, memory: 64Mi, ephemeral-storage: 16Mi }
-    limits:   { cpu: 250m, memory: 128Mi, ephemeral-storage: 64Mi }
-  terminationGracePeriodSeconds: 10
-  autoscaling:
-    mode: none
-    maxReplicas: 10
-  replicas: 10
+# Every replica is a separate backend (the register hook registers one per replica),
+# so this is how to test 50 backends without 50 GPUs.
+engines:
+  ocr-engine:
+    enabled: true
+    adapter: tuzkaocr
+    image:
+      repository: fake-tuzkaocr
+      tag: local
+    port: 8000
+    maxInflight: 8
+    auth:
+      env: TUZKAOCR_API_KEY
+      generate: true
+    env:
+      TUZKAOCR_RESULTS_DIR: /app/results
+      TUZKAOCR_SPOOL_DIR: /app/spool
+      FAKE_LATENCY_S: "0.05"
+      FAKE_CAPACITY: "8"
+      FAKE_WORKERS: "8"
+    volumes:
+      results: { mountPath: /app/results, emptyDir: { medium: Memory, sizeLimit: 16Mi } }
+      spool: { mountPath: /app/spool, emptyDir: { medium: Memory, sizeLimit: 16Mi } }
+    # The fake engine needs a sliver of what TuzkaOCR does.
+    resources:
+      requests: { cpu: 50m, memory: 64Mi, ephemeral-storage: 16Mi }
+      limits: { cpu: 250m, memory: 128Mi, ephemeral-storage: 64Mi }
+    terminationGracePeriodSeconds: 10
+    declaredDomains:
+      default: [alto, txt]
+      kramarky: [alto, txt]
+      handwritten: [alto, txt]
+      kurrent: [alto, txt]
+    autoscaling:
+      mode: none
+      replicas: 10

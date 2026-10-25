@@ -57,5 +57,5 @@ helm upgrade --install taas deploy/helm/taas \
 ```
 
 `values.k3d.yaml` runs the chart's engine StatefulSet with this image: 10 replicas, each
-registered as its own backend by the chart's register hook. Raise `ocrEngine.replicas`
-and `autoscaling.maxReplicas` together for more.
+registered as its own backend by the chart's register hook. Raise
+`engines.ocr-engine.autoscaling.replicas` for more.

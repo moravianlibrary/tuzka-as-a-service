@@ -63,8 +63,10 @@ make local-deploy-up
 
 This runs `setup.sh` — creates the `taas` k3d cluster (mapping host `:32700` → the frps
 NodePort), installs CloudNativePG, builds + imports the `taas-{api,worker,compat}`
-images, installs the chart, waits for the register hook — then starts the host engine +
-`frpc`. Within a few seconds the `taas-tunnel-engine-cpu1` Service answers.
+images, creates the tunnel engine Secret (`<chart-fullname>-tunnel-engine-key`) from
+`deploy/local/engine-proxy/.env`, installs the chart, waits for the register hook — then
+starts the host engine + `frpc`. Within a few seconds the
+`taas-tunnel-engine-cpu1` Service answers.
 
 ## 3. Port-forward the services + open the UIs
 
@@ -156,9 +158,10 @@ Both engines must be up + healthy for jobs to drain; watch the job events in Hyp
 ## Troubleshooting
 
 - **Job never dispatches / backend unreachable** — frps/frpc auth mismatch. Confirm
-  `FRP_TOKEN` (.env) == `secrets.frpToken` and `OCR_API_KEY` == `secrets.ocrEngineApiKey`
-  in `values.local.yaml`. Failures surface in `frpc` (host) and `taas-frps` (cluster)
-  logs, NOT in k8s endpoints — the tunnel-engine Service is just a port-alias.
+  `FRP_TOKEN` (.env) == `secrets.frpToken`, and that `OCR_API_KEY` in the host `.env`
+  equals `api-key` in the `<release>-tunnel-engine-key` Secret that `setup.sh` creates.
+  Failures surface in `frpc` (host) and `taas-frps` (cluster) logs, NOT in k8s
+  endpoints — the tunnel-engine Service is just a port-alias.
 - **frpc can't reach the server** — check host `:32700` maps to the cluster:
   `kubectl get svc taas-frps` and `k3d cluster list`. The mapping is created at
   cluster-create time; if you made the cluster by hand, recreate with

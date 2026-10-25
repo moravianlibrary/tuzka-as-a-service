@@ -2,10 +2,13 @@
 # running on the host (in deploy/local/engine-proxy/) and reached through the
 # in-cluster frps reverse-tunnel proxy.
 #
-#   helm install taas ./deploy/helm/taas -f deploy/local/values.local.yaml
+#   make local-deploy-up
+#
+# (Or create <release>-tunnel-engine-key yourself, then `helm install` with this file.)
 #
 # All secrets here are throwaway TEST values; they only need to MATCH the box-side
-# .env in deploy/local/engine-proxy/.env (frpToken + ocrEngineApiKey).
+# .env in deploy/local/engine-proxy/.env (frpToken + OCR_API_KEY). setup.sh creates
+# the tunnel engine Secret <chart-fullname>-tunnel-engine-key from that .env before install.
 
 image:
   tag: "latest"
@@ -52,8 +55,7 @@ minio:
     publicUrl: "http://localhost:9100"
 
 # We run NO in-cluster engine; the real engine lives on the host and is tunneled in.
-ocrEngine:
-  enabled: false
+engines: {}
 
 # --- The reverse-tunnel proxy: real engine on the host, transparent in-cluster ---
 tunnel:
@@ -68,6 +70,12 @@ tunnelBoxesDefaults:
   # Small caps so prioritization/spill is easy to observe: the high-priority GPU
   # backend fills (maxInflight) before jobs spill to the CPU backend.
   maxInflight: 2
+  # The host engine's OCR_API_KEY. `name: ""` means <chart-fullname>-tunnel-engine-key,
+  # which setup.sh creates from deploy/local/engine-proxy/.env. Keep both in sync.
+  auth:
+    existingSecret:
+      name: ""
+      key: api-key
 
 # One box with two host engines tunneled in as two backends, to test heterogeneous
 # dispatch + backend prioritization. remotePorts MUST match the frpc proxies in
@@ -83,7 +91,8 @@ tunnelBoxes:
         remotePort: 8001
         device: cpu
 
-# Throwaway test secrets. frpToken + ocrEngineApiKey MUST match engine-proxy/.env.
+# Throwaway test secrets. frpToken MUST match engine-proxy/.env; the tunnel engine
+# key is a separate Secret created by setup.sh (see tunnelBoxesDefaults.auth).
 secrets:
   loadToken: "test-load-token"
   keyEncryptionSecret: "2bn3JCnUdwtXUSesg0YllMR47VWV4R_DcTt9p57Fy1A="
@@ -92,7 +101,6 @@ secrets:
   minioIncomingSecretKey: "test-incoming-secret"
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "test-results-secret"
-  ocrEngineApiKey: "test-engine-key"
   frpToken: "test-frp-token"
 
 # Keep everything ClusterIP; access from the host is via `kubectl port-forward`.
