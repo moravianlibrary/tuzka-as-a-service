@@ -16,6 +16,7 @@ from app.models.user import User
 # The user: key space is bounded because callers only pass authenticated
 # usernames (require_user gates the hot path), so this dict cannot grow
 # unboundedly from unauthenticated traffic.
+# TODO(rrandiak): we should make pydantic model from this
 CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[Any, float]] = {}
 
@@ -42,6 +43,7 @@ class ClassLimits:
     burst: int
 
 
+# TODO(rrandiak): Into the pydantic model(s)
 FALLBACK_LIMITS: dict[str, ClassLimits] = {
     "submit": ClassLimits(per_minute=60, burst=10),
     "query": ClassLimits(per_minute=120, burst=20),

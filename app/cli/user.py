@@ -8,6 +8,7 @@ from app.core.schemas.user import UserCreate, UserUpdate
 
 app = typer.Typer(no_args_is_help=True)
 
+# TODO(rrandiak): Use pydantic model
 COLUMNS = (
     "username",
     "active",

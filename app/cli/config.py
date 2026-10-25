@@ -11,6 +11,7 @@ from app.core import admin_ops
 app = typer.Typer(no_args_is_help=True)
 
 
+# TODO(rrandiak): all of this should be done using pydantic or Typer to type it.
 def _parse(value: str) -> Any:
     """Values are JSON (numbers, booleans, objects); anything else is a plain string."""
     try:

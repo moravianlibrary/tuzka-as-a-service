@@ -10,6 +10,7 @@ from app.core import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
 
+# TODO(rrandiak): Use pydantic model
 COLUMNS = ("id", "username", "external_id", "domain", "backend_id", "finished_at", "error")
 
 
@@ -24,6 +25,7 @@ def list_failed(limit: int = typer.Option(50), as_json: bool = JsonOption) -> No
 def show(job_id: uuid.UUID) -> None:
     """One job with every failed attempt (stage, backend, HTTP status, error, retry)."""
     job = run(lambda db: admin_ops.get_job(db, job_id))
+    # TODO(rrandiak): Use pydantic model
     fields = (
         "id",
         "username",

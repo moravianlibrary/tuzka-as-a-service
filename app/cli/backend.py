@@ -10,6 +10,7 @@ from app.core.schemas.backend import BackendCreate, BackendUpdate
 
 app = typer.Typer(no_args_is_help=True)
 
+# TODO(rrandiak): Use pydantic model
 COLUMNS = (
     "id",
     "url",

@@ -25,6 +25,7 @@ EXIT_INVALID = 2
 JsonOption = typer.Option(False, "--json", help="Print JSON instead of a table.")
 
 
+# TODO(rrandiak): We want to use models more. And move / add functions to app.models.db if needed.
 def settings() -> Settings:
     return Settings()
 

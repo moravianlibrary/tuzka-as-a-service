@@ -7,6 +7,7 @@ from app.core import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
 
+# TODO(rrandiak): Use pydantic model
 COLUMNS = (
     "name",
     "label",
