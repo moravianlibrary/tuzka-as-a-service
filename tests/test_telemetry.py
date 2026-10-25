@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E4
 )
 
 from app import telemetry  # noqa: E402
+from app.config import Settings  # noqa: E402
 from app.schemas.redis import JobState  # noqa: E402
 from app.telemetry import inject_trace_context, job_span, setup_telemetry  # noqa: E402
 from tests.factories import job_state  # noqa: E402
@@ -86,9 +87,8 @@ def test_worker_sampler_keeps_only_job_traces() -> None:
 
 
 def test_off_without_an_otlp_endpoint(monkeypatch) -> None:
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     monkeypatch.setattr(telemetry, "_enabled", False)
     before = trace.get_tracer_provider()
 
-    assert setup_telemetry("taas-test") is False
+    assert setup_telemetry(Settings(otel_exporter_otlp_endpoint=""), "taas-test") is False
     assert trace.get_tracer_provider() is before

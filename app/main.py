@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
     # httpx emits one INFO line per request; quiet it so it doesn't drown app logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     # After basicConfig(force=True), which would drop the OTel log handler.
-    setup_telemetry("taas-api", db_engine=db.engine, root_spans=True)
+    setup_telemetry(settings, "taas-api", db_engine=db.engine, root_spans=True)
 
     app = FastAPI(
         title="taas",

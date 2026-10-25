@@ -1,7 +1,8 @@
 """OpenTelemetry: traces and logs, with one trace per job across processes.
 
-Off unless ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set; everything else comes from the
-standard ``OTEL_*`` env vars (service name, headers, resource attributes). The SDK is
+Off unless ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set (``Settings``, like the service name);
+the other standard ``OTEL_*`` env vars (headers, resource attributes) reach the SDK
+straight from the environment. The SDK is
 imported only when it's on, so a deployment without a collector pays nothing, and a
 checkout whose environment lacks the packages still runs (every helper is a no-op).
 
@@ -19,7 +20,6 @@ skips its probe and autoscaler endpoints.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
     from sqlalchemy.ext.asyncio import AsyncEngine
 
+    from app.config import Settings
     from app.schemas.redis import JobState
 
 logger = logging.getLogger(__name__)
@@ -47,21 +48,25 @@ _UNTRACED_URLS = r"/healthz$,/load(\?|$)"
 
 
 def setup_telemetry(
-    default_service: str, db_engine: AsyncEngine | None = None, root_spans: bool = False
+    settings: Settings,
+    default_service: str,
+    db_engine: AsyncEngine | None = None,
+    root_spans: bool = False,
 ) -> bool:
     """Export traces and logs over OTLP and instrument httpx, redis and ``db_engine``.
 
     ``root_spans`` lets the process start traces of its own (the API: one per request).
     Without it (the workers), a span is recorded only under a parent, i.e. inside a
     job's ``job_span``; everything else is dropped at creation. Logs are exported either
-    way. ``OTEL_SERVICE_NAME`` wins over ``default_service``. Call it once per process,
+    way. ``settings.otel_service_name`` wins over ``default_service``. Call it once per process,
     after logging is configured (it adds a handler to the root logger). Returns whether
     telemetry is on.
     """
     global _enabled
     if _enabled:
         return True
-    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or trace is None:
+    endpoint = settings.otel_exporter_otlp_endpoint.rstrip("/")
+    if not endpoint or trace is None:
         return False
 
     from opentelemetry._logs import set_logger_provider
@@ -78,16 +83,20 @@ def setup_telemetry(
     from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ALWAYS_ON, ParentBased
 
     # Attributes passed here override the env-detected ones, so resolve the env first.
-    service = os.environ.get("OTEL_SERVICE_NAME") or default_service
+    service = settings.otel_service_name or default_service
     resource = Resource.create({"service.name": service})
 
     sampler = ParentBased(root=ALWAYS_ON if root_spans else ALWAYS_OFF)
     tracer_provider = TracerProvider(resource=resource, sampler=sampler)
-    tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    tracer_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
+    )
     trace.set_tracer_provider(tracer_provider)
 
     logger_provider = LoggerProvider(resource=resource)
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs"))
+    )
     set_logger_provider(logger_provider)
     logging.getLogger().addHandler(
         LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)

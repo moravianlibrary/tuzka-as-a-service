@@ -307,7 +307,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     timer = StageTimer()
     stages_flushed_at = time.monotonic()
     db_engine = make_engine(settings)
-    setup_telemetry("taas-poller", db_engine=db_engine)
+    setup_telemetry(settings, "taas-poller", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     r = make_redis(settings)
     http = httpx.AsyncClient(timeout=60.0)

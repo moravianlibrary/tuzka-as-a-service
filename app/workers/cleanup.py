@@ -73,7 +73,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = make_engine(settings)
-    setup_telemetry("taas-cleanup", db_engine=db_engine)
+    setup_telemetry(settings, "taas-cleanup", db_engine=db_engine)
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)

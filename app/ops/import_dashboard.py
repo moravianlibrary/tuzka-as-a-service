@@ -1,7 +1,7 @@
 """Import the chart's HyperDX dashboards: create each by name, or update it in place.
 
 Run by the Helm post-install/upgrade Job (``python -m app.ops.import_dashboard FILE``)
-with ``HYPERDX_URL`` and ``HYPERDX_API_KEY``. The file is a HyperDX dashboard export (or
+with ``HYPERDX_URL`` and ``HYPERDX_API_KEY`` (``Settings``). The file is a HyperDX dashboard export (or
 a list of them). Tiles name their source (e.g. ``"Job Events"``); the import resolves
 those names to the ids the API expects, so the file stays portable between installs.
 Waits for HyperDX to come up, since the Job can start before it's Ready.
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from pathlib import Path
@@ -25,13 +24,10 @@ from typing import Any, Literal
 
 import httpx
 
+from app.config import Settings
+
 logger = logging.getLogger("import-dashboard")
 
-# HyperDX's external API (relative to HYPERDX_URL, which the chart points at the app's
-# /api prefix), authenticated with a user's API key. Overridable, since the paths have
-# moved between HyperDX releases.
-DASHBOARDS_PATH = os.environ.get("HYPERDX_DASHBOARDS_PATH", "/api/v2/dashboards")
-SOURCES_PATH = os.environ.get("HYPERDX_SOURCES_PATH", "/api/v2/sources")
 NO_KEY_HELP = (
     "skipping the dashboard import: HyperDX needs a user's API key. Sign up in HyperDX "
     "(the first user creates the team and its sources), copy the API key from Team "
@@ -89,11 +85,11 @@ def _items(body: Any) -> list[dict[str, Any]]:
     return [i for i in items if isinstance(i, dict)]
 
 
-def _wait_until_up(http: httpx.Client) -> None:
+def _wait_until_up(http: httpx.Client, probe_path: str) -> None:
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
         try:
-            if http.get(DASHBOARDS_PATH).status_code < 500:
+            if http.get(probe_path).status_code < 500:
                 return
         except httpx.TransportError:
             pass
@@ -109,26 +105,32 @@ def main(argv: list[str]) -> int:
         print("usage: python -m app.ops.import_dashboard DASHBOARD.json", file=sys.stderr)
         return 2
     wanted = load_dashboards(Path(argv[1]).read_text())
-    api_key = os.environ.get("HYPERDX_API_KEY", "")
-    if not api_key:
+    settings = Settings()
+    if not settings.hyperdx_api_key:
         logger.warning(NO_KEY_HELP)
         return 0
-    headers = {"Authorization": f"Bearer {api_key}"}
-    with httpx.Client(base_url=os.environ["HYPERDX_URL"], headers=headers, timeout=30) as http:
-        _wait_until_up(http)
-        resp = http.get(SOURCES_PATH)
+    if not settings.hyperdx_url:
+        logger.error("HYPERDX_URL is not set")
+        return 1
+    # HyperDX's external API, relative to HYPERDX_URL (the chart points it at the app's
+    # /api prefix), authenticated with a user's API key.
+    dashboards_path = settings.hyperdx_dashboards_path
+    headers = {"Authorization": f"Bearer {settings.hyperdx_api_key}"}
+    with httpx.Client(base_url=settings.hyperdx_url, headers=headers, timeout=30) as http:
+        _wait_until_up(http, dashboards_path)
+        resp = http.get(settings.hyperdx_sources_path)
         if resp.status_code in (401, 403):
             logger.warning("HyperDX rejected the API key; %s", NO_KEY_HELP)
             return 0
         sources = _items(resp.raise_for_status().json())
         source_ids = {s["name"]: str(s.get("id") or s.get("_id")) for s in sources}
-        existing = _items(http.get(DASHBOARDS_PATH).raise_for_status().json())
+        existing = _items(http.get(dashboards_path).raise_for_status().json())
         for action, dashboard, dashboard_id in plan_import(wanted, existing):
             body = resolve_sources(dashboard, source_ids)
             if action == "update":
-                http.put(f"{DASHBOARDS_PATH}/{dashboard_id}", json=body).raise_for_status()
+                http.put(f"{dashboards_path}/{dashboard_id}", json=body).raise_for_status()
             else:
-                http.post(DASHBOARDS_PATH, json=body).raise_for_status()
+                http.post(dashboards_path, json=body).raise_for_status()
             logger.info("%sd dashboard %r", action, dashboard["name"])
     return 0
 

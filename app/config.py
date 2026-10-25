@@ -94,5 +94,18 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # OpenTelemetry: off while the endpoint is empty. The other OTEL_* vars (headers,
+    # resource attributes) go to the SDK straight from the process env.
+    otel_exporter_otlp_endpoint: str = ""
+    # Overrides each process's own service name (taas-api, taas-poller, ...).
+    otel_service_name: str = ""
+
+    # HyperDX, for the dashboard import (app.ops.import_dashboard, a Helm hook Job).
+    hyperdx_url: str = ""
+    hyperdx_api_key: str = ""
+    # Relative to hyperdx_url; overridable, since the paths moved between releases.
+    hyperdx_dashboards_path: str = "/api/v2/dashboards"
+    hyperdx_sources_path: str = "/api/v2/sources"
+
     # extra=ignore: stale env entries must not crash startup
     model_config = {"env_file": ".env.local", "extra": "ignore"}

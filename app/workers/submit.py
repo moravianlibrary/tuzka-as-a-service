@@ -253,7 +253,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     timer = StageTimer()
     stages_flushed_at = time.monotonic()
     engine = make_engine(settings)
-    setup_telemetry("taas-submit", db_engine=engine)
+    setup_telemetry(settings, "taas-submit", db_engine=engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     r = make_redis(settings)
     incoming_client = get_incoming_client(settings)
