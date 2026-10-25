@@ -516,7 +516,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 FailureStage.DISPATCH, http_st, isinstance(e, httpx.TransportError)
             )
             async with session_factory() as db:
-                max_requeues = await config_service.get_max_requeues(db)
+                max_requeues = (await config_service.get_runtime_config(db)).max_requeues
                 state_ttl = await config_service.get_state_ttl_seconds(db)
             requeues = state.requeues
 
@@ -699,7 +699,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         )
                         fallback = await _fallback_spp(r, job_domains)
                         async with session_factory() as db:
-                            tolerance = await config_service.get_affinity_tolerance(db)
+                            tolerance = (
+                                await config_service.get_runtime_config(db)
+                            ).affinity_tolerance
 
                     def spp(
                         backend_id: int,

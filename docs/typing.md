@@ -79,7 +79,7 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
       dropped only once a backend claims it; drop it from its queue outright instead
 - [x] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
       `ClassLimits` + `FALLBACK_LIMITS`/`USER_OVERRIDE_COLUMNS`
-- [ ] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters
+- [x] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters
 - [ ] B4 + D6: `Attempt` for `Job.attempts` (built in `retry_policy`, read in
       `events`, `poller`)
 - [ ] B3: response models per engine endpoint; `resp.json()` no longer `dict[str, Any]`

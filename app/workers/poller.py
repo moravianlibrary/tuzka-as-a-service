@@ -485,7 +485,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 job_rec, backend_device = job_row.first() or (None, None)
 
-                presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
+                presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 result_rows: list[dict[str, Any]] = []
                 for result_fmt, obj_path, raw_bytes in results_to_store:
@@ -857,7 +857,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     async def drain_due(due: list[str], states: dict[str, JobState]) -> None:
         # Refill each free status slot while the main loop harvests in parallel.
         async with session_factory() as db:
-            max_requeues = await config_service.get_max_requeues(db)
+            max_requeues = (await config_service.get_runtime_config(db)).max_requeues
             state_ttl = await config_service.get_state_ttl_seconds(db)
         await drain_poll_queue(
             due,

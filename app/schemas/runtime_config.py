@@ -2,11 +2,20 @@
 (docs/typing.md). Every key is optional there: a missing or malformed value falls back
 to the built-in default, so an admin typo degrades a setting instead of 500ing."""
 
+import logging
+import re
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.vocabulary import LimitClass
+
+log = logging.getLogger(__name__)
+
+# storage.<bucket>_ttl_minutes: how long the cleanup keeps a bucket's objects.
+_STORAGE_TTL_KEY = re.compile(r"storage\.(?P<bucket>.+)_ttl_minutes")
+STORAGE_TTL_DEFAULT_MINUTES = 60
 
 
 class RateLimit(BaseModel):
@@ -42,3 +51,55 @@ FALLBACK_RATE_LIMITS: dict[LimitClass, RateLimit] = {
     LimitClass.QUERY: RateLimit(per_minute=120, burst=20),
     LimitClass.WS_CONNECT: RateLimit(per_minute=5, burst=2),
 }
+
+
+class RuntimeConfig(BaseModel):
+    """Every runtime policy value of the ``config`` table, each field under its key.
+
+    Built from all rows at once by ``from_rows``; a malformed value is logged and left
+    at its default, so it degrades one setting rather than every reader of the table.
+    """
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    queued_timeout_seconds: int = Field(900, alias="jobs.queued_timeout_seconds")
+    running_timeout_seconds: int = Field(300, alias="jobs.running_timeout_seconds")
+    max_requeues: int = Field(5, alias="jobs.max_requeues")
+    # Retention: finished job rows, and result data.
+    done_ttl_seconds: int = Field(86_400, alias="jobs.done_ttl_seconds")
+    failed_ttl_seconds: int = Field(604_800, alias="jobs.failed_ttl_seconds")
+    presigned_ttl_minutes: int = Field(60, alias="presigned.ttl_minutes")
+    results_max_age_seconds: int = Field(86_400, alias="storage.results_max_age_seconds")
+    # The results storage cap; None (unset) = no cap, results go by age only.
+    results_max_bytes: int | None = Field(None, alias="storage.results_max_bytes")
+    # Dispatch: a backend already running a batch's pages wins its next page when it
+    # would finish within this fraction of the fastest one.
+    affinity_tolerance: float = Field(0.15, alias="dispatch.affinity_tolerance")
+    # Seconds per page /load assumes for a domain with no measured pages yet.
+    default_seconds_per_page: float = Field(10.0, alias="load.default_seconds_per_page")
+    # Per bucket, from storage.<bucket>_ttl_minutes; see storage_ttl_minutes.
+    bucket_ttl_minutes: dict[str, int] = Field(default_factory=dict)
+    rate_limits: dict[LimitClass, RateLimit] = Field(default=FALLBACK_RATE_LIMITS)
+
+    @classmethod
+    def from_rows(cls, rows: Mapping[str, Any]) -> "RuntimeConfig":
+        """Parse the table's ``key -> value`` rows; keys taas doesn't read are ignored."""
+        fields = {key: value for key, value in rows.items() if value is not None}
+        fields["bucket_ttl_minutes"] = {
+            match["bucket"]: value
+            for key, value in fields.items()
+            if (match := _STORAGE_TTL_KEY.fullmatch(key))
+        }
+        fields["rate_limits"] = {
+            limit_class: RateLimit.from_config(rows.get(f"rate_limit.{limit_class}"), fallback)
+            for limit_class, fallback in FALLBACK_RATE_LIMITS.items()
+        }
+        try:
+            return cls.model_validate(fields)
+        except ValidationError as e:
+            malformed = {str(err["loc"][0]) for err in e.errors()}
+            log.warning("config: malformed %s; using the defaults", ", ".join(sorted(malformed)))
+            return cls.model_validate({k: v for k, v in fields.items() if k not in malformed})
+
+    def storage_ttl_minutes(self, bucket: str) -> int:
+        return self.bucket_ttl_minutes.get(bucket, STORAGE_TTL_DEFAULT_MINUTES)

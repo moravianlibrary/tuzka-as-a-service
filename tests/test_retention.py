@@ -4,11 +4,13 @@ sweep against a throwaway migrated Postgres (``TEST_DATABASE_URL``; skips otherw
 import os
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.schemas.runtime_config import RuntimeConfig
 from app.services import retention
 from app.services.retention import expired_job_cutoffs, plan_eviction
 
@@ -171,14 +173,12 @@ async def _stored_result(session, stored_days_ago: float, size: int) -> uuid.UUI
 def _limits(monkeypatch, max_age_days: float, cap: int | None) -> list[str]:
     monkeypatch.setattr(retention, "utcnow", lambda: NOW)
 
-    async def max_age(db):
-        return int(max_age_days * 86_400)
-
-    async def max_bytes(db):
-        return cap
-
-    monkeypatch.setattr(retention.config_service, "get_results_max_age_seconds", max_age)
-    monkeypatch.setattr(retention.config_service, "get_results_max_bytes", max_bytes)
+    config = RuntimeConfig(
+        results_max_age_seconds=int(max_age_days * 86_400), results_max_bytes=cap
+    )
+    monkeypatch.setattr(
+        retention.config_service, "get_runtime_config", AsyncMock(return_value=config)
+    )
     deleted: list[str] = []
 
     async def fake_delete(client, bucket, paths):

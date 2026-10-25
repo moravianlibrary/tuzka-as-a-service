@@ -317,7 +317,7 @@ async def get_job_result(
     results_client = request.app.state.results_public_client
     entries = []
     now = utcnow()
-    presigned_ttl = await config_service.get_presigned_ttl_minutes(db)
+    presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
     for jr in job_results:
         # Refresh presigned URL if expired (stored as naive UTC)
         if not jr.presigned_url or (jr.presigned_until and jr.presigned_until < now):

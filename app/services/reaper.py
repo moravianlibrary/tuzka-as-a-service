@@ -73,8 +73,9 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
 
     Returns the number of jobs reaped.
     """
-    queued_timeout = await config_service.get_job_queued_timeout_seconds(db)
-    running_timeout = await config_service.get_job_running_timeout_seconds(db)
+    config = await config_service.get_runtime_config(db)
+    queued_timeout = config.queued_timeout_seconds
+    running_timeout = config.running_timeout_seconds
     domain_limits = await config_service.get_domain_limits(db)
     state_ttl = await config_service.get_state_ttl_seconds(db)
     now = utcnow()

@@ -68,9 +68,10 @@ def _object(username: str, job_id: uuid.UUID, fmt: str) -> str:
 async def delete_finished_jobs(db: AsyncSession, results_client: Minio, bucket: str) -> int:
     """Delete single jobs past their TTL, with their result rows and objects. Returns how
     many jobs went."""
-    done_ttl = await config_service.get_done_ttl_seconds(db)
-    failed_ttl = await config_service.get_failed_ttl_seconds(db)
-    done_cutoff, failed_cutoff = expired_job_cutoffs(utcnow(), done_ttl, failed_ttl)
+    config = await config_service.get_runtime_config(db)
+    done_cutoff, failed_cutoff = expired_job_cutoffs(
+        utcnow(), config.done_ttl_seconds, config.failed_ttl_seconds
+    )
     # Pages of a batch go with their batch (delete_expired_batches), all at once.
     expired = (
         ((Job.status == JobStatus.DONE) & (Job.finished_at < done_cutoff))
@@ -117,8 +118,8 @@ def batch_expired(
 async def delete_expired_batches(db: AsyncSession, results_client: Minio, bucket: str) -> int:
     """Delete finished batches past their TTL: their pages' result objects, their results
     archives, then the batch (its jobs cascade). Returns how many batches went."""
-    done_ttl = await config_service.get_done_ttl_seconds(db)
-    failed_ttl = await config_service.get_failed_ttl_seconds(db)
+    config = await config_service.get_runtime_config(db)
+    done_ttl, failed_ttl = config.done_ttl_seconds, config.failed_ttl_seconds
     now = utcnow()
     any_failed = (
         select(func.count())
@@ -177,7 +178,9 @@ async def evict_results(db: AsyncSession, results_client: Minio, bucket: str) ->
     cap and ages out with them. It goes first when over the cap: it's only a cache, and
     the next download rebuilds it from the page results that are still there."""
     now = utcnow()
-    max_age_cutoff = now - timedelta(seconds=await config_service.get_results_max_age_seconds(db))
+    max_age_cutoff = now - timedelta(
+        seconds=(await config_service.get_runtime_config(db)).results_max_age_seconds
+    )
     limit = DELETE_BATCH * MAX_BATCHES_PER_TICK
     live = JobResult.evicted_at.is_(None)
     rows = select(JobResult.job_id, JobResult.fmt, Job.username, JobResult.size_bytes).join(
@@ -195,7 +198,7 @@ async def evict_results(db: AsyncSession, results_client: Minio, bucket: str) ->
     evict = [(job_id, fmt, user) for job_id, fmt, user, _ in aged]
     evict_archives = [(batch_id, user) for batch_id, user, _ in aged_archives]
 
-    cap = await config_service.get_results_max_bytes(db)
+    cap = (await config_service.get_runtime_config(db)).results_max_bytes
     if cap is not None:
         stored = select(func.coalesce(func.sum(JobResult.size_bytes), 0)).where(live)
         stored_archives = select(func.coalesce(func.sum(Batch.archive_size_bytes), 0)).where(built)

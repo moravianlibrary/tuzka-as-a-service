@@ -49,7 +49,7 @@ async def get_load(
     queued = {k: int(v) for k, v in _decode(raw_queued).items()}
     inflight = {k: int(v) for k, v in _decode(raw_inflight).items()}
     spp = {k: float(v) for k, v in _decode(raw_spp).items()}
-    default_spp = await config_service.get_default_seconds_per_page(db)
+    default_spp = (await config_service.get_runtime_config(db)).default_seconds_per_page
     domains = {d.strip() for d in domain.split(",") if d.strip()} if domain else None
 
     if group_by is not None:

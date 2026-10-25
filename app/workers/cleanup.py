@@ -17,7 +17,7 @@ from app.models.backend import Backend  # noqa: F401 — registers FK target wit
 from app.models.db import make_engine
 from app.models.job import Job
 from app.services import batch_store, live_metrics
-from app.services.config import get_storage_ttl_minutes
+from app.services.config import get_runtime_config
 from app.services.event_emitter import get_emitter
 from app.services.reaper import reap_stale_jobs
 from app.services.redis_jobs import (
@@ -128,9 +128,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             if tick % HEAVY_EVERY == 0:
                 try:
                     async with session_factory() as db:
-                        ttls = await get_storage_ttl_minutes(db, list(bucket_clients.keys()))
-                        for bucket, ttl_minutes in ttls.items():
-                            client = bucket_clients[bucket]
+                        config = await get_runtime_config(db)
+                        for bucket, client in bucket_clients.items():
+                            ttl_minutes = config.storage_ttl_minutes(bucket)
                             cutoff = utcnow() - timedelta(minutes=ttl_minutes)
                             expired = await list_expired_objects(client, bucket, cutoff)
                             if expired:

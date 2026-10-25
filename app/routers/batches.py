@@ -384,7 +384,7 @@ async def get_batch_results(
             batch.archive_size_bytes = size
             await db.commit()
 
-    ttl = await config_service.get_presigned_ttl_minutes(db)
+    ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
     url = await storage.presign_get(request.app.state.results_public_client, bucket, path, ttl)
     return BatchResults(status=batch.status, url=url, expires_at=utcnow() + timedelta(minutes=ttl))
 
