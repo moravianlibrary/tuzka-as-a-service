@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.engines.base import DomainInfo, EngineInfo
-from app.engines.tuzkaocr import options_schema_from_openapi
+from app.engines.openapi import options_schema_from_openapi
 from app.services.load import load_field
 from app.workers.submit import BackendSlot, PendingJob
 

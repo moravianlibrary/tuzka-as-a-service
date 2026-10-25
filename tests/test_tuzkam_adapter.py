@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from app.engines.base import EngineFullError, OutputUnavailable
-from app.engines.tuzkam import TuzkaMAdapter, tuzkam_metrics, tuzkam_options_schema
+from app.engines.tuzkam.adapter import TuzkaMAdapter, tuzkam_metrics, tuzkam_options_schema
 
 OPENAPI_FIXTURE = Path(__file__).parent / "fixtures" / "tuzkam_openapi.json"
 

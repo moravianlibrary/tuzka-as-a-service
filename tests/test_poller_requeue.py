@@ -6,7 +6,7 @@ from datetime import datetime
 import httpx
 import pytest
 
-from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
 from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error

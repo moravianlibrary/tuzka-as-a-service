@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
 
 
 def _make_adapter(handler) -> tuple[TuzkaOcrAdapter, httpx.AsyncClient]:

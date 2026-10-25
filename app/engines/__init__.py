@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 
 from app.engines.base import EngineAdapter
-from app.engines.tuzkam import TuzkaMAdapter
-from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.engines.tuzkam.adapter import TuzkaMAdapter
+from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
 from app.vocabulary import AdapterId
 
 ADAPTERS: dict[AdapterId, type[TuzkaOcrAdapter] | type[TuzkaMAdapter]] = {

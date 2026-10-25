@@ -11,7 +11,7 @@ import pytest
 
 from app.engines.base import EngineFullError
 from app.engines.openapi import options_schema_from_openapi
-from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
 
 # What FastAPI + pydantic v2 generate for TuzkaOCR's POST /api/v1/process signature.
 OPENAPI_FIXTURE = Path(__file__).parent / "fixtures" / "tuzkaocr_openapi.json"
