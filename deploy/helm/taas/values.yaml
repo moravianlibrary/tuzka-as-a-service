@@ -372,6 +372,17 @@ clickstack:
       limits:
         cpu: "2"
         memory: 4Gi
+    # ClickHouse's defaults are sized for big servers: 24.8 creates a 512-thread
+    # background-schedule pool and keeps up to 1000 idle query threads. In this
+    # 2-CPU pod that shows up as ~700 mostly-sleeping threads. Cap the pools to the
+    # pod's size (about 100 threads total). background_pool_size stays at ClickHouse's
+    # 16: lowering it below 13 trips the merge_tree sanity check
+    # (number_of_free_entries_in_pool_to_execute_optimize_entire_partition = 25).
+    threads:
+      backgroundSchedulePoolSize: 32
+      maxThreadPoolSize: 256
+      maxThreadPoolFreeSize: 32
+      maxConcurrentQueries: 64
   hyperdx:
     image:
       repository: hyperdx/hyperdx

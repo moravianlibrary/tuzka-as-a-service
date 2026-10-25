@@ -1,5 +1,6 @@
 {{- if .Values.clickstack.enabled }}
 {{- $c := .Values.clickstack.clickhouse }}
+{{- $t := $c.threads | default dict }}
 {{- $name := printf "%s-clickhouse" (include "taas.fullname" .) }}
 apiVersion: v1
 kind: ConfigMap
@@ -24,6 +25,29 @@ data:
       <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
       <part_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></part_log>
     </clickhouse>
+  # Keep ClickHouse's thread pools proportional to this small single-node deployment.
+  # These are startup-only settings; the StatefulSet checksum below rolls the pod when
+  # they change. See clickstack.clickhouse.threads in values.yaml.
+  threads.xml: |
+    <clickhouse>
+      <background_pool_size>16</background_pool_size>
+      <background_schedule_pool_size>{{ int ($t.backgroundSchedulePoolSize | default 32) }}</background_schedule_pool_size>
+      <background_common_pool_size>2</background_common_pool_size>
+      <background_fetches_pool_size>2</background_fetches_pool_size>
+      <background_move_pool_size>2</background_move_pool_size>
+      <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+      <background_message_broker_schedule_pool_size>2</background_message_broker_schedule_pool_size>
+      <background_distributed_schedule_pool_size>2</background_distributed_schedule_pool_size>
+      <max_thread_pool_size>{{ int ($t.maxThreadPoolSize | default 256) }}</max_thread_pool_size>
+      <max_thread_pool_free_size>{{ int ($t.maxThreadPoolFreeSize | default 32) }}</max_thread_pool_free_size>
+      <max_parts_cleaning_thread_pool_size>16</max_parts_cleaning_thread_pool_size>
+      <max_active_parts_loading_thread_pool_size>8</max_active_parts_loading_thread_pool_size>
+      <max_outdated_parts_loading_thread_pool_size>4</max_outdated_parts_loading_thread_pool_size>
+      <max_unexpected_parts_loading_thread_pool_size>2</max_unexpected_parts_loading_thread_pool_size>
+      <max_concurrent_queries>{{ int ($t.maxConcurrentQueries | default 64) }}</max_concurrent_queries>
+      <max_io_thread_pool_size>32</max_io_thread_pool_size>
+      <max_backups_io_thread_pool_size>32</max_backups_io_thread_pool_size>
+    </clickhouse>
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -44,6 +68,9 @@ spec:
       labels:
         {{- include "taas.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: clickhouse
+      annotations:
+        # The thread pools are startup-only; roll the pod when the config values change.
+        checksum/config: {{ toYaml $c | sha256sum }}
     spec:
       containers:
         - name: clickhouse
@@ -86,6 +113,10 @@ spec:
             - name: config
               mountPath: /etc/clickhouse-server/config.d/system-logs.xml
               subPath: system-logs.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/threads.xml
+              subPath: threads.xml
               readOnly: true
           resources:
             {{- toYaml $c.resources | nindent 12 }}

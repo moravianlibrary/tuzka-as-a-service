@@ -149,6 +149,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **ClickHouse thread pools are capped for the chart's 2-CPU pod.** ClickHouse 24.8
+  defaults to a 512-thread background-schedule pool and keeps up to 1000 idle threads,
+  which left ~700 mostly-sleeping threads in `taas-clickhouse-0` even with two queries
+  running. `clickstack.clickhouse.threads` now caps the schedule pool, the global pool,
+  its idle cache and concurrent queries (about 100 threads total); the StatefulSet gets
+  a config checksum so a change rolls the pod.
 - **ClickStack now tail-samples traces in the OTel collector.** It always keeps traces
   with an error span or a failed job, samples the rest at
   `clickstack.otel.traceSamplePercentage` (default 5%), and drops log records below WARN
