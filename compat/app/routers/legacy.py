@@ -142,10 +142,10 @@ async def upload_image(
     req = await state.get_request(request_id)
     if not req:
         raise HTTPException(404, "Request not found")
-    if filename not in req["filenames"]:
+    if filename not in req.filenames:
         raise HTTPException(400, f"Filename {filename} not in request")
 
-    engine_cfg = await resolve_engine(http, api_key, req["engine"])
+    engine_cfg = await resolve_engine(http, api_key, req.engine)
     file_bytes = await file.read()
 
     # Forward to taas

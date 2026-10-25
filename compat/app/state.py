@@ -1,9 +1,10 @@
 """Redis-backed store mapping legacy request IDs to engine and filename metadata."""
 
-import json
 from typing import Any, cast
 
 import redis.asyncio as aioredis
+
+from .schemas import CompatRequest
 
 
 class CompatState:
@@ -13,27 +14,13 @@ class CompatState:
 
     async def create_request(self, request_id: str, engine: int, filenames: list[str]) -> None:
         key = f"compat:{request_id}"
-        await self.r.hset(
-            key,
-            mapping={
-                "engine": str(engine),
-                "filenames": json.dumps(filenames),
-            },
-        )
+        request = CompatRequest(engine=engine, filenames=filenames)
+        await self.r.hset(key, mapping=cast("dict[Any, Any]", request.to_hash()))
         await self.r.expire(key, self.ttl)
 
-    async def get_request(self, request_id: str) -> dict[str, Any] | None:
-        key = f"compat:{request_id}"
-        data = await self.r.hgetall(key)
-        if not data:
-            return None
-        engine: Any = data.get(b"engine", data.get("engine"))
-        filenames: Any = data.get(b"filenames", data.get("filenames"))
-        if isinstance(engine, bytes):
-            engine = engine.decode()
-        if isinstance(filenames, bytes):
-            filenames = filenames.decode()
-        return {"engine": int(engine), "filenames": json.loads(filenames)}
+    async def get_request(self, request_id: str) -> CompatRequest | None:
+        data = await self.r.hgetall(f"compat:{request_id}")
+        return CompatRequest.from_hash(data) if data else None
 
     async def set_job_id(self, request_id: str, filename: str, job_id: str) -> None:
         key = f"compat:{request_id}:{filename}"
@@ -51,6 +38,6 @@ class CompatState:
         if not req:
             return {}
         result: dict[str, str | None] = {}
-        for filename in req["filenames"]:
+        for filename in req.filenames:
             result[filename] = await self.get_job_id(request_id, filename)
         return result
