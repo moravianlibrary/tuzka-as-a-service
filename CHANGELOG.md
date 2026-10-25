@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Job events carry the backend's label (`backend`: `backends.label`, else the id), in
+  `taas.job_events` and the ClickStack backfill. The post-upgrade schema Job adds the
+  column to existing installs.
 - Jobs now show `storing` after the poller observes engine completion and before their
   results are saved. Dispatch pauses when running plus storing jobs reach
   `UNSTORED_JOB_MAX` (default 100), keeping unfinished results bounded under overload.

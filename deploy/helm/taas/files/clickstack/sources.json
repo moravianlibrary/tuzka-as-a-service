@@ -11,7 +11,7 @@
     "serviceNameExpression": "domain",
     "severityTextExpression": "if(error_flag = 1, 'error', 'info')",
     "eventAttributesExpression": "extra",
-    "defaultTableSelectExpression": "ts,event,job_id,username,domain,backend_id,device,error_class,total_s"
+    "defaultTableSelectExpression": "ts,event,job_id,username,domain,backend_id,backend,device,error_class,total_s"
   },
   {
     "name": "Live Metrics",

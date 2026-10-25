@@ -60,6 +60,7 @@ class JobEvent:
     outputs: list[str] = field(default_factory=list)
     batch_id: str | None = None
     backend_id: int | None = None
+    backend: str = ""
     adapter: str = ""
     engine_version: str = ""
     device: str = ""

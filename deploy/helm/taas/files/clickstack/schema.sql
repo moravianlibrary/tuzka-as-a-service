@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS taas.job_events
     domain          LowCardinality(String),
     outputs         Array(LowCardinality(String)),
     backend_id      Nullable(UInt32),
+    backend         LowCardinality(String),   -- backends.label, or the id as a string
     adapter         LowCardinality(String),
     engine_version  LowCardinality(String),
     device          LowCardinality(String),
@@ -38,6 +39,11 @@ CREATE TABLE IF NOT EXISTS taas.job_events
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
 ORDER BY (event, ts);
+
+-- Existing installs predate the backend label column; the CREATE above only covers
+-- fresh tables. Idempotent so the post-upgrade Job can run on every release.
+ALTER TABLE taas.job_events
+    ADD COLUMN IF NOT EXISTS backend LowCardinality(String) AFTER backend_id;
 
 -- Live numbers sampled every 15 s (queue depth, in-flight per backend), from the /load
 -- counters (step 4).

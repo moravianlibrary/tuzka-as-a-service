@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
+from app.models.backend import Backend
 from app.models.job import Job
 from app.services import batch_store
 from app.services import config as config_service
@@ -96,6 +97,14 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
         harvesting = await pending_harvest_members(r, [str(job.id) for job, _ in stale])
         stale = [(job, reason) for job, reason in stale if str(job.id) not in harvesting]
 
+    backend_ids = {job.backend_id for job, _ in stale if job.backend_id is not None}
+    backend_labels: dict[int, str] = {}
+    if backend_ids:
+        rows = await db.execute(
+            select(Backend.id, Backend.label).where(Backend.id.in_(backend_ids))
+        )
+        backend_labels = {backend_id: label or str(backend_id) for backend_id, label in rows}
+
     sem = asyncio.Semaphore(_REAP_CONCURRENCY)
 
     async def _bounded(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -149,6 +158,7 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     domain=job.domain or "default",
                     outputs=sorted(job.outputs or []),
                     backend_id=job.backend_id,
+                    backend=backend_labels.get(job.backend_id or 0, ""),
                     engine_version=job.engine_version or "",
                     file_size_bytes=job.file_size_bytes,
                     **failure("timeout", None),

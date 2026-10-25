@@ -36,7 +36,7 @@ _SELECT = """
            ja.engine_device::text AS device, ja.backend_id, ja.file_size_bytes,
            ja.system_queue_s, ja.engine_queue_s, ja.ocr_running_s, ja.time_in_system_s,
            ja.alto_lines, ja.alto_blocks, ja.alto_chars, ja.mean_conf,
-           u.username, d.name AS domain, ev.name AS engine_version, b.adapter
+           u.username, d.name AS domain, ev.name AS engine_version, b.adapter, b.label AS backend
     FROM job_analytics ja
     LEFT JOIN users u ON u.id = ja.user_id
     LEFT JOIN domains d ON d.id = ja.domain_id
@@ -66,6 +66,8 @@ def event_from_analytics(row: Mapping[str, Any]) -> JobEvent:
         domain=row["domain"] or "default",
         outputs=outputs,
         backend_id=row["backend_id"],
+        backend=row.get("backend")
+        or (str(row["backend_id"]) if row["backend_id"] is not None else ""),
         adapter=row["adapter"] or "",
         engine_version=row["engine_version"] or "",
         device=row["device"] or "",

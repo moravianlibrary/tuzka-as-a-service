@@ -29,6 +29,7 @@ def _row(**overrides):
         "domain": None,
         "engine_version": "1.7.0",
         "adapter": "tuzkaocr",
+        "backend": "box1-gpu1",
     }
     row.update(overrides)
     return row
@@ -42,6 +43,7 @@ def test_done_row() -> None:
     assert event.domain == "default"
     assert event.outputs == ["alto", "txt"]
     assert (event.queue_s, event.run_s, event.total_s) == (1.0, 6.0, 9.0)
+    assert event.backend == "box1-gpu1"
     assert event.error_flag is False
 
 

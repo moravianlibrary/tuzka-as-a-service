@@ -73,8 +73,22 @@ def test_job_event_row_round_trips_through_json() -> None:
     assert row["error_flag"] == 1
     assert row["outputs"] == ["alto", "txt"]
     assert row["batch_id"] is None
+    assert row["backend"] == ""
     assert row["extra"] == {}
     assert "error" not in row  # error text stays in Postgres
+
+
+def test_job_event_row_carries_the_backend_label() -> None:
+    event = JobEvent(
+        ts=datetime(2026, 10, 20, 12, 0, 0),
+        event="done",
+        job_id="0b8f1d7e-2b2c-4c5d-9a39-3a3e1b1d2c3f",
+        username="alice",
+        domain="default",
+        backend_id=3,
+        backend="box1-gpu1",
+    )
+    assert job_event_row(event)["backend"] == "box1-gpu1"
 
 
 def test_attempt_failure_reads_the_attempt() -> None:

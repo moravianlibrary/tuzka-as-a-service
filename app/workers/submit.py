@@ -397,6 +397,7 @@ async def main() -> None:
                 domain=domain,
                 outputs=sorted(outputs),
                 backend_id=backend.id,
+                backend=backend.label or str(backend.id),
                 adapter=backend.adapter,
                 device=backend.device,
                 **fields,

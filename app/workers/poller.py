@@ -303,8 +303,9 @@ async def main() -> None:
     emitter = get_emitter(settings)
     await emitter.start()
 
-    # backend id -> (adapter id, decrypted key), read from the DB once per backend.
-    backend_info: dict[int, tuple[str, str | None]] = {}
+    # backend id -> (adapter id, decrypted key, display label), read from the DB once
+    # per backend.
+    backend_info: dict[int, tuple[str, str | None, str]] = {}
     # (backend id, url) -> adapter. The URL comes from the job hash, i.e. where the job
     # was actually dispatched, so a backend re-registered at a new URL gets a new adapter.
     adapters: dict[tuple[int | None, str], EngineAdapter] = {}
@@ -315,13 +316,16 @@ async def main() -> None:
         if backend_id is not None and backend_id not in backend_info:
             async with session_factory() as db:
                 backend = await db.get(Backend, backend_id)
-            adapter_id, key = "tuzkaocr", None
+            adapter_id, key, label = "tuzkaocr", None, ""
             if backend:
                 adapter_id = backend.adapter
+                label = backend.label or str(backend.id)
                 if backend.api_key_enc:
                     key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-            backend_info[backend_id] = (adapter_id, key)
-        adapter_id, key = backend_info[backend_id] if backend_id is not None else ("tuzkaocr", None)
+            backend_info[backend_id] = (adapter_id, key, label)
+        adapter_id, key, _ = (
+            backend_info[backend_id] if backend_id is not None else ("tuzkaocr", None, "")
+        )
         cache_key = (backend_id, url)
         if cache_key not in adapters:
             adapters[cache_key] = make_adapter(adapter_id, url, key, http)
@@ -333,6 +337,7 @@ async def main() -> None:
         """An event for a job the poller is finishing, from its hash and DB row."""
         backend_id = int(meta["backend_id"]) if meta.get("backend_id") else None
         adapter = backend_info[backend_id][0] if backend_id in backend_info else ""
+        backend = backend_info[backend_id][2] if backend_id in backend_info else ""
         return JobEvent(
             ts=utcnow(),
             event=name,
@@ -341,6 +346,7 @@ async def main() -> None:
             domain=job_domain(meta),
             outputs=sorted(job_outputs(meta)),
             backend_id=backend_id,
+            backend=backend,
             adapter=adapter,
             engine_version=(job_rec.engine_version if job_rec else None) or "",
             file_size_bytes=job_rec.file_size_bytes if job_rec else None,
