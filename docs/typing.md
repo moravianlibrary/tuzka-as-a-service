@@ -64,7 +64,7 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
 
 ### 1. Schemas in one place
 
-- [ ] D8: `app/schemas/` + `app/core/schemas/` → `app/schemas/api/`; `admin_ops` → services
+- [x] D8: `app/schemas/` + `app/core/schemas/` → `app/schemas/api/`; `admin_ops` → services
 
 ### 2. Boundaries
 

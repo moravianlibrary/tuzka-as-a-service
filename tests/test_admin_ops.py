@@ -1,4 +1,4 @@
-"""Integration tests for the guarded hard deletes in app/core/admin_ops.
+"""Integration tests for the guarded hard deletes in app/services/admin_ops.
 
 Like the other DB-backed tests, these need a throwaway migrated Postgres via
 ``TEST_DATABASE_URL`` and skip otherwise.
@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core import admin_ops
+from app.services import admin_ops
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 

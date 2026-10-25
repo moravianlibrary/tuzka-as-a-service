@@ -1,7 +1,7 @@
 """The admin operations: users, backends, domains, runtime config, failed jobs.
 
 Plain async functions over an ``AsyncSession``, called by the ``taas-admin`` CLI. They
-validate through ``app.core.schemas``, raise the domain errors from ``app.exceptions``
+validate through ``app.schemas.api``, raise the domain errors from ``app.exceptions``
 (``NotFound``, ``Conflict``), and commit their own writes.
 
 API processes cache key lookups for 10 s (``app.deps``), so a key or active-state
@@ -17,18 +17,18 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.schemas.backend import BackendCreate, BackendUpdate
-from app.core.schemas.user import (
-    EffectiveLimits,
-    UserLimitOverrides,
-    UserLimitsResponse,
-    UserUpdate,
-)
 from app.exceptions import BadRequest, Conflict, NotFound
 from app.models.backend import Backend
 from app.models.domain import Domain
 from app.models.job import Job
 from app.models.user import User
+from app.schemas.api.backend import BackendCreate, BackendUpdate
+from app.schemas.api.user import (
+    EffectiveLimits,
+    UserLimitOverrides,
+    UserLimitsResponse,
+    UserUpdate,
+)
 from app.services import config as config_service
 from app.services.auth import encrypt_backend_key, generate_key, hash_key
 from app.services.domain_sync import apply_declared_capabilities

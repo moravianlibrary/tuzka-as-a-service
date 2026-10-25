@@ -6,7 +6,7 @@ from typing import Any
 import typer
 
 from app.cli.common import JsonOption, output, run
-from app.core import admin_ops
+from app.services import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
 

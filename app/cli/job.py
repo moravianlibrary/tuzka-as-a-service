@@ -6,7 +6,7 @@ import uuid
 import typer
 
 from app.cli.common import JsonOption, output, row, run
-from app.core import admin_ops
+from app.services import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
 

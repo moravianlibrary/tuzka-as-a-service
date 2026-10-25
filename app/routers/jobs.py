@@ -44,9 +44,8 @@ from app.exceptions import (
 from app.models.db import get_db
 from app.models.job import Job, JobResult
 from app.models.user import User
-from app.schemas.job import (
-    DomainEntry,
-    DomainListResponse,
+from app.schemas.api.domain import DomainEntry, DomainListResponse
+from app.schemas.api.job import (
     JobListResponse,
     JobResultEntry,
     JobResultResponse,

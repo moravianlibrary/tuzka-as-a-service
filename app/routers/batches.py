@@ -38,7 +38,7 @@ from app.models.batch import Batch
 from app.models.db import get_db
 from app.models.job import Job
 from app.models.user import User
-from app.schemas.batch import (
+from app.schemas.api.batch import (
     BatchPage,
     BatchResults,
     BatchRetryResponse,

@@ -12,11 +12,10 @@ For the project overview and quickstart, see the [root README](../README.md).
 | `config.py` | `Settings` (pydantic-settings) — read from `.env.local` / container env |
 | `deps.py` | FastAPI dependencies: DB session, Redis, auth (`require_user` / `require_principal`, with the key's scope), rate limiters |
 | `models/` | SQLAlchemy models — `user`, `job` (+ `JobResult`), `backend`, `storage_config`, `db` |
-| `schemas/` | Pydantic request/response schemas of the public API |
-| `core/` | admin operations (`admin_ops.py`) and their schemas, used by the CLI |
+| `schemas/` | Pydantic models by boundary (see `docs/typing.md`); `schemas/api/` holds the HTTP API's and the admin operations' |
 | `cli/` | `taas-admin`, the admin CLI (Typer) |
 | `routers/` | HTTP/WebSocket endpoints — `jobs`, `ws` |
-| `services/` | `auth`, `scopes`, `storage` (MinIO), `redis_jobs` (queue/state), `retention`, `events` |
+| `services/` | `auth`, `scopes`, `storage` (MinIO), `redis_jobs` (queue/state), `retention`, `events`, `admin_ops` (used by the CLI) |
 | `workers/` | standalone processes — `submit`, `poller`, `cleanup` |
 
 ## Authentication

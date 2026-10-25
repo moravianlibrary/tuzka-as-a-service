@@ -1,6 +1,5 @@
 """Pydantic schemas for job submit/status/result responses."""
 
-from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -47,19 +46,3 @@ class JobResultResponse(BaseModel):
 class JobListResponse(BaseModel):
     jobs: list[JobStatusResponse]
     total: int
-
-
-class DomainEntry(BaseModel):
-    name: str
-    label: str | None
-    description: str | None
-    # Union of the outputs the enabled backends produce for this domain.
-    outputs: list[str]
-    # JSON Schema for the submit `options` field; None = no options accepted yet.
-    options_schema: dict[str, Any] | None
-    # The engine id the legacy compat API exposes for this domain.
-    legacy_engine_id: int | None
-
-
-class DomainListResponse(BaseModel):
-    domains: list[DomainEntry]

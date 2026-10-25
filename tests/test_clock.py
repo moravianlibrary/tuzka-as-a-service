@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta, timezone
 
 from app.clock import utc_iso
-from app.schemas.job import JobStatusResponse
+from app.schemas.api.job import JobStatusResponse
 
 
 def _status(**times) -> JobStatusResponse:

@@ -3,8 +3,8 @@
 import typer
 
 from app.cli.common import JsonOption, build, output, row, run, secret_from_env
-from app.core import admin_ops
-from app.core.schemas.user import UserCreate, UserUpdate
+from app.schemas.api.user import UserCreate, UserUpdate
+from app.services import admin_ops
 
 app = typer.Typer(no_args_is_help=True)
 

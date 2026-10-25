@@ -5,8 +5,8 @@ import json
 import typer
 
 from app.cli.common import JsonOption, build, output, row, run, secret_from_env, settings
-from app.core import admin_ops
-from app.core.schemas.backend import BackendCreate, BackendUpdate
+from app.schemas.api.backend import BackendCreate, BackendUpdate
+from app.services import admin_ops
 from app.vocabulary import AdapterId, Device
 
 app = typer.Typer(no_args_is_help=True)

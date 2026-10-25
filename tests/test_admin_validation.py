@@ -8,8 +8,8 @@ at the Pydantic boundary as a 422 rather than reaching the DB and raising a 500.
 import pytest
 from pydantic import ValidationError
 
-from app.core.schemas.backend import INT32_MAX, BackendCreate, BackendUpdate
-from app.core.schemas.user import UserCreate, UserUpdate
+from app.schemas.api.backend import INT32_MAX, BackendCreate, BackendUpdate
+from app.schemas.api.user import UserCreate, UserUpdate
 
 
 def test_backend_create_accepts_valid():
