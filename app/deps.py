@@ -18,6 +18,7 @@ from app.services import config as config_service
 from app.services import rate_limit
 from app.services.auth import hash_key
 from app.services.scopes import Principal
+from app.vocabulary import LimitClass
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 _load_bearer = HTTPBearer(auto_error=False)
@@ -128,7 +129,7 @@ async def require_load_token(
         raise Unauthorized("Invalid load token")
 
 
-def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:
+def _rate_limit_dep(limit_class: LimitClass) -> Callable[..., Awaitable[str]]:
     async def _check(
         request: Request,
         username: str = Depends(require_user),
@@ -145,8 +146,8 @@ def _rate_limit_dep(limit_class: str) -> Callable[..., Awaitable[str]]:
 
 
 def rate_limit_submit() -> Callable[..., Awaitable[str]]:
-    return _rate_limit_dep("submit")
+    return _rate_limit_dep(LimitClass.SUBMIT)
 
 
 def rate_limit_query() -> Callable[..., Awaitable[str]]:
-    return _rate_limit_dep("query")
+    return _rate_limit_dep(LimitClass.QUERY)

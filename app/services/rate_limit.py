@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import redis.asyncio as aioredis
 from redis.exceptions import NoScriptError
 
+from app.vocabulary import LimitClass
+
 # GCRA (Generic Cell Rate Algorithm).
 # KEYS[1] = TAT key, ARGV[1] = emission interval T (s), ARGV[2] = burst tolerance tau (s).
 # Uses the Redis server clock so multiple API replicas agree on "now".
@@ -40,7 +42,7 @@ def _as_float(raw: bytes | str | float) -> float:
 
 async def check(
     r: aioredis.Redis,
-    limit_class: str,
+    limit_class: LimitClass,
     username: str,
     per_minute: int,
     burst: int,

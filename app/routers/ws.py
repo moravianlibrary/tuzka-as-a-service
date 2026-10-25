@@ -13,7 +13,7 @@ from app.models.job import Job
 from app.services import config as config_service
 from app.services import rate_limit
 from app.services.redis_jobs import job_event_payload
-from app.vocabulary import TERMINAL_JOB_STATUSES
+from app.vocabulary import TERMINAL_JOB_STATUSES, LimitClass
 
 router = APIRouter()
 
@@ -101,9 +101,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     r = aioredis.from_url(settings.redis_url, decode_responses=False)
     try:
         async with async_session() as db:
-            limits = await config_service.effective_limits(db, username, "ws_connect")
+            limits = await config_service.effective_limits(db, username, LimitClass.WS_CONNECT)
         allowance = await rate_limit.check(
-            r, "ws_connect", username, limits.per_minute, limits.burst
+            r, LimitClass.WS_CONNECT, username, limits.per_minute, limits.burst
         )
         if not allowance.allowed:
             await ws.close(code=1008, reason="Rate limit exceeded")

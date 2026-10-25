@@ -34,6 +34,11 @@ def test_backend_create_rejects_unknown_adapter(kwargs):
         BackendCreate(**kwargs)
 
 
+def test_backend_update_rejects_unknown_adapter():
+    with pytest.raises(ValidationError):
+        BackendUpdate(adapter="unknown")  # stored, it would break the backend's dispatch
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

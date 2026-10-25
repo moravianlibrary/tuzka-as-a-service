@@ -1,6 +1,6 @@
 """``GET /load``: queued work in seconds, for an autoscaler (KEDA ``metrics-api``)."""
 
-from typing import Any, Literal
+from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends
@@ -12,6 +12,7 @@ from app.services import config as config_service
 from app.services.domain_sync import adapter_capabilities
 from app.services.load import compute_load, group_load
 from app.services.redis_jobs import LOAD_INFLIGHT_KEY, LOAD_QUEUED_KEY, LOAD_SPP_KEY
+from app.vocabulary import LoadGroupBy
 
 router = APIRouter()
 
@@ -27,7 +28,7 @@ def _decode(raw: dict[Any, Any]) -> dict[str, str]:
 async def get_load(
     domain: str | None = None,
     adapter: str | None = None,
-    group_by: Literal["domain", "adapter"] | None = None,
+    group_by: LoadGroupBy | None = None,
     r: aioredis.Redis = Depends(get_redis),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -52,7 +53,9 @@ async def get_load(
     domains = {d.strip() for d in domain.split(",") if d.strip()} if domain else None
 
     if group_by is not None:
-        caps_by_adapter = await adapter_capabilities(db, adapter) if group_by == "adapter" else {}
+        caps_by_adapter = (
+            await adapter_capabilities(db, adapter) if group_by == LoadGroupBy.ADAPTER else {}
+        )
         groups = group_load(queued, inflight, spp, default_spp, group_by, caps_by_adapter, domains)
         return {"groups": {name: totals.as_dict() for name, totals in groups.items()}}
 

@@ -66,8 +66,8 @@ max-branches = 12
 max-statements = 50
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI's DI markers are call-in-default by design and are effectively immutable
-# singletons; B008 would otherwise fire on every dependency parameter.
+# FastAPI's DI markers and Typer's options are call-in-default by design and are
+# effectively immutable singletons; B008 would otherwise fire on every parameter.
 extend-immutable-calls = [
   "fastapi.Depends",
   "fastapi.Query",
@@ -78,6 +78,8 @@ extend-immutable-calls = [
   "fastapi.Cookie",
   "fastapi.Body",
   "fastapi.Path",
+  "typer.Argument",
+  "typer.Option",
 ]
 
 [tool.ruff.format]

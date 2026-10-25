@@ -23,6 +23,7 @@ from app.exceptions import Unprocessable
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
+from app.vocabulary import AdapterId
 
 DEFAULT_DOMAIN = "default"
 
@@ -30,7 +31,9 @@ DEFAULT_DOMAIN = "default"
 # reused across submits before the DB is asked again. Short: a backend disabled or
 # re-synced shows up within seconds, and the dispatcher re-checks capabilities anyway.
 CAPABILITIES_TTL_SECONDS = 5.0
-_capabilities: dict[str, tuple[float, list[tuple[list[str], dict[str, Any] | None, str]]]] = {}
+_capabilities: dict[
+    str, tuple[float, list[tuple[list[str], dict[str, Any] | None, AdapterId]]]
+] = {}
 
 
 @dataclass(frozen=True)
@@ -110,15 +113,14 @@ def options_errors(schema: dict[str, Any] | None, options: dict[str, Any]) -> li
 
 
 def adapter_rejection(
-    adapters: set[str], domain: str, outputs: frozenset[str], options: dict[str, Any]
+    adapters: set[AdapterId], domain: str, outputs: frozenset[str], options: dict[str, Any]
 ) -> str | None:
     """The engine-specific checks a schema can't express (e.g. TuzkaM: GeoJSON needs
     georef). The request is fine if any adapter that could take it accepts it; else the
     first adapter's reason."""
     reasons = []
     for adapter in sorted(adapters):
-        cls = ADAPTERS.get(adapter)
-        reason = cls.validate_request(domain, outputs, options) if cls is not None else None
+        reason = ADAPTERS[adapter].validate_request(domain, outputs, options)
         if reason is None:
             return None
         reasons.append(reason)
@@ -131,7 +133,7 @@ def clear_capabilities_cache() -> None:
 
 async def _domain_capabilities(
     db: AsyncSession, name: str
-) -> list[tuple[list[str], dict[str, Any] | None, str]]:
+) -> list[tuple[list[str], dict[str, Any] | None, AdapterId]]:
     """``(outputs, options_schema, adapter)`` per enabled backend serving ``name``, cached for
     ``CAPABILITIES_TTL_SECONDS``. Only served domains are cached, so arbitrary names in
     requests can't grow the cache."""

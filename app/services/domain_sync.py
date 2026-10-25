@@ -18,6 +18,7 @@ from app.engines.base import EngineInfo
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
 from app.models.domain import Domain
+from app.vocabulary import DomainSource
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +118,16 @@ async def apply_declared_capabilities(
     for domain_id, name, _ in await _domain_rows(db, names):
         outputs = sorted(set(declared[name]))
         stmt = insert(BackendDomain).values(
-            backend_id=backend_id, domain_id=domain_id, outputs=outputs, source="declared"
+            backend_id=backend_id,
+            domain_id=domain_id,
+            outputs=outputs,
+            source=DomainSource.DECLARED,
         )
         await db.execute(
             stmt.on_conflict_do_update(
                 index_elements=["backend_id", "domain_id"],
                 set_={"outputs": stmt.excluded.outputs},
-                where=BackendDomain.source == "declared",
+                where=BackendDomain.source == DomainSource.DECLARED,
             )
         )
 

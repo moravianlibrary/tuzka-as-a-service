@@ -283,6 +283,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- `taas-admin backend update --adapter` rejects an unknown adapter instead of storing
+  it, which broke dispatch to that backend. `--device` and `--adapter` list their
+  allowed values in `--help`.
 - Helm upgrades using older reused values supply the unstored-job limit, so the workers
   start when `config.unstoredJobMax` was absent from the previous release.
 - Empty single-image uploads now return `422` before storage or job creation. Empty

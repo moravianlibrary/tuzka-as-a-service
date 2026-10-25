@@ -68,7 +68,7 @@ from app.services.job_spec import (
 from app.services.scopes import Principal, check_scope, visible_outputs
 from app.services.uploads import UploadTooLarge, read_limited
 from app.telemetry import inject_trace_context
-from app.vocabulary import JobEventName, JobStatus
+from app.vocabulary import Fmt, JobEventName, JobStatus
 
 router = APIRouter()
 
@@ -97,7 +97,7 @@ async def submit_job(
         description="Your own label for this page (any string up to 255 characters, e.g. "
         "its PID); echoed back on its status and events. Optional, not unique.",
     ),
-    fmt: Literal["alto", "txt", "multi"] = Form("multi"),
+    fmt: Fmt = Form(Fmt.MULTI),
     domain: str | None = Form(None),
     outputs: str | None = Form(
         None,

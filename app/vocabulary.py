@@ -105,3 +105,50 @@ class ErrorClass(StrEnum):
     ENGINE_INPUT = "engine_input"
     ENGINE_INTERNAL = "engine_internal"
     TIMEOUT = "timeout"
+
+
+class Device(StrEnum):
+    """The hardware an engine runs on."""
+
+    CPU = "cpu"
+    GPU = "gpu"
+
+
+class AdapterId(StrEnum):
+    """Which engine adapter talks to a backend (``app.engines.ADAPTERS``)."""
+
+    TUZKAOCR = "tuzkaocr"
+    TUZKAM = "tuzkam"
+
+
+class DomainSource(StrEnum):
+    """Where a backend's capabilities for a domain came from."""
+
+    # Reported by the engine at domain sync.
+    ENGINE = "engine"
+    # Declared at registration, until the engine is first seen.
+    DECLARED = "declared"
+
+
+class Fmt(StrEnum):
+    """The legacy ``fmt`` a submit may give instead of ``outputs``."""
+
+    ALTO = "alto"
+    TXT = "txt"
+    # ALTO and text.
+    MULTI = "multi"
+
+
+class LimitClass(StrEnum):
+    """A rate-limited kind of request."""
+
+    SUBMIT = "submit"
+    QUERY = "query"
+    WS_CONNECT = "ws_connect"
+
+
+class LoadGroupBy(StrEnum):
+    """How ``GET /load`` groups its totals."""
+
+    DOMAIN = "domain"
+    ADAPTER = "adapter"

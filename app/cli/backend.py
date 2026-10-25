@@ -7,6 +7,7 @@ import typer
 from app.cli.common import JsonOption, build, output, row, run, secret_from_env, settings
 from app.core import admin_ops
 from app.core.schemas.backend import BackendCreate, BackendUpdate
+from app.vocabulary import AdapterId, Device
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -45,8 +46,8 @@ def upsert(
     label: str | None = typer.Option(None),
     api_key_env: str | None = ApiKeyEnv,
     max_inflight: int = typer.Option(4),
-    device: str = typer.Option("cpu"),
-    adapter: str = typer.Option("tuzkaocr"),
+    device: Device = typer.Option(Device.CPU),
+    adapter: AdapterId = typer.Option(AdapterId.TUZKAOCR),
     managed: bool = typer.Option(False, help="Registered by the chart (shown, not edited)."),
     declared: str | None = typer.Option(
         None,
@@ -78,8 +79,8 @@ def update(
     api_key_env: str | None = ApiKeyEnv,
     max_inflight: int | None = typer.Option(None),
     priority: int | None = typer.Option(None),
-    device: str | None = typer.Option(None),
-    adapter: str | None = typer.Option(None),
+    device: Device | None = typer.Option(None),
+    adapter: AdapterId | None = typer.Option(None),
 ) -> None:
     """Change some fields of a backend; options left out stay as they are."""
     fields: dict[str, object] = {

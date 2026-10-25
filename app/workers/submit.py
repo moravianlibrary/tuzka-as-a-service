@@ -56,7 +56,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import FailureStage, JobEventName, JobStatus
+from app.vocabulary import AdapterId, FailureStage, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -246,7 +246,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     emitter = get_emitter(settings)
     await emitter.start()
     # backend id -> (what it was built from, adapter); rebuilt when any of that changes.
-    adapters: dict[int, tuple[tuple[str, str, str | None], EngineAdapter]] = {}
+    adapters: dict[int, tuple[tuple[AdapterId, str, str | None], EngineAdapter]] = {}
 
     backends: list[Backend] = []
     backends_refreshed_at = 0.0

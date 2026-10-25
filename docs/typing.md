@@ -53,10 +53,14 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
       unreachable; `PollAction` (harvest, requeue, fail, running)
 - [x] `FailureStage` (dispatch, poll, engine, harvest, timeout — the `Literal` lacked timeout)
 - [x] `JobEventName`, `ErrorClass` (from `Literal`s in `services/events.py`)
-- [ ] `Device` (cpu, gpu): schema `Literal`, `Backend.device: str`
-- [ ] `AdapterId` (tuzkaocr, tuzkam): `ADAPTERS` keys, the default repeated 8×
-- [ ] `Fmt` (alto, txt, multi): two `Literal`s in `routers/jobs.py`
-- [ ] `LimitClass` (submit, query, ws_connect); `LoadGroupBy` (domain, adapter)
+- [x] `Device` (cpu, gpu): schema `Literal`, `Backend.device: str`
+- [x] `AdapterId` (tuzkaocr, tuzkam): `ADAPTERS` keys, the default repeated 8×
+- [x] `Fmt` (alto, txt, multi): two `Literal`s in `routers/jobs.py`
+- [x] `LimitClass` (submit, query, ws_connect); `LoadGroupBy` (domain, adapter)
+- [x] `DomainSource` (engine, declared): `backend_domains.source`, found in the pass
+- Not enums: `jobs.fmt` (a label, `custom` for any non-legacy set) and output names.
+  The domain name `"default"` is repeated 6× beside `job_spec.DEFAULT_DOMAIN`; it goes
+  with `JobState` (B1).
 
 ### 1. Schemas in one place
 

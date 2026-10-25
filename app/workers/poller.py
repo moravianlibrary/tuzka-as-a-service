@@ -75,6 +75,7 @@ from app.services.storage import (
 )
 from app.telemetry import job_span, setup_telemetry
 from app.vocabulary import (
+    AdapterId,
     EngineState,
     FailureStage,
     JobEventName,
@@ -312,7 +313,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
     # backend id -> (adapter id, decrypted key, display label), read from the DB once
     # per backend.
-    backend_info: dict[int, tuple[str, str | None, str]] = {}
+    backend_info: dict[int, tuple[AdapterId, str | None, str]] = {}
     # (backend id, url) -> adapter. The URL comes from the job hash, i.e. where the job
     # was actually dispatched, so a backend re-registered at a new URL gets a new adapter.
     adapters: dict[tuple[int | None, str], EngineAdapter] = {}
@@ -323,7 +324,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         if backend_id is not None and backend_id not in backend_info:
             async with session_factory() as db:
                 backend = await db.get(Backend, backend_id)
-            adapter_id, key, label = "tuzkaocr", None, ""
+            adapter_id, key, label = AdapterId.TUZKAOCR, None, ""
             if backend:
                 adapter_id = backend.adapter
                 label = backend.label or str(backend.id)
@@ -331,7 +332,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
             backend_info[backend_id] = (adapter_id, key, label)
         adapter_id, key, _ = (
-            backend_info[backend_id] if backend_id is not None else ("tuzkaocr", None, "")
+            backend_info[backend_id] if backend_id is not None else (AdapterId.TUZKAOCR, None, "")
         )
         cache_key = (backend_id, url)
         if cache_key not in adapters:

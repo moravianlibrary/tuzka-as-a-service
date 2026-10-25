@@ -62,7 +62,7 @@ from app.services.job_spec import (
 )
 from app.services.scopes import Principal, check_scope
 from app.telemetry import inject_trace_context
-from app.vocabulary import TERMINAL_JOB_STATUSES, BatchStatus, JobEventName, JobStatus
+from app.vocabulary import TERMINAL_JOB_STATUSES, BatchStatus, Fmt, JobEventName, JobStatus
 
 router = APIRouter()
 
@@ -116,7 +116,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         raise PayloadTooLarge(f"Archive over {settings.batch_max_upload_bytes} bytes")
     try:
         label = parse_external_id(external_id)
-        requested = parse_outputs(outputs, "multi")
+        requested = parse_outputs(outputs, Fmt.MULTI)
     except ValueError as exc:
         raise Unprocessable(str(exc)) from exc
     denied = check_scope(principal, domain or DEFAULT_DOMAIN, requested)

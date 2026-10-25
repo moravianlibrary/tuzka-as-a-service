@@ -1,15 +1,11 @@
 """Pydantic request/response schemas for the backend admin endpoints."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.engines import ADAPTERS
-
-# An engine runs on one of these devices; parsed at the boundary so the interior and
-# admin handlers never re-check the string.
-Device = Literal["cpu", "gpu"]
+from app.vocabulary import AdapterId, Device
 
 # Postgres INTEGER columns are 32-bit — bound numeric input so an out-of-range value is a
 # clean 422 at the boundary instead of an asyncpg DataError (500) at insert time.
@@ -43,9 +39,9 @@ class BackendCreate(BaseModel):
     api_key: str | None = Field(default=None, max_length=1024)
     max_inflight: int = Field(default=4, ge=1, le=INT32_MAX)
     priority: int = Field(default=0, ge=0, le=INT32_MAX)
-    device: Device = "cpu"
+    device: Device = Device.CPU
     managed: bool = False
-    adapter: str = "tuzkaocr"
+    adapter: AdapterId = AdapterId.TUZKAOCR
     # Capabilities to assume until the engine reports its own: {domain: [outputs]}.
     # Lets a workload that is scaled to zero be scaled up for its domains (PUT only).
     declared: dict[str, list[str]] | None = None
@@ -61,16 +57,6 @@ class BackendCreate(BaseModel):
 
     _no_nul = field_validator("url", "label", "api_key")(_reject_nul)
 
-    _validate_adapter = field_validator("adapter")(
-        lambda v: (
-            v
-            if v in ADAPTERS
-            else (_ for _ in ()).throw(
-                ValueError(f"unknown adapter: {v!r}; choose from {sorted(ADAPTERS)}")
-            )
-        )
-    )
-
 
 class BackendUpdate(BaseModel):
     url: str | None = Field(default=None, min_length=1, max_length=2048)
@@ -80,7 +66,7 @@ class BackendUpdate(BaseModel):
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=INT32_MAX)
     device: Device | None = None
-    adapter: str | None = None
+    adapter: AdapterId | None = None
     managed: bool | None = None
 
     _check_url = field_validator("url")(_validate_url)
@@ -103,8 +89,7 @@ class BackendResponse(BaseModel):
     enabled: bool
     max_inflight: int
     priority: int = 0
-    # Reflects the stored value as-is (input is validated as `Device` on create/update).
-    device: str = "cpu"
-    adapter: str = "tuzkaocr"
+    device: Device = Device.CPU
+    adapter: AdapterId = AdapterId.TUZKAOCR
     managed: bool = False
     created_at: datetime

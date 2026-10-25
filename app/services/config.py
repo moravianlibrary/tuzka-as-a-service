@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.config import ConfigEntry
 from app.models.domain import Domain
 from app.models.user import User
+from app.vocabulary import LimitClass
 
 # Short in-process cache: hot path must not hit Postgres per request,
 # admin changes still take effect within seconds on every replica.
@@ -44,17 +45,17 @@ class ClassLimits:
 
 
 # TODO(rrandiak): Into the pydantic model(s)
-FALLBACK_LIMITS: dict[str, ClassLimits] = {
-    "submit": ClassLimits(per_minute=60, burst=10),
-    "query": ClassLimits(per_minute=120, burst=20),
-    "ws_connect": ClassLimits(per_minute=5, burst=2),
+FALLBACK_LIMITS: dict[LimitClass, ClassLimits] = {
+    LimitClass.SUBMIT: ClassLimits(per_minute=60, burst=10),
+    LimitClass.QUERY: ClassLimits(per_minute=120, burst=20),
+    LimitClass.WS_CONNECT: ClassLimits(per_minute=5, burst=2),
 }
 
 # limit class -> (users.<per-minute column>, users.<burst column>)
-USER_OVERRIDE_COLUMNS: dict[str, tuple[str, str]] = {
-    "submit": ("rate_submit_per_minute", "burst_submit"),
-    "query": ("rate_query_per_minute", "burst_query"),
-    "ws_connect": ("rate_ws_per_minute", "burst_ws"),
+USER_OVERRIDE_COLUMNS: dict[LimitClass, tuple[str, str]] = {
+    LimitClass.SUBMIT: ("rate_submit_per_minute", "burst_submit"),
+    LimitClass.QUERY: ("rate_query_per_minute", "burst_query"),
+    LimitClass.WS_CONNECT: ("rate_ws_per_minute", "burst_ws"),
 }
 
 
@@ -125,7 +126,7 @@ def invalidate_user(username: str) -> None:
     _cache.pop(f"user:{username}", None)
 
 
-async def get_default_limits(db: AsyncSession, limit_class: str) -> ClassLimits:
+async def get_default_limits(db: AsyncSession, limit_class: LimitClass) -> ClassLimits:
     value = await get_value(db, f"rate_limit.{limit_class}")
     return parse_default_limits(value, FALLBACK_LIMITS[limit_class])
 
@@ -147,7 +148,7 @@ async def _get_user_overrides(db: AsyncSession, username: str) -> dict[str, int 
     return overrides
 
 
-async def effective_limits(db: AsyncSession, username: str, limit_class: str) -> ClassLimits:
+async def effective_limits(db: AsyncSession, username: str, limit_class: LimitClass) -> ClassLimits:
     default = await get_default_limits(db, limit_class)
     overrides = await _get_user_overrides(db, username)
     per_col, burst_col = USER_OVERRIDE_COLUMNS[limit_class]

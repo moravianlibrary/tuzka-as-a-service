@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal
+
+from app.vocabulary import LoadGroupBy
 
 # Weight of the newest sample in the seconds-per-page average: low, so one slow page
 # doesn't swing the backlog estimate an autoscaler acts on.
@@ -99,14 +100,14 @@ def group_load(
     inflight: dict[str, int],
     spp: dict[str, float],
     default_spp: float,
-    by: Literal["domain", "adapter"],
+    by: LoadGroupBy,
     adapter_caps: dict[str, dict[str, frozenset[str]]],
     domains: set[str] | None = None,
 ) -> dict[str, LoadTotals]:
     """Load per domain, or per adapter. ``adapter_caps`` maps adapter → its
     capabilities (and limits the adapters reported). With ``by="adapter"``, a job some
     adapters can all serve counts in each of their groups, so groups can overlap."""
-    if by == "adapter":
+    if by == LoadGroupBy.ADAPTER:
         return {
             adapter: compute_load(queued, inflight, spp, default_spp, domains, caps)
             for adapter, caps in sorted(adapter_caps.items())

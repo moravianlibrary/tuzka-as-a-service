@@ -5,7 +5,10 @@ from sqlalchemy import CheckConstraint, ForeignKey, PrimaryKeyConstraint, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.vocabulary import DomainSource
+
 from .db import Base
+from .types import StrEnumType, check_values
 
 
 class BackendDomain(Base):
@@ -19,10 +22,11 @@ class BackendDomain(Base):
     )
     # Outputs this backend produces for this domain (e.g. {alto, txt}).
     outputs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
-    # "engine" (from domain sync) or "declared" (at registration, until the first sync).
-    source: Mapped[str] = mapped_column(nullable=False, server_default="engine")
+    source: Mapped[DomainSource] = mapped_column(
+        StrEnumType(DomainSource), nullable=False, server_default=DomainSource.ENGINE
+    )
 
     __table_args__ = (
         PrimaryKeyConstraint("backend_id", "domain_id"),
-        CheckConstraint("source IN ('engine', 'declared')", name="ck_backend_domains_source"),
+        CheckConstraint(check_values("source", DomainSource), name="ck_backend_domains_source"),
     )

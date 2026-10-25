@@ -7,21 +7,19 @@ import httpx
 from app.engines.base import EngineAdapter
 from app.engines.tuzkam import TuzkaMAdapter
 from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.vocabulary import AdapterId
 
-ADAPTERS: dict[str, type[TuzkaOcrAdapter] | type[TuzkaMAdapter]] = {
-    "tuzkaocr": TuzkaOcrAdapter,
-    "tuzkam": TuzkaMAdapter,
+ADAPTERS: dict[AdapterId, type[TuzkaOcrAdapter] | type[TuzkaMAdapter]] = {
+    AdapterId.TUZKAOCR: TuzkaOcrAdapter,
+    AdapterId.TUZKAM: TuzkaMAdapter,
 }
 
 
 def make_adapter(
-    adapter_id: str,
+    adapter_id: AdapterId,
     url: str,
     api_key: str | None,
     http: httpx.AsyncClient,
 ) -> EngineAdapter:
     """Create an engine adapter instance by its registered id."""
-    cls = ADAPTERS.get(adapter_id)
-    if cls is None:
-        raise KeyError(f"Unknown adapter id: {adapter_id!r}")
-    return cls(url=url, api_key=api_key, http=http)
+    return ADAPTERS[adapter_id](url=url, api_key=api_key, http=http)
