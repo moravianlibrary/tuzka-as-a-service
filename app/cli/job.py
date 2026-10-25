@@ -44,5 +44,5 @@ def show(job_id: uuid.UUID) -> None:
         "error",
     )
     data = {f: getattr(job, f, None) for f in fields}
-    data["attempts"] = job.attempts
+    data["attempts"] = [attempt.model_dump(mode="json") for attempt in job.attempts]
     typer.echo(json.dumps(data, indent=2, default=str))

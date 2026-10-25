@@ -39,8 +39,9 @@ app/
 compat/app/schemas.py   the compat service's own Redis state
 ```
 
-`schemas` and `models` import only `vocabulary` from `app`; everything else may import
-all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py` to
+`schemas` and `models` import only `vocabulary` from `app`, except that `models` imports
+the schema of a JSONB column it types (`Job.attempts`); everything else may import all
+three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py` to
 `services/`. Vertical feature modules are a separate, later decision.
 
 ## Checklist
@@ -80,7 +81,7 @@ all three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops
 - [x] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
       `ClassLimits` + `FALLBACK_LIMITS`/`USER_OVERRIDE_COLUMNS`
 - [x] B2: `RuntimeConfig` instead of ~15 `get_*` + `int()` + default getters
-- [ ] B4 + D6: `Attempt` for `Job.attempts` (built in `retry_policy`, read in
+- [x] B4 + D6: `Attempt` for `Job.attempts` (built in `retry_policy`, read in
       `events`, `poller`)
 - [ ] B3: response models per engine endpoint; `resp.json()` no longer `dict[str, Any]`
 - [ ] B5: `OTEL_*` (telemetry) and `HYPERDX_*` (import_dashboard) into Settings

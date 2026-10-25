@@ -3,7 +3,9 @@
 from enum import StrEnum
 from typing import Any
 
+from pydantic import BaseModel, TypeAdapter
 from sqlalchemy import String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
 
@@ -32,3 +34,21 @@ def check_values(column: str, enum: type[StrEnum]) -> str:
     """``<column> IN ('a', 'b', …)`` for a CHECK constraint, in the enum's order."""
     values = ", ".join(f"'{member.value}'" for member in enum)
     return f"{column} IN ({values})"
+
+
+class PydanticJSONBList[M: BaseModel](TypeDecorator[list[M]]):
+    """A JSONB array of pydantic models: dumped as JSON on write, validated on read."""
+
+    impl = JSONB
+    cache_ok = True
+
+    def __init__(self, model: type[M]) -> None:
+        super().__init__()
+        self.model = model
+        self._adapter = TypeAdapter(list[model])  # type: ignore[valid-type]
+
+    def process_bind_param(self, value: Any, dialect: Dialect) -> list[Any] | None:
+        return None if value is None else self._adapter.dump_python(value, mode="json")
+
+    def process_result_value(self, value: Any, dialect: Dialect) -> list[M] | None:
+        return None if value is None else self._adapter.validate_python(value)

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from app.schemas.attempt import Attempt
 from app.vocabulary import ErrorClass, FailureStage, JobEventName
 
 
@@ -88,17 +89,14 @@ def failure(
     }
 
 
-def attempt_failure(
-    attempt: dict[str, Any] | None, stage: FailureStage = FailureStage.HARVEST
-) -> dict[str, Any]:
+def attempt_failure(attempt: Attempt | None) -> dict[str, Any]:
     """``failure()`` from a ``jobs.attempts`` entry. An attempt doesn't record whether
     the error was a transport one; a poll with no HTTP status is taken as one (the
     engine was unreachable), which is what it nearly always is."""
     if attempt is None:
-        return failure(stage, None)
-    status = attempt.get("http_status")
-    stage = attempt.get("stage", stage)
-    return failure(stage, status, transport=status is None and stage == FailureStage.POLL)
+        return failure(FailureStage.HARVEST, None)
+    transport = attempt.http_status is None and attempt.stage == FailureStage.POLL
+    return failure(attempt.stage, attempt.http_status, transport=transport)
 
 
 def durations(

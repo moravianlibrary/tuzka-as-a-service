@@ -19,6 +19,7 @@ from app.engines.base import EngineAdapter, EngineFullError
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
+from app.schemas.attempt import Attempt
 from app.schemas.redis import JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
@@ -46,7 +47,6 @@ from app.services.redis_jobs import (
 )
 from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
-    attempt_entry,
     backoff_seconds,
     describe_exception,
     http_status_of,
@@ -436,8 +436,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
-            attempt = attempt_entry(
-                FailureStage.DISPATCH, backend.id, None, msg, retry=False, at=utcnow().isoformat()
+            attempt = Attempt(
+                at=utcnow(),
+                stage=FailureStage.DISPATCH,
+                backend_id=backend.id,
+                http_status=None,
+                error=msg,
+                retry=False,
             )
             async with session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
@@ -539,13 +544,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 await count_requeue(r, job_id)
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 await perf.record_failure(r, backend.id, domain)
-                attempt = attempt_entry(
-                    FailureStage.DISPATCH,
-                    backend.id,
-                    http_st,
-                    msg,
+                attempt = Attempt(
+                    at=utcnow(),
+                    stage=FailureStage.DISPATCH,
+                    backend_id=backend.id,
+                    http_status=http_st,
+                    error=msg,
                     retry=True,
-                    at=utcnow().isoformat(),
                 )
                 async with session_factory() as db:
                     await db.execute(
@@ -571,13 +576,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 msg = f"{msg} (exceeded {max_requeues} requeue attempts)"
             else:
                 logger.exception("Failed to dispatch job %s", job_id)
-            attempt = attempt_entry(
-                FailureStage.DISPATCH,
-                backend.id,
-                http_st,
-                msg,
+            attempt = Attempt(
+                at=utcnow(),
+                stage=FailureStage.DISPATCH,
+                backend_id=backend.id,
+                http_status=http_st,
+                error=msg,
                 retry=False,
-                at=utcnow().isoformat(),
             )
             if perf.counts_against_backend(http_st):
                 await perf.record_failure(r, backend.id, domain)

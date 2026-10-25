@@ -1,11 +1,13 @@
 """Pins the poller's poll-result classification: harvest, fail-fast, requeue within budget, keep polling."""
 
 import dataclasses
+from datetime import datetime
 
 import httpx
 import pytest
 
 from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
 from app.workers.poller import (
@@ -99,21 +101,15 @@ def test_engine_failure_message_is_engine_error_text():
 
 
 def test_poll_attempt_stage_and_backend():
-    engine = poll_attempt(
-        _outcome(http_status=500, error="crash", stage="engine"), True, "2026-06-01T12:00:00"
+    at = datetime(2026, 6, 1, 12)
+    engine = poll_attempt(_outcome(http_status=500, error="crash", stage="engine"), True, at)
+    assert engine == Attempt(
+        at=at, stage="engine", backend_id=7, http_status=500, error="crash", retry=True
     )
-    assert engine == {
-        "at": "2026-06-01T12:00:00",
-        "backend_id": 7,
-        "error": "crash",
-        "http_status": 500,
-        "retry": True,
-        "stage": "engine",
-    }
-    poll = poll_attempt(_outcome(status="unreachable", state=job_state()), False, "t")
-    assert poll["stage"] == "poll"
-    assert poll["backend_id"] is None
-    assert poll["error"] == "unreachable"
+    poll = poll_attempt(_outcome(status="unreachable", state=job_state()), False, at)
+    assert poll.stage == "poll"
+    assert poll.backend_id is None
+    assert poll.error == "unreachable"
 
 
 def _make_adapter(handler) -> tuple[TuzkaOcrAdapter, httpx.AsyncClient]:

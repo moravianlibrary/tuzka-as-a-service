@@ -8,10 +8,11 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.schemas.attempt import Attempt
 from app.vocabulary import JobStatus
 
 from .db import Base
-from .types import StrEnumType, check_values
+from .types import PydanticJSONBList, StrEnumType, check_values
 
 
 class Job(Base):
@@ -40,8 +41,8 @@ class Job(Base):
     backend_id: Mapped[int | None] = mapped_column(ForeignKey("backends.id"), default=None)
     error: Mapped[str | None] = mapped_column(default=None)
     requeues: Mapped[int] = mapped_column(default=0, nullable=False, server_default="0")
-    attempts: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
+    attempts: Mapped[list[Attempt]] = mapped_column(
+        PydanticJSONBList(Attempt), nullable=False, server_default=text("'[]'::jsonb"), default=list
     )
     file_size_bytes: Mapped[int | None] = mapped_column(default=None)
     # Image size, for dispatch scoring (seconds per megapixel); None before 0.9.

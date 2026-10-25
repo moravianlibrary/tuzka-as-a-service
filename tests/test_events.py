@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pytest
 
+from app.schemas.attempt import Attempt
 from app.services.events import (
     JobEvent,
     attempt_failure,
@@ -13,6 +14,7 @@ from app.services.events import (
     extra_metrics,
     job_event_row,
 )
+from app.vocabulary import FailureStage
 
 
 @pytest.mark.parametrize(
@@ -91,10 +93,21 @@ def test_job_event_row_carries_the_backend_label() -> None:
     assert job_event_row(event)["backend"] == "box1-gpu1"
 
 
+def _attempt(stage: FailureStage, http_status: int | None) -> Attempt:
+    return Attempt(
+        at=datetime(2026, 6, 1),
+        stage=stage,
+        backend_id=1,
+        http_status=http_status,
+        error="x",
+        retry=False,
+    )
+
+
 def test_attempt_failure_reads_the_attempt() -> None:
-    poll_unreachable = {"stage": "poll", "http_status": None}
+    poll_unreachable = _attempt(stage=FailureStage.POLL, http_status=None)
     assert attempt_failure(poll_unreachable)["error_class"] == "transport"
-    engine_bad_input = {"stage": "engine", "http_status": 422}
+    engine_bad_input = _attempt(stage=FailureStage.ENGINE, http_status=422)
     assert attempt_failure(engine_bad_input) == {
         "error_flag": True,
         "error_class": "engine_input",

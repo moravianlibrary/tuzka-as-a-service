@@ -24,6 +24,7 @@ from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job, JobResult
+from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun, JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
@@ -60,7 +61,6 @@ from app.services.redis_jobs import (
 )
 from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
-    attempt_entry,
     backoff_seconds,
     describe_exception,
     http_status_of,
@@ -198,9 +198,9 @@ def poll_failure_message(outcome: PollOutcome, max_requeues: int) -> str:
     return outcome.error or outcome.state.error or "Engine error"
 
 
-def poll_attempt(outcome: PollOutcome, retry: bool, at: str) -> dict[str, Any]:
+def poll_attempt(outcome: PollOutcome, retry: bool, at: datetime) -> Attempt:
     """The ``jobs.attempts`` entry for a failed poll outcome. Pure."""
-    return attempt_entry(
+    return Attempt(
         stage=outcome.stage,
         backend_id=outcome.state.backend_id,
         http_status=outcome.http_status,
@@ -612,8 +612,13 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             # The engine can't produce an output this job asked for (TuzkaM: georeferencing
             # failed). Retrying gives the same answer, so the job fails for good.
             logger.warning("Job %s: %s", job_id, e)
-            attempt = attempt_entry(
-                FailureStage.HARVEST, backend_id, 409, str(e), retry=False, at=utcnow().isoformat()
+            attempt = Attempt(
+                at=utcnow(),
+                stage=FailureStage.HARVEST,
+                backend_id=backend_id,
+                http_status=409,
+                error=str(e),
+                retry=False,
             )
             await mark_failed(job_id, state, str(e), attempt=attempt, run=run)
         except Exception as e:
@@ -639,7 +644,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         job_id: str,
         state: JobState,
         error: str,
-        attempt: dict[str, Any] | None = None,
+        attempt: Attempt | None = None,
         run: EngineRun | None = None,
     ) -> None:
         """Fail the job for good. ``run`` is the engine's last status, when it ran the
@@ -659,10 +664,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             batch = await set_failed(r, job_id, error, state_ttl)
             if (
                 attempt
-                and attempt.get("backend_id") is not None
-                and perf.counts_against_backend(attempt.get("http_status"))
+                and attempt.backend_id is not None
+                and perf.counts_against_backend(attempt.http_status)
             ):
-                await perf.record_failure(r, int(attempt["backend_id"]), state.domain)
+                await perf.record_failure(r, attempt.backend_id, state.domain)
             values: dict[str, Any] = {
                 "status": JobStatus.FAILED,
                 "error": error,
@@ -742,8 +747,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         nonlocal released_since_harvest
         done_jobs: list[tuple[str, JobState, EngineRun]] = []
-        failed_jobs: list[tuple[str, JobState, str, dict[str, Any], EngineRun]] = []
-        requeue_jobs: list[tuple[str, JobState, float, int | None, dict[str, Any]]] = []
+        failed_jobs: list[tuple[str, JobState, str, Attempt, EngineRun]] = []
+        requeue_jobs: list[tuple[str, JobState, float, int | None, Attempt]] = []
         running_jobs: list[tuple[str, JobState]] = []
 
         for outcome in statuses:
@@ -757,12 +762,12 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 done_jobs.append((outcome.job_id, state, outcome.run))
             elif action == PollAction.FAIL:
                 err = poll_failure_message(outcome, max_requeues)
-                attempt = poll_attempt(outcome, False, utcnow().isoformat())
+                attempt = poll_attempt(outcome, False, utcnow())
                 failed_jobs.append((outcome.job_id, state, err, attempt, outcome.run))
             elif action == PollAction.REQUEUE:
                 delay = backoff_seconds(requeues)
                 avoid: int | None = state.backend_id
-                attempt = poll_attempt(outcome, True, utcnow().isoformat())
+                attempt = poll_attempt(outcome, True, utcnow())
                 requeue_jobs.append((outcome.job_id, state, delay, avoid, attempt))
             else:
                 running_jobs.append((outcome.job_id, state))
