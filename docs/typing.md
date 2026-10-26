@@ -101,8 +101,10 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 
 ### 4. SQLAlchemy
 
-- [ ] Entity selects in `domain_sync._domain_rows`, `get_domain_limits`
-- [ ] Typed rows for `_SERVED_DOMAINS_SQL` and `batch_store`'s raw SQL
+- [x] Entity selects in `domain_sync._domain_rows`, `get_domain_limits`
+- [x] Typed rows for `_SERVED_DOMAINS_SQL` (`ServedDomain`) and `batch_store.pages`
+      (each page's current `Job`, via `aliased`); the batch finish SQL returns no rows
+- [x] `make_session_factory` in `app.models.db` for the app, the workers and the CLI
 
 ### 5. Function refactors (the `noqa: C901` list)
 
