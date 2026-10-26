@@ -62,12 +62,12 @@ The Python package / CLI is named `taas`.
 ## Quickstart
 
 ```bash
-make env             # create .env + .env.app from templates (generates a Fernet key)
+make env             # create .env, .env.app and .env.local from templates (generates a Fernet key)
 make up              # build + start the whole stack (first run is slow: TuzkaOCR model load)
-make test-integration  # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
+make e2e-fast        # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
 ```
 
-Administration: `docker compose exec -T api taas-admin --help` (users, backends, config).
+Administration: `make admin ARGS="--help"` (users, backends, config).
 Job history and dashboards: ClickStack/HyperDX (`make up-clickstack`).
 
 ### Interactive API docs
@@ -98,13 +98,15 @@ Live env files are git-ignored; only the `*.example` templates are tracked.
 ## Testing
 
 ```bash
-make test                       # unit/component tests (pytest)
+make test                       # unit/component tests (pytest); the DB/Redis ones skip
+make test-integration           # all of them, against a throwaway Postgres + Redis (test-env)
 make coverage-report            # unit tests + coverage summary
 make test-contract              # Schemathesis contract tests vs a running instance (needs the stack)
-make test-integration           # full-stack end-to-end, default fmt=multi
-FMT=alto make test-integration  # single-format run
-make test-integration-fast      # against an already-running stack (no rebuild)
-make test-compat                # legacy-compat server end-to-end
+make e2e                        # full-stack end-to-end (brings the stack up), default fmt=multi
+FMT=alto make e2e               # single-format run
+make e2e-fast                   # against an already-running stack (no rebuild)
+make e2e-batch                  # a batch: archive in, results archive out
+make e2e-compat                 # legacy-compat server end-to-end
 make check-alto-schema          # ALTO output vs the ALTO 4.4 XSD (needs ./TuzkaOCR, or FILES=)
 ```
 
@@ -183,5 +185,6 @@ See the chart's [README](deploy/helm/taas/README.md) (install, exposure, values)
 
 ## Make targets
 
-Run `make help` for the full list (`up`, `down`, `clean`, `logs`, `ps`, `seed`,
-`test`, `test-compat`, `env`, `secret`, …).
+Run `make help` for the full list, grouped as compose stack (`up`, `down`, `logs-<svc>`,
+`clean-volumes`, …), host dev (`dev-api`, `dev-<worker>`), database (`db-*`), tests
+(`test`, `test-integration`, `e2e-*`), local k3d, bench, quality (`check`) and release.

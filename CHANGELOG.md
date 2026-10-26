@@ -166,6 +166,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- The end-to-end make targets are `e2e`, `e2e-fast`, `e2e-batch` and `e2e-compat` (were
+  `test-integration`, `test-integration-fast`, `test-batch` and `test-compat`).
+  `make test-integration` now runs the pytest suite with its Postgres and Redis tests
+  against `make test-env`: throwaway containers on :55432 and :56379, migrated, never
+  the dev stack's database (the tests truncate it). `test-env-clean` and
+  `test-env-reset` remove and recreate them.
 - `make check` also lints the Helm chart (`chart-lint`), audits the locked
   dependencies for known vulnerabilities (`audit`, pip-audit; needs network) and scans
   the git history for secrets (`secrets-scan`, gitleaks, from its container when not

@@ -15,10 +15,23 @@ UV := uv run --extra dev
 PIP_AUDIT_VERSION := 2.10.1
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.21.2
 
+# ─── Test env: throwaway containers, never the dev stack's DB (the tests TRUNCATE) ──
+TEST_PG := taas-test-pg
+TEST_REDIS := taas-test-redis
+TEST_PG_PORT ?= 55432
+TEST_REDIS_PORT ?= 56379
+TEST_DATABASE_URL := postgresql+asyncpg://taas:taas@localhost:$(TEST_PG_PORT)/taas
+TEST_REDIS_URL := redis://localhost:$(TEST_REDIS_PORT)/15
+
+# start_container NAME, RUN-ARGS: start NAME, creating it with `run -d RUN-ARGS` first.
+define start_container
+$(DOCKER) start $(1) >/dev/null 2>&1 || $(DOCKER) run -d --name $(1) $(2) >/dev/null
+endef
+
 # ─── Inputs ──────────────────────────────────────────────────────────────────────────
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
-# Stack the e2e/contract/bench targets run against: compose or the local k3d deploy.
+# Stack the e2e/admin/contract/bench targets run against: compose or the local k3d deploy.
 TARGET ?= compose
 
 # ─── Release ─────────────────────────────────────────────────────────────────────────
@@ -175,6 +188,26 @@ db-history: ## List the migrations, newest first
 test: ## Run the unit/component tests (pytest; DB/redis tests skip if absent)
 	$(UV) pytest
 
+.PHONY: test-env
+test-env: ## Start a throwaway Postgres (:55432, migrated) and Redis (:56379) for test-integration
+	@$(call start_container,$(TEST_PG),-e POSTGRES_USER=taas -e POSTGRES_PASSWORD=taas -e POSTGRES_DB=taas -p 127.0.0.1:$(TEST_PG_PORT):5432 postgres:16)
+	@$(call start_container,$(TEST_REDIS),-p 127.0.0.1:$(TEST_REDIS_PORT):6379 redis:7-alpine)
+	@# Over TCP: initdb's temporary server answers on the socket only.
+	@until $(DOCKER) exec $(TEST_PG) pg_isready -h 127.0.0.1 -U taas -d taas >/dev/null 2>&1; do sleep 1; done
+	@DATABASE_URL=$(TEST_DATABASE_URL) $(UV) alembic upgrade head
+	@echo "test env ready: TEST_DATABASE_URL=$(TEST_DATABASE_URL) TEST_REDIS_URL=$(TEST_REDIS_URL)"
+
+.PHONY: test-env-clean
+test-env-clean: ## Remove the throwaway test Postgres and Redis (and their data)
+	-$(DOCKER) rm -f $(TEST_PG) $(TEST_REDIS)
+
+.PHONY: test-env-reset
+test-env-reset: test-env-clean test-env ## Recreate the test env from scratch
+
+.PHONY: test-integration
+test-integration: test-env ## The unit tests plus the ones that need Postgres and Redis (none skip)
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) $(UV) pytest
+
 .PHONY: coverage-report
 coverage-report: ## Unit tests with a coverage summary
 	$(UV) pytest --cov=app --cov=compat --cov-report=term-missing
@@ -205,6 +238,24 @@ load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= 
 	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
 	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
 
+# ─── E2E (against a running stack; TARGET=compose|k3d) ──────────────────────────────
+
+.PHONY: e2e
+e2e: env ## Bring the stack up, submit an image, fetch and preview the result (IMAGE=, FMT=)
+	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
+
+.PHONY: e2e-fast
+e2e-fast: ## e2e against the already-running stack (no build, no up)
+	NO_UP=1 TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
+
+.PHONY: e2e-batch
+e2e-batch: ## A batch end to end: archive in, results archive out (PAGES=5, IMAGE=)
+	TARGET=$(TARGET) PAGES=$(or $(PAGES),5) bash scripts/test-batch.sh
+
+.PHONY: e2e-compat
+e2e-compat: ## The legacy-compat server end to end
+	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test-compat.sh
+
 # ─── Bench ───────────────────────────────────────────────────────────────────────────
 
 .PHONY: bench-micro
@@ -219,22 +270,6 @@ perf-taas: ## Whole-taas measurement against a fake-engine stack (TARGET=compose
 .PHONY: perf-profile
 perf-profile: ## Profile API and workers with external py-spy during perf-taas (TARGET=k3d)
 	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_profile.sh
-
-.PHONY: test-integration
-test-integration: env ## End-to-end smoke against the full stack (TARGET=compose|k3d, IMAGE=)
-	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
-
-.PHONY: test-batch
-test-batch: ## E2E batch run against a running stack: archive in, results archive out (TARGET=, PAGES=, IMAGE=)
-	TARGET=$(TARGET) PAGES=$(or $(PAGES),5) bash scripts/test-batch.sh
-
-.PHONY: test-integration-fast
-test-integration-fast: ## E2E against an already-running stack (no build/up; TARGET=compose|k3d)
-	NO_UP=1 TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test.sh
-
-.PHONY: test-compat
-test-compat: ## Run the legacy-compat server e2e (stack must be up; TARGET=compose|k3d)
-	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test-compat.sh
 
 # ─── Local k3d deploy ────────────────────────────────────────────────────────────────
 # Helm chart in k3d + host TuzkaOCR engine via reverse tunnel.

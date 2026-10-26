@@ -82,7 +82,7 @@ is one engine (seeded: `1` = `default`, `2` = `kramarky`). The shim reads them f
 Part of the stack via `make up`. End-to-end test:
 
 ```bash
-make test-compat        # post_processing_request → upload → status → download ALTO
+make e2e-compat         # post_processing_request → upload → status → download ALTO
 ```
 
 > `upload_image` requests `fmt=multi` from taas (both ALTO + text), which depends on

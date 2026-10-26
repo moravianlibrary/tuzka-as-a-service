@@ -8,7 +8,7 @@ script is what checks that the claim holds. Two kinds of input:
     page rarely does (role tags, non-ASCII IDs, coordinate clipping, empty pages).
     Skipped when ./TuzkaOCR is absent, since the engine is cloned separately.
   * real — ALTO files on disk, `test-data/out/*.alto.xml` by default (whatever the last
-    `make test-integration` left behind), or the paths given as arguments.
+    `make e2e` left behind), or the paths given as arguments.
 
 The schema is vendored under schemas/alto/ and loaded offline; see that README for why.
 
@@ -239,7 +239,7 @@ def main() -> int:
         print(
             f"{RED}FAIL{OFF} nothing to validate: no engine clone at ./TuzkaOCR and no "
             f"files matched {DEFAULT_GLOB}.\n"
-            f"      Clone the engine (see README), run `make test-integration` to "
+            f"      Clone the engine (see README), run `make e2e` to "
             f"produce real output, or pass files: "
             f"`make check-alto-schema FILES='path/to/*.xml'`",
             file=sys.stderr,
