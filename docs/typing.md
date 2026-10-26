@@ -111,7 +111,7 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 - [x] poller `main`, `harvest`, `process_chunk`, `drain_poll_queue` (`workers/poller/`: worker, steps, types)
 - [x] submit `main`, `dispatch_job` (`workers/submit/`: worker, steps, types)
 - [x] cleanup `main` (`CleanupWorker`, a guarded method per step)
-- [ ] `routers/batches.py` `submit_batch`
+- [x] `routers/batches.py` `submit_batch`
 - [ ] `deploy/box/scheduler/schedule.py` `run`
 
 ## Left as is
