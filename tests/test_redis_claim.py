@@ -13,6 +13,7 @@ from app.services.redis_jobs import (
     claim_pending,
     drop_pending,
     enqueue_job,
+    enqueue_jobs,
     get_backend_batches,
     get_backend_inflight,
     get_backends_state,
@@ -43,6 +44,28 @@ async def test_get_backends_state_handles_missing_counters_and_batches(
 
 async def _enqueue(r: aioredis.Redis, job_id: str, priority: int, submitted_at: float) -> None:
     await enqueue_job(r, job_id, job_state(submitted_at=submitted_at, priority=priority), TTL)
+
+
+@pytest.mark.asyncio
+async def test_jobs_enqueued_together_are_queued_like_one_by_one(
+    redis_client: aioredis.Redis, monkeypatch
+) -> None:
+    monkeypatch.setattr("app.services.redis_jobs.ENQUEUE_CHUNK", 2)  # three chunks
+    jobs = {
+        "p0": job_state(submitted_at=100.0, priority=0),
+        "p1": job_state(submitted_at=101.0, priority=0),
+        "urgent": job_state(submitted_at=102.0, priority=5),
+        "p2": job_state(submitted_at=103.0, priority=0),
+        "p3": job_state(submitted_at=104.0, priority=0),
+    }
+
+    await enqueue_jobs(redis_client, jobs, TTL)
+
+    queued = [e.job_id for e in await peek_pending(redis_client, 10)]
+    assert queued == ["urgent", "p0", "p1", "p2", "p3"]
+    assert all([0 < await redis_client.ttl(f"job:{job_id}") <= TTL for job_id in jobs])
+    assert sum(int(v) for v in (await redis_client.hgetall("load:queued")).values()) == 5
+    assert await redis_client.llen("jobs:submit_wakeup") == 1  # one wakeup, not five
 
 
 @pytest.mark.asyncio

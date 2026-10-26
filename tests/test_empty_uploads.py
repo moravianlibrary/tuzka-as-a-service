@@ -63,7 +63,7 @@ async def test_empty_tar_member_is_skipped(monkeypatch) -> None:
     monkeypatch.setattr(batches.config_service, "get_state_ttl_seconds", AsyncMock(return_value=60))
     monkeypatch.setattr(batches.redis_jobs, "init_batch", AsyncMock())
     enqueue = AsyncMock()
-    monkeypatch.setattr(batches.redis_jobs, "enqueue_job", enqueue)
+    monkeypatch.setattr(batches.redis_jobs, "enqueue_jobs", enqueue)
     monkeypatch.setattr(batches, "get_emitter", lambda: SimpleNamespace(emit=MagicMock()))
     db = MagicMock()
     db.commit = AsyncMock()
@@ -95,5 +95,6 @@ async def test_empty_tar_member_is_skipped(monkeypatch) -> None:
 
     assert response.total == 1
     assert response.skipped == ["empty.jpg"]
-    assert enqueue.await_count == 1
+    (queued,) = [call.args[1] for call in enqueue.await_args_list]
+    assert len(queued) == 1  # one job, for the one non-empty image
     assert batches.storage.put_object.await_count == 1

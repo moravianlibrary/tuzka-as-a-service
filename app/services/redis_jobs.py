@@ -106,8 +106,9 @@ def _job_load_field(state: JobState) -> str:
 async def _add_pending(r: aioredis.Redis, priority: int, job_id: str, score: float) -> None:
     """Add a job to its priority ZSET, register the level, and wake the submit worker.
 
-    Every path that makes a job dispatchable (enqueue, requeue, release-and-requeue)
-    routes through here, so the wakeup is signalled in exactly one place."""
+    Every path that makes one job dispatchable again (requeue, release-and-requeue, a
+    promoted retry) routes through here; ``enqueue_jobs`` does the same for new jobs, in
+    bulk."""
     await r.zadd(_pending_key(priority), {job_id: score})
     await r.sadd(_PENDING_LEVELS_KEY, str(priority))
     await signal_submit(r)
@@ -170,18 +171,36 @@ async def promote_due_retries(r: aioredis.Redis, now: float) -> int:
     return count
 
 
+# Jobs per enqueue_jobs transaction: a 2000-page batch is four round trips, not 8000,
+# without one huge MULTI holding Redis.
+ENQUEUE_CHUNK = 500
+
+
 async def enqueue_job(r: aioredis.Redis, job_id: str, state: JobState, state_ttl: int) -> None:
-    """Store a new job's state and put it on its priority queue. Its status (queued) lets
-    set_failed tell a job that never ran (queued count) from one that did (inflight)."""
-    key = f"job:{job_id}"
-    # redis-py's `mapping` param uses an invariant key type, so a concrete dict[str, str]
-    # does not upcast; cast around the third-party stub friction (values are all strings).
-    async with r.pipeline(transaction=True) as pipe:
-        pipe.hset(key, mapping=cast("dict[Any, Any]", state.to_hash()))
-        pipe.expire(key, state_ttl)
-        pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(state), 1)
-        await pipe.execute()
-    await _add_pending(r, state.priority, job_id, state.submitted_at)
+    """Store a new job's state and put it on its priority queue (``enqueue_jobs``)."""
+    await enqueue_jobs(r, {job_id: state}, state_ttl)
+
+
+async def enqueue_jobs(r: aioredis.Redis, jobs: Mapping[str, JobState], state_ttl: int) -> None:
+    """Store new jobs' states and put them on their priority queues, a chunk per round
+    trip, then wake the submit worker once. Their status (queued) lets set_failed tell a
+    job that never ran (queued count) from one that did (inflight)."""
+    items = list(jobs.items())
+    for start in range(0, len(items), ENQUEUE_CHUNK):
+        async with r.pipeline(transaction=True) as pipe:
+            for job_id, state in items[start : start + ENQUEUE_CHUNK]:
+                key = f"job:{job_id}"
+                # redis-py's `mapping` param uses an invariant key type, so a concrete
+                # dict[str, str] does not upcast; cast around the third-party stub friction
+                # (values are all strings).
+                pipe.hset(key, mapping=cast("dict[Any, Any]", state.to_hash()))
+                pipe.expire(key, state_ttl)
+                pipe.hincrby(LOAD_QUEUED_KEY, _job_load_field(state), 1)
+                pipe.zadd(_pending_key(state.priority), {job_id: state.submitted_at})
+                pipe.sadd(_PENDING_LEVELS_KEY, str(state.priority))
+            await pipe.execute()
+    if items:
+        await signal_submit(r)
 
 
 async def _pending_levels(r: aioredis.Redis) -> list[int]:

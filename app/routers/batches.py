@@ -261,8 +261,8 @@ async def _enqueue_pages(
     trace = inject_trace_context()
     emitter = get_emitter()
     outputs = frozenset(batch.outputs)
-    for index, page in enumerate(pages):
-        state = JobState(
+    states = {
+        str(page.job_id): JobState(
             username=batch.username,
             batch_id=str(batch.id),
             fmt=fmt_label(outputs),
@@ -275,8 +275,10 @@ async def _enqueue_pages(
             priority=priority,
             trace=trace,
         )
-        job_id = str(page.job_id)
-        await redis_jobs.enqueue_job(r, job_id, state, state_ttl)
+        for index, page in enumerate(pages)
+    }
+    await redis_jobs.enqueue_jobs(r, states, state_ttl)
+    for job_id, state in states.items():
         emitter.emit(JobEvent.from_state(utcnow(), JobEventName.SUBMITTED, job_id, state))
 
 
@@ -518,22 +520,21 @@ async def retry_batch(
     )
     await redis_jobs.init_batch(r, restarted, state_ttl)
     submitted = time.time()
-    for index, page in enumerate(retried):
-        await redis_jobs.enqueue_job(
-            r,
-            str(page.job_id),
-            JobState(
-                username=username,
-                batch_id=str(batch_id),
-                fmt=fmt_label(frozenset(batch.outputs)),
-                domain=batch.domain,
-                outputs=frozenset(batch.outputs),
-                options=batch.options,
-                ext=page.ext,
-                megapixels=page.megapixels,
-                submitted_at=page_score(submitted, index),
-                priority=priority,
-            ),
-            state_ttl,
+    outputs = frozenset(batch.outputs)
+    states = {
+        str(page.job_id): JobState(
+            username=username,
+            batch_id=str(batch_id),
+            fmt=fmt_label(outputs),
+            domain=batch.domain,
+            outputs=outputs,
+            options=batch.options,
+            ext=page.ext,
+            megapixels=page.megapixels,
+            submitted_at=page_score(submitted, index),
+            priority=priority,
         )
+        for index, page in enumerate(retried)
+    }
+    await redis_jobs.enqueue_jobs(r, states, state_ttl)
     return BatchRetryResponse(batch_id=batch_id, retried=len(retried), expired=expired)
