@@ -28,9 +28,25 @@ from app.vocabulary import DEFAULT_DOMAIN, AdapterId, Fmt
 # reused across submits before the DB is asked again. Short: a backend disabled or
 # re-synced shows up within seconds, and the dispatcher re-checks capabilities anyway.
 CAPABILITIES_TTL_SECONDS = 5.0
-_capabilities: dict[
-    str, tuple[float, list[tuple[list[str], dict[str, Any] | None, AdapterId]]]
-] = {}
+
+
+@dataclass(frozen=True)
+class BackendCapability:
+    """What one enabled backend does for a domain: its outputs, the domain's options
+    schema (the same on every backend), and the backend's adapter."""
+
+    outputs: frozenset[str]
+    options_schema: dict[str, Any] | None
+    adapter: AdapterId
+
+
+@dataclass(frozen=True)
+class _CachedCapabilities:
+    loaded_at: float  # time.monotonic()
+    backends: list[BackendCapability]
+
+
+_capabilities: dict[str, _CachedCapabilities] = {}
 
 
 @dataclass(frozen=True)
@@ -128,26 +144,26 @@ def clear_capabilities_cache() -> None:
     _capabilities.clear()
 
 
-async def _domain_capabilities(
-    db: AsyncSession, name: str
-) -> list[tuple[list[str], dict[str, Any] | None, AdapterId]]:
-    """``(outputs, options_schema, adapter)`` per enabled backend serving ``name``, cached for
-    ``CAPABILITIES_TTL_SECONDS``. Only served domains are cached, so arbitrary names in
+async def _domain_capabilities(db: AsyncSession, name: str) -> list[BackendCapability]:
+    """Each enabled backend serving ``name``, cached for ``CAPABILITIES_TTL_SECONDS``. Only served domains are cached, so arbitrary names in
     requests can't grow the cache."""
     now = time.monotonic()
     hit = _capabilities.get(name)
-    if hit is not None and now - hit[0] < CAPABILITIES_TTL_SECONDS:
-        return hit[1]
+    if hit is not None and now - hit.loaded_at < CAPABILITIES_TTL_SECONDS:
+        return hit.backends
     result = await db.execute(
         select(BackendDomain.outputs, Domain.options_schema, Backend.adapter)
         .join(Domain, Domain.id == BackendDomain.domain_id)
         .join(Backend, Backend.id == BackendDomain.backend_id)
         .where(Domain.name == name, Backend.enabled.is_(True))
     )
-    rows = [(list(outputs), schema, adapter) for outputs, schema, adapter in result.all()]
-    if rows:
-        _capabilities[name] = (now, rows)
-    return rows
+    backends = [
+        BackendCapability(frozenset(outputs), schema, adapter)
+        for outputs, schema, adapter in result.all()
+    ]
+    if backends:
+        _capabilities[name] = _CachedCapabilities(now, backends)
+    return backends
 
 
 async def resolve_job_spec(
@@ -167,24 +183,23 @@ async def resolve_job_spec(
     except ValueError as exc:
         raise Unprocessable(str(exc)) from exc
 
-    rows = await _domain_capabilities(db, name)
-    if not rows:
+    backends = await _domain_capabilities(db, name)
+    if not backends:
         raise Unprocessable(f"No backend serves domain '{name}' — see GET /api/v1/domains")
 
     # One backend has to produce all of them: a job isn't split across backends.
-    if not any(outputs <= frozenset(served) for served, _, _ in rows):
-        offered = sorted({o for served, _, _ in rows for o in served})
+    if not any(outputs <= backend.outputs for backend in backends):
+        offered = sorted({o for backend in backends for o in backend.outputs})
         raise Unprocessable(
             f"Domain '{name}' can't produce outputs {', '.join(sorted(outputs))} together; "
             f"its outputs are {', '.join(offered)}"
         )
 
-    schema = rows[0][1]  # one schema per domain, the same on every row
-    errors = options_errors(schema, options)
+    errors = options_errors(backends[0].options_schema, options)
     if errors:
         raise Unprocessable(f"Invalid options for domain '{name}': " + "; ".join(errors))
 
-    adapters = {adapter for served, _, adapter in rows if outputs <= frozenset(served)}
+    adapters = {backend.adapter for backend in backends if outputs <= backend.outputs}
     reason = adapter_rejection(adapters, name, outputs, options)
     if reason is not None:
         raise Unprocessable(f"Invalid request for domain '{name}': {reason}")
