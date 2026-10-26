@@ -397,7 +397,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 domain=domain,
                 outputs=sorted(outputs),
                 backend_id=backend.id,
-                backend=backend.label or str(backend.id),
+                backend=backend.display_label,
                 adapter=backend.adapter,
                 device=backend.device,
                 **fields,

@@ -349,7 +349,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             domain=state.domain,
             outputs=sorted(state.outputs),
             backend_id=state.backend_id,
-            backend=(backend.label or str(backend.id)) if backend else "",
+            backend=backend.display_label if backend else "",
             adapter=backend.adapter if backend else "",
             engine_version=(job_rec.engine_version if job_rec else None) or "",
             file_size_bytes=job_rec.file_size_bytes if job_rec else None,

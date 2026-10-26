@@ -12,7 +12,7 @@ def test_rows_per_counter_and_backend() -> None:
         TS,
         queued={"default|alto,txt": 3, "maps|geojson,json": 1},
         inflight={"default|alto,txt": 2},
-        backends=[(1, "box1-gpu1", 2), (2, None, 0)],
+        backends=[(1, "box1-gpu1", 2), (2, "2", 0)],
     )
     assert rows == [
         {

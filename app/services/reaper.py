@@ -103,9 +103,9 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     backend_labels: dict[int, str] = {}
     if backend_ids:
         rows = await db.execute(
-            select(Backend.id, Backend.label).where(Backend.id.in_(backend_ids))
+            select(Backend.id, Backend.display_label).where(Backend.id.in_(backend_ids))
         )
-        backend_labels = {backend_id: label or str(backend_id) for backend_id, label in rows}
+        backend_labels = {backend_id: label for backend_id, label in rows}
 
     sem = asyncio.Semaphore(_REAP_CONCURRENCY)
 

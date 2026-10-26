@@ -45,7 +45,7 @@ def metric_rows(
     ts: datetime,
     queued: dict[str, int],
     inflight: dict[str, int],
-    backends: list[tuple[int, str | None, int]],
+    backends: list[tuple[int, str, int]],
 ) -> list[dict[str, Any]]:
     """The rows of one snapshot. ``queued`` / ``inflight`` are the load counters
     (``domain|outputs`` → pages); ``backends`` is ``(id, label, inflight)``. A counter at
@@ -58,7 +58,7 @@ def metric_rows(
             labels = {"domain": domain or "default", "outputs": ",".join(sorted(outputs))}
             rows.append({"ts": stamp, "metric": metric, "labels": labels, "value": value})
     for backend_id, label, value in backends:
-        labels = {"backend_id": str(backend_id), "backend": label or str(backend_id)}
+        labels = {"backend_id": str(backend_id), "backend": label}
         rows.append({"ts": stamp, "metric": "backend_inflight", "labels": labels, "value": value})
     return rows
 
@@ -68,7 +68,7 @@ async def snapshot(r: aioredis.Redis, db: AsyncSession) -> list[dict[str, Any]]:
     queued = _counts(await r.hgetall(LOAD_QUEUED_KEY))
     inflight = _counts(await r.hgetall(LOAD_INFLIGHT_KEY))
     enabled = (
-        await db.execute(select(Backend.id, Backend.label).where(Backend.enabled.is_(True)))
+        await db.execute(select(Backend.id, Backend.display_label).where(Backend.enabled.is_(True)))
     ).all()
     keys = [f"backend:{backend_id}:inflight" for backend_id, _ in enabled]
     values = await r.mget(keys) if keys else []  # MGET with no keys is an error
