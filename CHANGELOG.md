@@ -166,6 +166,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `make check` also lints the Helm chart (`chart-lint`), audits the locked
+  dependencies for known vulnerabilities (`audit`, pip-audit; needs network) and scans
+  the git history for secrets (`secrets-scan`, gitleaks, from its container when not
+  installed). `make format` only formats now and `make lint` only lints; `format-check`
+  and `lint-fix` are the read-only and fixing halves.
 - `make clean` now deletes local caches only. Deleting the compose volumes (the DB,
   MinIO and OCR data) is `make clean-volumes`; `clean-images` deletes the built images,
   and `clean-all` does all three.

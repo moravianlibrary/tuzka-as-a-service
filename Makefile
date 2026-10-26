@@ -11,6 +11,10 @@ COMPOSE := $(DOCKER) compose
 # Run dev tooling in the locked env (installs the dev extra on demand).
 UV := uv run --extra dev
 
+# Pinned scanner versions, so `make check` gives the same answer tomorrow.
+PIP_AUDIT_VERSION := 2.10.1
+GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.21.2
+
 # ─── Inputs ──────────────────────────────────────────────────────────────────────────
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
@@ -327,21 +331,45 @@ bench: ## Run the API benchmark scenarios (TARGET=compose|k3d, ONLY=, N=, IMAGES
 # ─── Quality ─────────────────────────────────────────────────────────────────────────
 
 .PHONY: check
-check: lint typecheck version-check test ## Run the full quality gate (lint + types + version + unit tests)
+check: format-check lint typecheck version-check chart-lint audit secrets-scan test ## The full quality gate: format, lint, types, version, chart, CVEs, secrets, unit tests
 
 .PHONY: format
-format: ## Format code + auto-fix lint issues (ruff)
+format: ## Format the code (ruff format)
 	$(UV) ruff format .
-	$(UV) ruff check --fix .
+
+.PHONY: format-check
+format-check: ## Check the formatting without changing anything
+	$(UV) ruff format --check .
 
 .PHONY: lint
-lint: ## Check formatting + lint without changes (ruff)
+lint: ## Lint without changing anything (ruff)
 	$(UV) ruff check .
-	$(UV) ruff format --check .
+
+.PHONY: lint-fix
+lint-fix: ## Lint and apply ruff's safe fixes
+	$(UV) ruff check --fix .
 
 .PHONY: typecheck
 typecheck: ## Type-check with mypy --strict
 	$(UV) mypy
+
+.PHONY: chart-lint
+chart-lint: ## Lint the Helm chart (renders every template)
+	helm lint --strict deploy/helm/taas
+
+.PHONY: audit
+audit: ## Check the locked dependencies for known vulnerabilities (pip-audit; needs network)
+	@reqs=$$(mktemp); trap 'rm -f "$$reqs"' EXIT; \
+	uv export --frozen --all-extras --no-emit-project --format requirements-txt -q > "$$reqs"; \
+	uvx pip-audit==$(PIP_AUDIT_VERSION) -r "$$reqs" --disable-pip --require-hashes
+
+.PHONY: secrets-scan
+secrets-scan: ## Scan the git history for committed secrets (gitleaks; .gitleaksignore lists vetted ones)
+	@if command -v gitleaks >/dev/null; then \
+	  gitleaks git . --no-banner --redact; \
+	else \
+	  $(DOCKER) run --rm -v "$(CURDIR)":/repo:ro $(GITLEAKS_IMAGE) git /repo --no-banner --redact; \
+	fi
 
 .PHONY: version-check
 version-check: ## Fail if version literals have drifted from ./VERSION

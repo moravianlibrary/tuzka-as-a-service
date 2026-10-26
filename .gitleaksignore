@@ -1,0 +1,5 @@
+# Vetted gitleaks findings (fingerprints). Each is a placeholder, not a secret.
+# deploy/local/README.md in 485a839: curl examples with the test master key
+# (`X-Master-Key: test-master-key`), since removed from the file.
+485a839aa8b5a66b53f4d877dd6bfb0b2103cecf:deploy/local/README.md:curl-auth-header:109
+485a839aa8b5a66b53f4d877dd6bfb0b2103cecf:deploy/local/README.md:curl-auth-header:122
