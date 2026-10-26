@@ -10,7 +10,8 @@ from collections.abc import Callable
 import pytest
 
 from app.schemas.redis import EngineRun
-from app.workers.poller import PollOutcome, drain_poll_queue
+from app.workers.poller.steps import drain_poll_queue
+from app.workers.poller.types import PollOutcome
 from tests.factories import job_state
 
 

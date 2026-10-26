@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy.exc import DBAPIError
 
 from app.engines.base import OutputUnavailable
-from app.workers.poller import is_transient_harvest_error
+from app.workers.poller.steps import is_transient_harvest_error
 
 
 def _dbapi_error(*, invalidated: bool) -> DBAPIError:

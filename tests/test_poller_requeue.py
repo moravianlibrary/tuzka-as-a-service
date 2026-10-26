@@ -10,13 +10,13 @@ from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
 from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
-from app.workers.poller import (
-    PollOutcome,
-    _probe_failure_status,
+from app.workers.poller.steps import (
     classify_poll_result,
     poll_attempt,
     poll_failure_message,
+    probe_failure_status,
 )
+from app.workers.poller.types import PollOutcome
 from tests.factories import job_state
 
 
@@ -128,7 +128,7 @@ async def test_probe_failure_status_reads_result_http_status(code: int):
 
     adapter, http = _make_adapter(handler)
     try:
-        assert await _probe_failure_status(adapter, "e1") == code
+        assert await probe_failure_status(adapter, "e1") == code
     finally:
         await http.aclose()
 
@@ -140,6 +140,6 @@ async def test_probe_failure_status_none_when_unreachable():
 
     adapter, http = _make_adapter(handler)
     try:
-        assert await _probe_failure_status(adapter, "e1") is None
+        assert await probe_failure_status(adapter, "e1") is None
     finally:
         await http.aclose()

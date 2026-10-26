@@ -29,7 +29,8 @@ from app.services.redis_jobs import (
     set_running,
 )
 from app.vocabulary import FailureStage, JobEventName, JobStatus, PollStatus
-from app.workers.poller import PollerWorker, PollOutcome
+from app.workers.poller.types import PollOutcome
+from app.workers.poller.worker import PollerWorker
 from tests.factories import job_state
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")

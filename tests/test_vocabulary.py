@@ -1,7 +1,7 @@
 """Pins how engine-reported states are read: a state taas doesn't know keeps the job polled."""
 
 from app.vocabulary import EngineState, PollAction, PollStatus
-from app.workers.poller import classify_poll_result
+from app.workers.poller.steps import classify_poll_result
 
 
 def test_known_engine_state_is_parsed() -> None:

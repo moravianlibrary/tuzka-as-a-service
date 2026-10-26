@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.engines.base import EngineStatus
 from app.schemas.redis import EngineRun
-from app.workers.poller import _engine_run, _parse_engine_dt, engine_stamps
+from app.workers.poller.steps import _parse_engine_dt, engine_run, engine_stamps
 
 
 def test_parse_engine_dt_naive_utc_from_offset():
@@ -35,7 +35,7 @@ def test_engine_run_carries_engine_timestamps_and_metrics() -> None:
         finished_at="2026-01-01T00:00:05+00:00",
         metrics={"n_lines": 12, "mean_conf": 0.9},
     )
-    assert _engine_run(status) == EngineRun(
+    assert engine_run(status) == EngineRun(
         created_at="2026-01-01T00:00:00+00:00",
         started_at="2026-01-01T00:00:01+00:00",
         finished_at="2026-01-01T00:00:05+00:00",

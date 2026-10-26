@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from app.engines.base import OutputUnavailable, Result
-from app.workers.poller import fetch_outputs
+from app.workers.poller.steps import fetch_outputs
 
 
 class _FakeAdapter:

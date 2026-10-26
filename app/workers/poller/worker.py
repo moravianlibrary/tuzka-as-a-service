@@ -3,9 +3,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -15,12 +13,11 @@ import zstandard
 from miniopy_async.api import Minio
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
-from app.engines.base import EngineAdapter, EngineStatus, OutputUnavailable
+from app.engines.base import EngineAdapter, OutputUnavailable
 from app.engines.cache import AdapterCache
 from app.engines.outputs import ext_for
 from app.models.backend import Backend
@@ -83,237 +80,24 @@ from app.vocabulary import (
     PollAction,
     PollStatus,
 )
+from app.workers.poller.steps import (
+    classify_poll_result,
+    drain_poll_queue,
+    engine_run,
+    engine_stamps,
+    fetch_outputs,
+    is_transient_harvest_error,
+    next_poll_timeout,
+    poll_attempt,
+    poll_failure_message,
+    probe_failure_status,
+    require_engine_job_id,
+)
+from app.workers.poller.types import FailedPoll, PollOutcome, RequeuedPoll
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 
 logger = logging.getLogger("poller-worker")
-
-
-def is_transient_harvest_error(exc: Exception) -> bool:
-    """True if a harvest failure is infrastructure (DB/storage), not a bad result.
-
-    The engine has already produced the OCR output by the time we harvest, so a dropped
-    DB connection or a transient storage/transport error must NOT permanently fail the
-    job: we leave it inflight and let the next poll re-harvest it (the reaper is the
-    backstop if it truly stays stuck). A pooled connection closed under us surfaces as a
-    DBAPIError with ``connection_invalidated`` set (e.g. asyncpg's
-    ConnectionDoesNotExistError). Pure (no I/O) so it is unit-testable.
-    """
-    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
-        return True
-    return isinstance(exc, httpx.TransportError)
-
-
-async def fetch_outputs(
-    adapter: EngineAdapter, engine_job_id: str, outputs: frozenset[str]
-) -> dict[str, bytes]:
-    """Fetch every requested output concurrently, before anything is stored. The engine
-    serves each format independently, so fetching them in turn only adds their latencies
-    (2 outputs at about half of harvest wall time at 10 backends). An output the engine
-    can't produce raises ``OutputUnavailable`` and nothing is kept: a job delivers all it
-    was asked for or fails (no partial results)."""
-    formats = sorted(outputs)
-    fetched = await asyncio.gather(*(adapter.fetch(engine_job_id, output) for output in formats))
-    return {output: result.content for output, result in zip(formats, fetched, strict=True)}
-
-
-def _parse_engine_dt(value: str | None) -> datetime | None:
-    """Parse an engine ISO-8601 timestamp into a naive UTC datetime (the rest of
-    taas stores naive UTC). Returns None for missing/invalid input. A naive engine
-    timestamp (no offset) is assumed to already be UTC and stored as-is."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(UTC).replace(tzinfo=None)
-    return dt
-
-
-def engine_stamps(run: EngineRun) -> dict[str, datetime]:
-    """The engine's own created/started/finished (engine clock) as job columns, for
-    the ones it reported. created_at goes to engine_received_at, so the engine-queue
-    span (engine_received -> started) stays on one clock; the taas-clock dispatched_at
-    is never overwritten. Shared by done and failed jobs so both record the run."""
-    stamps: dict[str, datetime] = {}
-    for key, column in (
-        ("created_at", "engine_received_at"),
-        ("started_at", "started_at"),
-        ("finished_at", "finished_at"),
-    ):
-        value = _parse_engine_dt(getattr(run, key))
-        if value is not None:
-            stamps[column] = value
-    return stamps
-
-
-def _engine_run(status: EngineStatus) -> EngineRun:
-    """What harvest reads from a status: the engine's metrics plus its timestamps
-    (engine clock), which feed the job's engine_received/started/finished columns."""
-    return EngineRun(
-        created_at=status.created_at,
-        started_at=status.started_at,
-        finished_at=status.finished_at,
-        metrics=status.metrics,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class PollOutcome:
-    """What one status check of an in-flight job found, plus how to treat a failure."""
-
-    job_id: str
-    status: PollStatus
-    state: JobState
-    run: EngineRun
-    retryable: bool  # a failure here may succeed on another backend
-    http_status: int | None
-    error: str | None
-    # ENGINE when the engine reported the failure itself, POLL when the status check did.
-    stage: FailureStage = FailureStage.POLL
-
-
-@dataclass(frozen=True, slots=True)
-class FailedPoll:
-    """A polled job that fails for good: its error text and the attempt it records."""
-
-    outcome: PollOutcome
-    error: str
-    attempt: Attempt
-
-
-@dataclass(frozen=True, slots=True)
-class RequeuedPoll:
-    """A polled job that goes back on the queue after ``delay_s``, away from its backend."""
-
-    outcome: PollOutcome
-    delay_s: float
-    attempt: Attempt
-
-
-def classify_poll_result(
-    status: PollStatus, retryable: bool, requeues: int, max_requeues: int
-) -> PollAction:
-    """Decide what to do with a polled job. Pure (no I/O) so it's unit-testable.
-
-    Failures ('failed'/'error' from the engine or the status check, 'unreachable' when
-    the pod couldn't be reached) requeue while they're retryable and the budget lasts,
-    and fail otherwise. Whether a failure is retryable is the retry policy's call.
-    """
-    if status == PollStatus.DONE:
-        return PollAction.HARVEST
-    if status in (PollStatus.FAILED, PollStatus.ERROR, PollStatus.UNREACHABLE):
-        return PollAction.REQUEUE if retryable and requeues < max_requeues else PollAction.FAIL
-    return PollAction.RUNNING
-
-
-def poll_failure_message(outcome: PollOutcome, max_requeues: int) -> str:
-    """The job's ``error`` text when a poll outcome fails it. Pure."""
-    if outcome.status == PollStatus.UNREACHABLE:
-        return f"engine unreachable, exceeded {max_requeues} requeue attempts"
-    return outcome.error or outcome.state.error or "Engine error"
-
-
-def poll_attempt(outcome: PollOutcome, retry: bool, at: datetime) -> Attempt:
-    """The ``jobs.attempts`` entry for a failed poll outcome. Pure."""
-    return Attempt(
-        stage=outcome.stage,
-        backend_id=outcome.state.backend_id,
-        http_status=outcome.http_status,
-        error=outcome.error or outcome.status,
-        retry=retry,
-        at=at,
-    )
-
-
-def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
-    """How long to wait before the next poll pass. Pure (no I/O) so it's unit-testable.
-
-    Wakes at the soonest scheduled ``next_poll_at`` so a running job is polled right when
-    its backoff deadline arrives (not on a coarse grid), clamped to ``[0, cap]``: a past
-    deadline means poll now (0), and ``cap`` is the idle/self-heal ceiling. With no pending
-    deadlines — nothing in flight — wait the full ``cap``; a dispatch signal wakes sooner.
-    """
-    if not deadlines:
-        return cap
-    return min(cap, max(0.0, min(deadlines) - now))
-
-
-async def drain_poll_queue(  # noqa: C901 - split up on refactor/complexity
-    due: Iterable[str],
-    *,
-    concurrency: int,
-    check: Callable[[str], Awaitable[PollOutcome]],
-    process: Callable[[list[PollOutcome]], Awaitable[None]],
-    stop: asyncio.Event | None = None,
-) -> None:
-    """Status-check ``due`` with a sliding window of at most ``concurrency`` in flight.
-
-    Each completed check frees its slot immediately, so the next due job starts while the
-    rest of the batch is still being polled; finished batches go to ``process`` (release
-    the engine slot, requeue, fail) without blocking the other checks. A raised status
-    check is logged and does not cancel its peers — the job stays in flight and the next
-    pass retries it. ``stop`` stops refilling slots but lets active checks finish; if the
-    caller is cancelled, every remaining check is cancelled and awaited.
-    """
-    if concurrency < 1:
-        raise ValueError("poller poll concurrency must be at least 1")
-    pending = iter(due)
-    active: set[asyncio.Future[PollOutcome]] = set()
-
-    def fill_slots() -> None:
-        while len(active) < concurrency and not (stop is not None and stop.is_set()):
-            try:
-                job_id = next(pending)
-            except StopIteration:
-                return
-            active.add(asyncio.ensure_future(check(job_id)))
-
-    fill_slots()
-    try:
-        while active:
-            completed, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
-            active.difference_update(completed)
-            statuses: list[PollOutcome] = []
-            for future in completed:
-                try:
-                    statuses.append(future.result())
-                except Exception:
-                    logger.exception("Status check failed unexpectedly")
-            fill_slots()
-            if statuses:
-                await process(statuses)
-    finally:
-        for future in active:
-            future.cancel()
-        if active:
-            await asyncio.gather(*active, return_exceptions=True)
-
-
-def _engine_job_id(state: JobState) -> str:
-    """The engine's id for a job that was dispatched; LookupError for one that wasn't."""
-    if state.engine_job_id is None:
-        raise LookupError(f"job state has no engine_job_id (status {state.status})")
-    return state.engine_job_id
-
-
-async def _probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> int | None:
-    """Probe a failed job's error status by fetching the result endpoint.
-
-    Engines that predate ``error_status`` in the status response still raise the
-    job's error status as the result endpoint's HTTP status (422 for bad input, 500
-    for a crash), which gives the 4xx/5xx split retry classification needs. Returns
-    ``None`` when that tells us nothing (non-error answer, or engine unreachable).
-    """
-    try:
-        await adapter.fetch(engine_job_id, "alto")
-    except httpx.HTTPStatusError as exc:
-        return exc.response.status_code
-    except Exception as exc:
-        logger.warning("probe_failure_status failed for %s: %s", engine_job_id, exc)
-    return None
 
 
 class PollerWorker:
@@ -388,7 +172,7 @@ class PollerWorker:
     async def check_one(self, job_id: str, state: JobState) -> PollOutcome:
         try:
             adapter = await self.adapter_for(state)
-            engine_job_id = _engine_job_id(state)
+            engine_job_id = require_engine_job_id(state)
             status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
             logger.warning(f"Engine unreachable for job {job_id}: {e}")
@@ -418,7 +202,7 @@ class PollerWorker:
                 job_id,
                 PollStatus(status_resp.state),
                 state,
-                _engine_run(status_resp),
+                engine_run(status_resp),
                 False,
                 None,
                 None,
@@ -427,12 +211,12 @@ class PollerWorker:
         # predate the field still expose it as the result endpoint's HTTP status (D3).
         error_status = status_resp.error_status
         if error_status is None:
-            error_status = await _probe_failure_status(adapter, engine_job_id)
+            error_status = await probe_failure_status(adapter, engine_job_id)
         return PollOutcome(
             job_id,
             PollStatus(status_resp.state),
             state,
-            _engine_run(status_resp),
+            engine_run(status_resp),
             is_retryable_engine_failure(error_status),
             error_status,
             status_resp.error,
@@ -447,7 +231,7 @@ class PollerWorker:
             run = state.harvest_times or EngineRun()
         username = state.username
         external_id = state.external_id
-        engine_job_id = _engine_job_id(state)
+        engine_job_id = require_engine_job_id(state)
         backend_id = state.backend_id
 
         adapter = await self.adapter_for(state)
@@ -1035,7 +819,3 @@ async def main() -> None:
         await http.aclose()
         await r.aclose()
         await db_engine.dispose()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
