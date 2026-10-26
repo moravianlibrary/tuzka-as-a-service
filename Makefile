@@ -34,15 +34,22 @@ help: ## Show this help
 # ─── Env ─────────────────────────────────────────────────────────────────────────────
 
 .PHONY: env
-env: ## Create .env and .env.app from templates (generates a Fernet key)
+env: ## Create .env, .env.app and .env.local from templates (one fresh Fernet key for both apps)
 	@test -f .env || cp .env.example .env
-	@if [ ! -f .env.app ]; then \
-	  cp .env.app.example .env.app; \
-	  key=$$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"); \
-	  sed -i "s|^KEY_ENCRYPTION_SECRET=.*|KEY_ENCRYPTION_SECRET=$$key|" .env.app; \
-	  echo "created .env.app with a fresh KEY_ENCRYPTION_SECRET"; \
-	fi
-	@echo "env ready (.env, .env.app)"
+	@# The compose stack (.env.app) and host dev (.env.local) share the DB, so they
+	@# must share the key that encrypts the backends' engine keys in it.
+	@key=$$(sed -n 's/^KEY_ENCRYPTION_SECRET=//p' .env.app .env.local 2>/dev/null | head -1); \
+	[ -n "$$key" ] || key=$$($(MAKE) -s secret); \
+	for f in .env.app .env.local; do \
+	  [ -f $$f ] && continue; \
+	  sed "s|^KEY_ENCRYPTION_SECRET=.*|KEY_ENCRYPTION_SECRET=$$key|" $$f.example > $$f; \
+	  echo "created $$f"; \
+	done
+	@echo "env ready (.env, .env.app, .env.local)"
+
+.PHONY: secret
+secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
+	@$(UV) python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # ─── Compose stack ───────────────────────────────────────────────────────────────────
 
@@ -110,6 +117,26 @@ clean-all: clean clean-volumes clean-images ## All of the above (destroys data)
 .PHONY: seed
 seed: ## Register the OCR backend + create a test user
 	TAAS_URL=$${TAAS_URL:-http://localhost:8080} bash scripts/seed-backend.sh
+
+# ─── Dev (on the host, against `make infra`; settings from .env.local) ─────────────
+
+DEV_PORT ?= 8080
+
+.PHONY: dev-api
+dev-api: env ## Run the API on the host with auto-reload (DEV_PORT=8080)
+	$(UV) uvicorn app.main:app --reload --port $(DEV_PORT)
+
+.PHONY: dev-submit
+dev-submit: env ## Run the submit worker on the host
+	$(UV) python -m app.workers.submit
+
+.PHONY: dev-poller
+dev-poller: env ## Run the poller worker on the host
+	$(UV) python -m app.workers.poller
+
+.PHONY: dev-cleanup
+dev-cleanup: env ## Run the cleanup worker on the host
+	$(UV) python -m app.workers.cleanup
 
 # ─── Tests ───────────────────────────────────────────────────────────────────────────
 
@@ -303,10 +330,6 @@ set-version: ## Set the app version everywhere (requires VERSION=x.y.z)
 	@sed -i 's/version="[^"]*"/version="$(VERSION)"/' app/main.py compat/app/main.py
 	@sed -i 's/^appVersion: .*/appVersion: "$(VERSION)"/' deploy/helm/taas/Chart.yaml
 	@echo "set app version to $(VERSION). Helm chart 'version' is packaging-only and bumped separately; run 'make version-check' to confirm"
-
-.PHONY: secret
-secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
-	@python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 .PHONY: tag-version
 tag-version: ## Force-retag v$(VERSION) and push it

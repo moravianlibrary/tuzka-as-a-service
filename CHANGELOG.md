@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `make dev-api`, `dev-submit`, `dev-poller` and `dev-cleanup` run the API (with
+  auto-reload) or a worker on the host against `make infra`. `make env` also writes
+  `.env.local`, with the same `KEY_ENCRYPTION_SECRET` as `.env.app`.
 - `make restart` (down, then up) and `make logs-<service>` (e.g. `logs-api`) for the
   compose stack.
 - **Generic Helm engine pools.** The chart now takes an `engines` map keyed by engine
