@@ -14,22 +14,26 @@ from app.engines.base import OutputUnavailable
 from app.workers.poller.steps import is_transient_harvest_error
 
 
-def _dbapi_error(*, invalidated: bool) -> DBAPIError:
-    err = DBAPIError("SELECT 1", None, Exception("connection was closed"))
-    err.connection_invalidated = invalidated
-    return err
+def _dbapi_error() -> DBAPIError:
+    return DBAPIError("SELECT 1", None, Exception("syntax error"))
+
+
+def _closed_connection_error() -> DBAPIError:
+    return DBAPIError(
+        "SELECT 1", None, Exception("connection was closed"), connection_invalidated=True
+    )
 
 
 def test_closed_connection_is_transient() -> None:
     # A pooled connection closed under us (e.g. asyncpg ConnectionDoesNotExistError) comes
     # back as a DBAPIError with connection_invalidated set — safe to re-harvest.
-    assert is_transient_harvest_error(_dbapi_error(invalidated=True))
+    assert is_transient_harvest_error(_closed_connection_error())
 
 
 def test_db_error_without_invalidation_is_terminal() -> None:
     # A DB error that did not invalidate the connection is a real problem with the
     # statement/data, not a transport blip — fail fast.
-    assert not is_transient_harvest_error(_dbapi_error(invalidated=False))
+    assert not is_transient_harvest_error(_dbapi_error())
 
 
 def test_transport_errors_are_transient() -> None:
