@@ -45,7 +45,6 @@ from app.workers.shutdown import install_stop, sleep_unless_stopped
 
 logger = logging.getLogger("cleanup-worker")
 
-# TODO(rrandiak): Into the pydantic model(s)
 # Max objects per remove_objects call when purging expired storage objects.
 DELETE_BATCH_SIZE = 1000
 # Queued jobs checked for a lost queue entry per tick, and how old they must be.
