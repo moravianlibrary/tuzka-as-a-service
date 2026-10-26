@@ -694,119 +694,143 @@ class PollerWorker:
             stop=self.stop,
         )
 
-    async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
-        settings = self.settings
-        r = self.r
+    async def run(self) -> None:
+        """Poll, harvest and wait, until asked to stop."""
         logger.info("Poller worker started")
         try:
             while not self.stop.is_set():
-                # How long to wait before the next pass. Recomputed each iteration from the
-                # nearest scheduled next_poll_at, so we wake exactly when a running job is
-                # due rather than on a coarse grid; capped by poller_tick_seconds as an
-                # idle/self-heal ceiling. A dispatch (signal_poll from set_running) wakes
-                # us sooner still.
-                wait_timeout = settings.poller_tick_seconds
                 try:
-                    if self.poll_task is not None and self.poll_task.done():
-                        try:
-                            self.poll_task.result()
-                        except Exception:
-                            logger.exception("Background poll batch failed")
-                        self.poll_task = None
-                    pending_deadlines: list[float] = []
-                    if self.poll_task is None:
-                        with self.timer.stage("inflight_scan"):
-                            job_ids = await get_inflight_ids(r)
-                            states_by_id: dict[str, JobState] = {}
-                            if job_ids:
-                                states = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
-                                states_by_id = {
-                                    jid: state
-                                    for jid, state in zip(job_ids, states, strict=True)
-                                    if state is not None
-                                }
-                        now = time.time()
-                        due = [
-                            jid
-                            for jid, state in states_by_id.items()
-                            if (state.next_poll_at or 0.0) <= now
-                        ]
-                        due_set = set(due)
-                        pending_deadlines = [
-                            state.next_poll_at or 0.0
-                            for jid, state in states_by_id.items()
-                            if jid not in due_set
-                        ]
-                        if due:
-                            logger.info("Checking %d inflight jobs with bounded polling", len(due))
-                            self.poll_task = asyncio.create_task(self.drain_due(due, states_by_id))
-
-                    # Harvest from the durable queue: the jobs just released above, retries
-                    # whose backoff elapsed, and leftovers from a poller restart. This runs
-                    # even when nothing is in flight, since a delayed retry can be due then.
-                    harvest_limit = max(
-                        settings.poller_harvest_concurrency * 2, self.released_since_harvest
-                    )
-                    self.released_since_harvest = 0
-                    harvest_ids = await due_harvest_ids(r, harvest_limit)
-                    if harvest_ids:
-                        harvest_states = await get_jobs(r, harvest_ids)
-                        missing = [jid for jid, state in harvest_states.items() if state is None]
-                        if missing:
-                            logger.warning(
-                                "Dropping %d harvest entr(ies) with expired job state",
-                                len(missing),
-                            )
-                            await forget_harvests(r, missing)
-                        results = await asyncio.gather(
-                            *[
-                                self.harvest_with_sem(jid, state, None)
-                                for jid, state in harvest_states.items()
-                                if state is not None
-                            ],
-                            return_exceptions=True,
-                        )
-                        for harvest_result in results:
-                            if isinstance(harvest_result, Exception):
-                                logger.error("Harvest failed: %s", harvest_result)
-
-                    # Wake at the soonest scheduled poll or harvest retry, capped by the idle
-                    # ceiling. A due harvest (score in the past) means don't block at all.
-                    wait_timeout = next_poll_timeout(
-                        pending_deadlines, time.time(), settings.poller_tick_seconds
-                    )
-                    next_harvest = await next_harvest_at(r)
-                    if next_harvest is not None:
-                        wait_timeout = min(wait_timeout, max(0.0, next_harvest - time.time()))
-
+                    wait_timeout = await self.run_pass()
                 except Exception:
                     logger.exception("Poller worker failed")
-                    wait_timeout = settings.poller_tick_seconds
-
-                if time.monotonic() - self.stages_flushed_at >= 60:
-                    self.stages_flushed_at = time.monotonic()
-                    p95 = self.timer.p95()
-                    totals = self.timer.flush()
-                    log_stages(logger, totals, p95)
-                    if settings.clickhouse_url and totals:
-                        try:
-                            await live_metrics.insert_rows(
-                                self.http, settings, stage_metric_rows("poller", totals)
-                            )
-                        except Exception as exc:
-                            logger.warning("Stage metrics dropped: %s", exc)
-
-                try:
-                    await wait_for_poll_signal(r, wait_timeout)
-                except Exception:  # a Redis hiccup must not end the worker
-                    logger.exception("Waiting for the poll signal failed")
-                    await asyncio.sleep(settings.poller_tick_seconds)
+                    wait_timeout = self.settings.poller_tick_seconds
+                await self._flush_stages()
+                await self._wait(wait_timeout)
         finally:
-            if self.poll_task is not None:
-                current_task = asyncio.current_task()
-                if current_task is not None and current_task.cancelling():
-                    self.poll_task.cancel()
-                await asyncio.gather(self.poll_task, return_exceptions=True)
+            await self._finish_polls()
+
+    async def run_pass(self) -> float:
+        """Start the due status checks (in the background) and harvest what's ready;
+        how long to wait before the next pass."""
+        self._collect_polls()
+        pending_deadlines = await self._start_polls() if self.poll_task is None else []
+        await self._harvest_due()
+        return await self._wait_timeout(pending_deadlines)
+
+    def _collect_polls(self) -> None:
+        """Forget a finished background poll batch, logging its failure."""
+        if self.poll_task is None or not self.poll_task.done():
+            return
+
+        try:
+            self.poll_task.result()
+        except Exception:
+            logger.exception("Background poll batch failed")
+        self.poll_task = None
+
+    async def _start_polls(self) -> list[float]:
+        """Start checking every in-flight job whose next poll is due; the deadlines of
+        the ones that aren't due yet."""
+        states = await self._inflight_states()
+        now = time.time()
+        due = [job_id for job_id, state in states.items() if (state.next_poll_at or 0.0) <= now]
+        due_set = set(due)
+        pending_deadlines = [
+            state.next_poll_at or 0.0 for job_id, state in states.items() if job_id not in due_set
+        ]
+        if due:
+            logger.info("Checking %d inflight jobs with bounded polling", len(due))
+            self.poll_task = asyncio.create_task(self.drain_due(due, states))
+        return pending_deadlines
+
+    async def _inflight_states(self) -> dict[str, JobState]:
+        with self.timer.stage("inflight_scan"):
+            job_ids = await get_inflight_ids(self.r)
+            if not job_ids:
+                return {}
+            states = await asyncio.gather(*(get_job(self.r, job_id) for job_id in job_ids))
+        return {
+            job_id: state
+            for job_id, state in zip(job_ids, states, strict=True)
+            if state is not None
+        }
+
+    async def _harvest_due(self) -> None:
+        """Harvest from the durable queue: the jobs just released, retries whose backoff
+        elapsed, and leftovers from a poller restart. This runs even when nothing is in
+        flight, since a delayed retry can be due then."""
+        harvest_limit = max(
+            self.settings.poller_harvest_concurrency * 2, self.released_since_harvest
+        )
+        self.released_since_harvest = 0
+        harvest_ids = await due_harvest_ids(self.r, harvest_limit)
+        if not harvest_ids:
+            return
+
+        harvest_states = await get_jobs(self.r, harvest_ids)
+        missing = [job_id for job_id, state in harvest_states.items() if state is None]
+        if missing:
+            logger.warning("Dropping %d harvest entr(ies) with expired job state", len(missing))
+            await forget_harvests(self.r, missing)
+        results = await asyncio.gather(
+            *[
+                self.harvest_with_sem(job_id, state, None)
+                for job_id, state in harvest_states.items()
+                if state is not None
+            ],
+            return_exceptions=True,
+        )
+        for harvest_result in results:
+            if isinstance(harvest_result, Exception):
+                logger.error("Harvest failed: %s", harvest_result)
+
+    async def _wait_timeout(self, pending_deadlines: list[float]) -> float:
+        """Wake at the soonest scheduled poll or harvest retry, capped by the idle
+        ceiling (poller_tick_seconds). A due harvest (score in the past) means don't
+        block at all; a dispatch (signal_poll from set_running) wakes the wait sooner."""
+        wait_timeout = next_poll_timeout(
+            pending_deadlines, time.time(), self.settings.poller_tick_seconds
+        )
+        next_harvest = await next_harvest_at(self.r)
+        if next_harvest is None:
+            return wait_timeout
+        return min(wait_timeout, max(0.0, next_harvest - time.time()))
+
+    async def _flush_stages(self) -> None:
+        """Log the stage timings, and send them to ClickHouse, once a minute."""
+        if time.monotonic() - self.stages_flushed_at < 60:
+            return
+
+        self.stages_flushed_at = time.monotonic()
+        p95 = self.timer.p95()
+        totals = self.timer.flush()
+        log_stages(logger, totals, p95)
+        if not (self.settings.clickhouse_url and totals):
+            return
+        try:
+            await live_metrics.insert_rows(
+                self.http, self.settings, stage_metric_rows("poller", totals)
+            )
+        except Exception as exc:
+            logger.warning("Stage metrics dropped: %s", exc)
+
+    async def _wait(self, timeout: float) -> None:
+        try:
+            await wait_for_poll_signal(self.r, timeout)
+        except Exception:  # a Redis hiccup must not end the worker
+            logger.exception("Waiting for the poll signal failed")
+            await asyncio.sleep(self.settings.poller_tick_seconds)
+
+    async def _finish_polls(self) -> None:
+        """Let the background poll batch finish on a stop; cancel it when this task is
+        itself being cancelled."""
+        if self.poll_task is None:
+            return
+
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            self.poll_task.cancel()
+        await asyncio.gather(self.poll_task, return_exceptions=True)
 
 
 async def main() -> None:

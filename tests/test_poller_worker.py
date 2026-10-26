@@ -18,7 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.engines.base import OutputUnavailable, Result
+from app.engines.base import EngineStatus, OutputUnavailable, Result
 from app.models.job import Job, JobResult
 from app.schemas.redis import EngineRun, JobState
 from app.services.redis_jobs import (
@@ -28,7 +28,7 @@ from app.services.redis_jobs import (
     release_done,
     set_running,
 )
-from app.vocabulary import FailureStage, JobEventName, JobStatus, PollStatus
+from app.vocabulary import EngineState, FailureStage, JobEventName, JobStatus, PollStatus
 from app.workers.poller.types import PollOutcome
 from app.workers.poller.worker import PollerWorker
 from tests.factories import job_state
@@ -75,6 +75,15 @@ class FakeEngine:
 
     def __init__(self, outputs: dict[str, bytes | Exception]) -> None:
         self.outputs = outputs
+
+    async def status(self, engine_job_id: str) -> EngineStatus:
+        return EngineStatus(
+            state=EngineState.DONE,
+            created_at=RUN.created_at,
+            started_at=RUN.started_at,
+            finished_at=RUN.finished_at,
+            metrics=RUN.metrics,
+        )
 
     async def fetch(self, engine_job_id: str, output: str) -> Result:
         answer = self.outputs[output]
@@ -313,6 +322,28 @@ async def test_an_exhausted_requeue_budget_fails_the_job(
         JobStatus.FAILED,
         "engine unreachable, exceeded 5 requeue attempts",
     )
+
+
+# --- a pass ---
+
+
+@pytest.mark.asyncio
+async def test_a_pass_polls_a_finished_job_and_the_next_one_harvests_it(
+    worker, session_factory, redis_client, emitter
+) -> None:
+    job_id, _ = await _running_job(session_factory, redis_client)
+    await redis_client.hset(f"job:{job_id}", "next_poll_at", "0")  # due now
+    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello"})
+
+    await worker.run_pass()
+    assert worker.poll_task is not None
+    await worker.poll_task  # the status checks run in the background
+    assert (await _row(session_factory, job_id)).status == JobStatus.STORING
+    wait = await worker.run_pass()
+
+    assert (await _row(session_factory, job_id)).status == JobStatus.DONE
+    assert _event_names(emitter) == [JobEventName.DONE]
+    assert wait == Settings().poller_tick_seconds  # nothing left in flight or to harvest
 
 
 # --- harvest ---
