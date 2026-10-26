@@ -51,6 +51,10 @@ DELETE_BATCH_SIZE = 1000
 # Queued jobs checked for a lost queue entry per tick, and how old they must be.
 ORPHAN_SCAN_LIMIT = 10_000
 ORPHAN_MIN_AGE = timedelta(seconds=60)
+# How often the cleanup runs, and how often of those the heavy object/retention sweep
+# does (every 10th tick, ~10 min).
+REAP_TICK_SECONDS = 60
+HEAVY_EVERY = 10
 
 
 async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
@@ -69,12 +73,6 @@ async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     if requeued:
         logger.warning("Requeued %d job(s) missing from the queue: %s", len(requeued), requeued)
     return len(requeued)
-
-
-# How often the cleanup runs, and how often of those the heavy object/retention sweep
-# does (every 10th tick, ~10 min).
-REAP_TICK_SECONDS = 60
-HEAVY_EVERY = 10
 
 
 class CleanupWorker:
