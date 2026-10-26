@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.schemas.api.user import EffectiveLimits, UserLimitOverrides
-from app.schemas.runtime_config import FALLBACK_RATE_LIMITS, RateLimit, RuntimeConfig
+from app.schemas.runtime_config import (
+    FALLBACK_RATE_LIMITS,
+    InvalidConfigEntry,
+    RateLimit,
+    RuntimeConfig,
+)
 from app.services import config as cfg
 from app.vocabulary import LimitClass
 
@@ -85,6 +90,36 @@ def test_malformed_value_keeps_its_default_only():
 
     assert config.max_requeues == 5
     assert config.presigned_ttl_minutes == 15  # the rest of the table still applies
+
+
+def test_parse_entry_accepts_what_the_reader_reads():
+    assert RuntimeConfig.parse_entry("jobs.max_requeues", 7) == 7
+    assert RuntimeConfig.parse_entry("dispatch.affinity_tolerance", 1) == 1.0
+    assert RuntimeConfig.parse_entry("storage.results_max_bytes", None) is None
+    assert RuntimeConfig.parse_entry("storage.incoming_ttl_minutes", 30) == 30
+    assert RuntimeConfig.parse_entry("rate_limit.query", {"burst": 9}) == {"burst": 9}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("jobs.max_requeue", 5),  # typo in the key
+        ("jobs.retention_days", 90),  # seeded once, never read
+        ("jobs.max_requeues", "five"),
+        ("jobs.max_requeues", True),
+        ("jobs.max_requeues", "7"),
+        ("jobs.running_timeout_seconds", None),
+        ("storage.incoming_ttl_minutes", 1.5),
+        ("rate_limit.uploads", {"burst": 1}),
+        ("rate_limit.query", 20),
+        ("rate_limit.query", {"bursts": 1}),
+        ("rate_limit.query", {"burst": "many"}),
+        ("rate_limit.query", {"burst": 2.5}),
+    ],
+)
+def test_parse_entry_refuses_what_the_reader_would_ignore(key, value):
+    with pytest.raises(InvalidConfigEntry, match=key.split(".")[0]):
+        RuntimeConfig.parse_entry(key, value)
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,6 @@ class ConfigValue(BaseModel):
     value: Any
 
 
-# TODO(rrandiak): all of this should be done using pydantic or Typer to type it.
 def _parse(value: str) -> Any:
     """Values are JSON (numbers, booleans, objects); anything else is a plain string."""
     try:
@@ -45,6 +44,7 @@ def get(key: str) -> None:
 
 @app.command("set")
 def set_value(key: str, value: str) -> None:
-    """Set a config value, e.g. ``jobs.max_requeues 5``. Workers see it within ~10 s."""
+    """Set a config value, e.g. ``jobs.max_requeues 5``. Workers see it within ~10 s.
+    An unknown key or a value of the wrong type is refused."""
     run(lambda db: admin_ops.set_config(db, {key: _parse(value)}))
     typer.echo(f"{key} = {json.dumps(_parse(value))}")

@@ -29,6 +29,7 @@ from app.schemas.api.user import (
     UserLimitsResponse,
     UserUpdate,
 )
+from app.schemas.runtime_config import InvalidConfigEntry, RuntimeConfig
 from app.services import config as config_service
 from app.services.auth import encrypt_backend_key, generate_key, hash_key
 from app.services.domain_sync import apply_declared_capabilities
@@ -257,7 +258,12 @@ async def get_config(db: AsyncSession) -> dict[str, Any]:
 async def set_config(db: AsyncSession, values: dict[str, Any]) -> None:
     if not values:
         raise BadRequest("Nothing to set")
-    await config_service.set_values(db, values)
+
+    try:
+        parsed = {key: RuntimeConfig.parse_entry(key, value) for key, value in values.items()}
+    except InvalidConfigEntry as e:
+        raise BadRequest(str(e)) from e
+    await config_service.set_values(db, parsed)
 
 
 # --- Jobs ---

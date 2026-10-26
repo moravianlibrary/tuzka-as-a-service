@@ -156,6 +156,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `taas-admin config set` refuses a key taas doesn't read (e.g. a typo, or the unused
+  `jobs.retention_days`) and a value of the wrong type (`"5"` or `true` for a number,
+  an unknown field in a `rate_limit.*` object), exiting 2 with the reason. Before, it
+  stored either, and readers silently fell back to the default.
 - `taas-admin job show` prints its timestamps as ISO 8601 (`2026-10-25T23:58:40`, like
   `--json` elsewhere) instead of with a space.
 - The OpenAPI schema lists the allowed values of every job and batch `status` field

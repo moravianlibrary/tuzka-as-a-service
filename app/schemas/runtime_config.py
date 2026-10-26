@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from app.vocabulary import LimitClass
 
@@ -16,6 +16,11 @@ log = logging.getLogger(__name__)
 # storage.<bucket>_ttl_minutes: how long the cleanup keeps a bucket's objects.
 _STORAGE_TTL_KEY = re.compile(r"storage\.(?P<bucket>.+)_ttl_minutes")
 STORAGE_TTL_DEFAULT_MINUTES = 60
+RATE_LIMIT_PREFIX = "rate_limit."
+
+
+class InvalidConfigEntry(ValueError):
+    """A config value taas wouldn't read: an unknown key, or a malformed value."""
 
 
 class RateLimit(BaseModel):
@@ -91,7 +96,9 @@ class RuntimeConfig(BaseModel):
             if (match := _STORAGE_TTL_KEY.fullmatch(key))
         }
         fields["rate_limits"] = {
-            limit_class: RateLimit.from_config(rows.get(f"rate_limit.{limit_class}"), fallback)
+            limit_class: RateLimit.from_config(
+                rows.get(f"{RATE_LIMIT_PREFIX}{limit_class}"), fallback
+            )
             for limit_class, fallback in FALLBACK_RATE_LIMITS.items()
         }
         try:
@@ -103,3 +110,55 @@ class RuntimeConfig(BaseModel):
 
     def storage_ttl_minutes(self, bucket: str) -> int:
         return self.bucket_ttl_minutes.get(bucket, STORAGE_TTL_DEFAULT_MINUTES)
+
+    @classmethod
+    def parse_entry(cls, key: str, value: Any) -> Any:
+        """``value`` as it should be stored under ``key``. Reading falls back to the
+        default on a malformed value; writing refuses it instead, so an admin's typo is
+        reported rather than silently ignored. Raises ``InvalidConfigEntry``."""
+        if key.startswith(RATE_LIMIT_PREFIX):
+            return _parse_rate_limit_entry(key, value)
+
+        # Strict: the CLI hands over parsed JSON, so "5" or true for a number is a typo.
+        adapter: TypeAdapter[Any] = TypeAdapter(
+            cls._annotation_for(key), config=ConfigDict(strict=True)
+        )
+        try:
+            return adapter.dump_python(adapter.validate_python(value), mode="json")
+        except ValidationError as e:
+            raise InvalidConfigEntry(f"{key}: {_first_error(e)}") from e
+
+    @classmethod
+    def _annotation_for(cls, key: str) -> Any:
+        if _STORAGE_TTL_KEY.fullmatch(key):
+            return int
+        for field in cls.model_fields.values():
+            if field.alias == key:
+                return field.annotation
+        raise InvalidConfigEntry(f"unknown config key {key!r}")
+
+
+def _parse_rate_limit_entry(key: str, value: Any) -> dict[str, int]:
+    """A ``rate_limit.<class>`` value: ``per_minute`` and/or ``burst``; a key it leaves
+    out keeps the built-in value (``RateLimit.from_config``)."""
+    limit_class = key.removeprefix(RATE_LIMIT_PREFIX)
+    if limit_class not in LimitClass:
+        raise InvalidConfigEntry(f"unknown config key {key!r}")
+    if not isinstance(value, dict):
+        raise InvalidConfigEntry(f"{key}: expected an object with per_minute and/or burst")
+    unknown = sorted(set(value) - set(RateLimit.model_fields))
+    if unknown:
+        raise InvalidConfigEntry(f"{key}: unknown field(s) {', '.join(unknown)}")
+
+    fallback = FALLBACK_RATE_LIMITS[LimitClass(limit_class)]
+    try:
+        merged = RateLimit.model_validate(fallback.model_dump() | value, strict=True)
+    except ValidationError as e:
+        raise InvalidConfigEntry(f"{key}: {_first_error(e)}") from e
+    return merged.model_dump(include=set(value))
+
+
+def _first_error(error: ValidationError) -> str:
+    detail = error.errors()[0]
+    where = ".".join(str(part) for part in detail["loc"])
+    return f"{where}: {detail['msg']}" if where else detail["msg"]
