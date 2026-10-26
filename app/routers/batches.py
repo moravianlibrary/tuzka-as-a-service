@@ -62,6 +62,7 @@ from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
 from app.services.imageinfo import image_megapixels
 from app.services.job_spec import (
+    JobSpec,
     fmt_label,
     parse_external_id,
     parse_outputs,
@@ -145,8 +146,9 @@ async def submit_batch(
         raise UnsupportedMediaType("Expected a tar, tar.gz, tar.zst or zip archive")
 
     submitted = time.time()
+    new_batch = NewBatch(uuid4(), username, spec)
     batch = Batch(
-        id=uuid4(),
+        id=new_batch.id,
         username=username,
         external_id=label,
         domain=spec.domain,
@@ -159,15 +161,29 @@ async def submit_batch(
 
     incoming = request.app.state.incoming_client
     members = iter_members(upload, kind, settings.max_upload_bytes)
-    stored = await _store_pages(db, incoming, settings, batch, members)
+    stored = await _store_pages(db, incoming, settings, new_batch, members)
     batch.total = len(stored.pages)
     batch.status = BatchStatus.QUEUED
     await db.commit()
 
-    await _enqueue_pages(db, r, batch, stored.pages, submitted)
+    await _enqueue_pages(db, r, new_batch, stored.pages, submitted)
     return BatchSubmitResponse(
-        batch_id=batch.id, external_id=label, total=len(stored.pages), skipped=stored.skipped
+        batch_id=new_batch.id, external_id=label, total=len(stored.pages), skipped=stored.skipped
     )
+
+
+@dataclass(frozen=True, slots=True)
+class NewBatch:
+    """A batch being submitted, as its steps need it. Taken from the parsed request, not
+    from the batch row, which a commit may expire."""
+
+    id: UUID
+    username: str
+    spec: JobSpec
+
+    @property
+    def fmt(self) -> str:
+        return fmt_label(self.spec.outputs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +199,7 @@ async def _store_pages(
     db: AsyncSession,
     incoming: Minio,
     settings: Settings,
-    batch: Batch,
+    batch: NewBatch,
     members: Iterator[Member],
 ) -> StoredPages:
     """Upload every image member and add its job row. A refused or failed archive is
@@ -217,7 +233,7 @@ async def _store_pages(
 
 
 async def _store_page(
-    db: AsyncSession, incoming: Minio, bucket: str, batch: Batch, member: Member
+    db: AsyncSession, incoming: Minio, bucket: str, batch: NewBatch, member: Member
 ) -> UploadedPage:
     """Upload one image member and add its job row (committed with the next batch)."""
     page = UploadedPage(
@@ -236,10 +252,10 @@ async def _store_page(
             batch_id=batch.id,
             source_name=member.name,
             status=JobStatus.QUEUED,
-            fmt=fmt_label(frozenset(batch.outputs)),
-            domain=batch.domain,
-            outputs=batch.outputs,
-            options=batch.options,
+            fmt=batch.fmt,
+            domain=batch.spec.domain,
+            outputs=sorted(batch.spec.outputs),
+            options=batch.spec.options,
             file_size_bytes=member.size,
             megapixels=page.megapixels,
         )
@@ -250,7 +266,7 @@ async def _store_page(
 async def _enqueue_pages(
     db: AsyncSession,
     r: aioredis.Redis,
-    batch: Batch,
+    batch: NewBatch,
     pages: list[UploadedPage],
     submitted: float,
 ) -> None:
@@ -260,15 +276,14 @@ async def _enqueue_pages(
     await redis_jobs.init_batch(r, BatchCounts(batch_id=str(batch.id), total=len(pages)), state_ttl)
     trace = inject_trace_context()
     emitter = get_emitter()
-    outputs = frozenset(batch.outputs)
     states = {
         str(page.job_id): JobState(
             username=batch.username,
             batch_id=str(batch.id),
-            fmt=fmt_label(outputs),
-            domain=batch.domain,
-            outputs=outputs,
-            options=batch.options,
+            fmt=batch.fmt,
+            domain=batch.spec.domain,
+            outputs=batch.spec.outputs,
+            options=batch.spec.options,
             ext=page.ext,
             megapixels=page.megapixels,
             submitted_at=page_score(submitted, index),

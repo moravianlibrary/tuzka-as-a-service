@@ -181,6 +181,20 @@ async def test_a_file_that_is_no_archive_is_refused_before_a_batch_exists(
     assert await _batches(db) == []
 
 
+@pytest.mark.asyncio
+async def test_a_session_that_expires_on_commit_submits_too(db, redis_client, incoming) -> None:
+    # The steps work from the parsed request, not the committed batch row, which a
+    # session like this one would make lazily reload (and fail, on an async session).
+    expiring = async_sessionmaker(db.bind, expire_on_commit=True)
+    archive = _tar({"p1.jpg": IMAGE})
+
+    async with expiring() as session:
+        response = await _submit(session, redis_client, incoming, archive)
+
+    assert response.total == 1
+    assert len(await peek_pending(redis_client, 10)) == 1
+
+
 class FailingIncoming(FakeIncoming):
     """Stores the first page, then the storage goes away."""
 
