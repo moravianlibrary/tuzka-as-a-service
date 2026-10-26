@@ -31,6 +31,7 @@ from app.services.redis_jobs import (
     batch_event,
     claim_pending,
     count_requeue,
+    drop_pending,
     get_backends_state,
     get_jobs,
     job_event_payload,
@@ -53,7 +54,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import DEFAULT_DOMAIN, FailureStage, Fmt, JobEventName, JobStatus
+from app.vocabulary import FailureStage, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 
@@ -87,12 +88,8 @@ class BackendSlot:
     assigned: int = 0
 
 
-def pending_job(entry: QueueEntry, state: JobState | None) -> PendingJob:
-    """A peeked job as dispatch sees it. One whose state is gone is offered as a default
-    job, as it always was: claimed by a backend, its dispatch then finds no state and
-    drops it."""
-    if state is None:
-        return PendingJob(entry.job_id, entry.score, DEFAULT_DOMAIN, Fmt.MULTI.outputs)
+def pending_job(entry: QueueEntry, state: JobState) -> PendingJob:
+    """A peeked job as dispatch sees it."""
     return PendingJob(
         entry.job_id,
         entry.score,
@@ -365,12 +362,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
-        state: JobState | None,
+        state: JobState,
     ) -> None:
-        # state was read this tick, with every other dequeued job's, in one round trip.
-        if state is None:
-            logger.warning(f"Job {job_id} not found in Redis, skipping")
-            return
         # A child of the job's submit trace, so the engine calls below land in it.
         with job_span("dispatch", job_id, state, backend_id=backend.id):
             await dispatch_job(job_id, original_score, backend, backend_domains, state)
@@ -672,9 +665,26 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         break  # nothing pending — lower tiers have nothing to do either
 
                     with timer.stage("meta"):
-                        states = await get_jobs(r, [entry.job_id for entry in entries])
+                        found = await get_jobs(r, [entry.job_id for entry in entries])
+                    # A job whose state expired or was deleted can't be dispatched; left
+                    # queued it would take a peek slot every tick.
+                    gone = [entry for entry in entries if found[entry.job_id] is None]
+                    if gone:
+                        await drop_pending(r, gone)
+                        logger.warning(
+                            "Dropped %d queued job(s) whose state is gone: %s",
+                            len(gone),
+                            [entry.job_id for entry in gone],
+                        )
+                    states = {job_id: state for job_id, state in found.items() if state is not None}
+                    if not states:
+                        continue
                     priorities = {entry.job_id: entry.priority for entry in entries}
-                    pending = [pending_job(entry, states[entry.job_id]) for entry in entries]
+                    pending = [
+                        pending_job(entry, states[entry.job_id])
+                        for entry in entries
+                        if entry.job_id in states
+                    ]
 
                     # Speed scores for this tier's backends and these jobs' domains, once.
                     job_domains = {job.domain for job in pending}

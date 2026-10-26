@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from app.services.redis_jobs import (
     QueueEntry,
     claim_pending,
+    drop_pending,
     enqueue_job,
     get_backend_batches,
     get_backend_inflight,
@@ -69,6 +70,20 @@ async def test_a_job_is_claimed_once(redis_client: aioredis.Redis) -> None:
     assert await claim_pending(redis_client, "j", 0) is False  # another worker was first
     assert await peek_pending(redis_client, 10) == []
     assert await redis_client.hget("job:j", "claimed_at") is not None
+
+
+@pytest.mark.asyncio
+async def test_dropping_a_job_whose_state_is_gone_leaves_no_trace(
+    redis_client: aioredis.Redis,
+) -> None:
+    await _enqueue(redis_client, "gone", 5, 100.0)
+    await _enqueue(redis_client, "kept", 0, 200.0)
+    await redis_client.delete("job:gone")  # its state expired
+
+    await drop_pending(redis_client, [QueueEntry("gone", 100.0, 5)])
+
+    assert [e.job_id for e in await peek_pending(redis_client, 10)] == ["kept"]
+    assert await redis_client.exists("job:gone") == 0  # a claim would recreate it, TTL-less
 
 
 @pytest.mark.asyncio

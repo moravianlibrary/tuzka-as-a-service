@@ -289,6 +289,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The submit worker drops a queued job whose Redis state has expired or been deleted
+  from its queue as soon as it peeks it. Before, it offered the job as a `default`
+  domain job: until a backend serving `default` claimed it, it took a dispatch slot every
+  tick, and the claim left a `job:<id>` hash behind with no TTL. Its Postgres row is
+  still failed by the queued timeout.
 - A malformed value in the `config` table (e.g. a non-numeric timeout, TTL or rate
   limit) is logged and falls back to its default, instead of failing every request or
   worker tick that reads it.

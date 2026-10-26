@@ -236,6 +236,16 @@ async def claim_pending(r: aioredis.Redis, job_id: str, priority: int) -> bool:
     return bool(removed == 1)
 
 
+async def drop_pending(r: aioredis.Redis, entries: list[QueueEntry]) -> None:
+    """Take peeked jobs whose state is gone off their queues. Not claimed: a claim would
+    write ``claimed_at`` into a job hash that no longer exists, leaving one without a TTL.
+    Their Postgres rows stay queued until the reaper times them out."""
+    async with r.pipeline(transaction=False) as pipe:
+        for entry in entries:
+            pipe.zrem(_pending_key(entry.priority), entry.job_id)
+        await pipe.execute()
+
+
 # requeue_orphans' check-and-requeue for one job, atomic so a submit worker can't claim
 # the job between the check and the ZADD (that dispatched it twice).
 # KEYS: job hash, delayed ZSET, levels SET. ARGV: job id, now, claim grace, pending prefix.
