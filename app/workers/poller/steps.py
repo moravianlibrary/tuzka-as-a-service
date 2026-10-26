@@ -173,7 +173,7 @@ def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:
     return min(cap, max(0.0, min(deadlines) - now))
 
 
-async def drain_poll_queue(  # noqa: C901 - split up on refactor/complexity
+async def drain_poll_queue(
     due: Iterable[str],
     *,
     concurrency: int,
@@ -197,9 +197,8 @@ async def drain_poll_queue(  # noqa: C901 - split up on refactor/complexity
 
     def fill_slots() -> None:
         while len(active) < concurrency and not (stop is not None and stop.is_set()):
-            try:
-                job_id = next(pending)
-            except StopIteration:
+            job_id = next(pending, None)
+            if job_id is None:
                 return
             active.add(asyncio.ensure_future(check(job_id)))
 
@@ -208,20 +207,30 @@ async def drain_poll_queue(  # noqa: C901 - split up on refactor/complexity
         while active:
             completed, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
             active.difference_update(completed)
-            statuses: list[PollOutcome] = []
-            for future in completed:
-                try:
-                    statuses.append(future.result())
-                except Exception:
-                    logger.exception("Status check failed unexpectedly")
+            statuses = _completed_checks(completed)
             fill_slots()
             if statuses:
                 await process(statuses)
     finally:
-        for future in active:
-            future.cancel()
-        if active:
-            await asyncio.gather(*active, return_exceptions=True)
+        await _cancel_checks(active)
+
+
+def _completed_checks(completed: set[asyncio.Future[PollOutcome]]) -> list[PollOutcome]:
+    """The outcomes of finished checks; a check that raised is logged and left out."""
+    statuses: list[PollOutcome] = []
+    for future in completed:
+        try:
+            statuses.append(future.result())
+        except Exception:
+            logger.exception("Status check failed unexpectedly")
+    return statuses
+
+
+async def _cancel_checks(active: set[asyncio.Future[PollOutcome]]) -> None:
+    for future in active:
+        future.cancel()
+    if active:
+        await asyncio.gather(*active, return_exceptions=True)
 
 
 def require_engine_job_id(state: JobState) -> str:
