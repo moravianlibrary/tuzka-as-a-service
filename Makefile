@@ -114,6 +114,11 @@ clean-images: ## Stop the stack and delete the images it built
 .PHONY: clean-all
 clean-all: clean clean-volumes clean-images ## All of the above (destroys data)
 
+.PHONY: admin
+admin: ## Run taas-admin in the stack's api (requires ARGS="user list"; TARGET=compose|k3d)
+	$(if $(ARGS),,$(error ARGS is required, e.g. make admin ARGS="user list"))
+	@source scripts/lib/taas-admin.sh && TARGET=$(TARGET) taas_admin $(ARGS)
+
 .PHONY: seed
 seed: ## Register the OCR backend + create a test user
 	TAAS_URL=$${TAAS_URL:-http://localhost:8080} bash scripts/seed-backend.sh

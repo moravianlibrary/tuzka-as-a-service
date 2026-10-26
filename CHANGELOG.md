@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `make admin ARGS="…"` runs `taas-admin` in the running stack's api container
+  (`TARGET=compose|k3d`), e.g. `make admin ARGS="user list"`.
 - `make db-upgrade` / `db-downgrade` (`REV=`), `db-history`, and `db-migrate MSG=`, which
   starts the next numbered migration (`024_…`) from a template in the repo's style.
   They use `DATABASE_URL` from the environment, else `.env.local`.
