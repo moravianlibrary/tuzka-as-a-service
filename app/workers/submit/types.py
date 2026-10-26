@@ -1,8 +1,11 @@
 """The values dispatch allocates: a job waiting to be dispatched, and a backend's slots."""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.models.backend import Backend
+from app.services.events import failure
+from app.vocabulary import FailureStage
 
 
 @dataclass(frozen=True)
@@ -30,3 +33,18 @@ class BackendSlot:
     inflight: int = 0
     batches: dict[str, int] = field(default_factory=dict)
     assigned: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchFailure:
+    """Why a dispatch failed, and whether another backend might succeed."""
+
+    error: str
+    http_status: int | None
+    transient: bool  # worth retrying elsewhere while the requeue budget lasts
+    transport: bool  # the engine wasn't reached at all
+
+    @property
+    def event_fields(self) -> dict[str, Any]:
+        """The error columns of the job's ``retried``/``failed`` event."""
+        return failure(FailureStage.DISPATCH, self.http_status, self.transport)

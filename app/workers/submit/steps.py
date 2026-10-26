@@ -3,11 +3,21 @@ unit-testable without the worker."""
 
 from collections.abc import Callable
 
+import httpx
+
+from app.clock import utcnow
+from app.schemas.attempt import Attempt
 from app.schemas.redis import JobState
 from app.services.redis_jobs import (
     QueueEntry,
 )
-from app.workers.submit.types import BackendSlot, PendingJob
+from app.services.retry_policy import (
+    describe_exception,
+    http_status_of,
+    is_retryable_dispatch_error,
+)
+from app.vocabulary import FailureStage
+from app.workers.submit.types import BackendSlot, DispatchFailure, PendingJob
 
 
 def pending_job(entry: QueueEntry, state: JobState) -> PendingJob:
@@ -146,3 +156,27 @@ def allocate_scored(
             slot.batches[job.batch_id] = slot.batches.get(job.batch_id, 0) + 1
         assignments.append((job, slot))
     return assignments, leftovers
+
+
+def classify_dispatch_error(error: Exception) -> DispatchFailure:
+    """What a dispatch exception means for the job. Pure."""
+    return DispatchFailure(
+        error=describe_exception(error),
+        http_status=http_status_of(error),
+        transient=is_retryable_dispatch_error(error),
+        transport=isinstance(error, httpx.TransportError),
+    )
+
+
+def dispatch_attempt(
+    backend_id: int, http_status: int | None, error: str, *, retry: bool
+) -> Attempt:
+    """The ``jobs.attempts`` entry for a failed dispatch. Pure apart from the clock."""
+    return Attempt(
+        at=utcnow(),
+        stage=FailureStage.DISPATCH,
+        backend_id=backend_id,
+        http_status=http_status,
+        error=error,
+        retry=retry,
+    )

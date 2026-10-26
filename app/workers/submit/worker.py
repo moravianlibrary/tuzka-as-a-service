@@ -49,16 +49,21 @@ from app.services.redis_pool import make_redis
 from app.services.retry_policy import (
     backoff_seconds,
     describe_exception,
-    http_status_of,
-    is_retryable_dispatch_error,
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
 from app.vocabulary import FailureStage, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, log_stages, stage_metric_rows
-from app.workers.submit.steps import allocate_scored, pending_job, serves, unstored_capacity
-from app.workers.submit.types import BackendSlot
+from app.workers.submit.steps import (
+    allocate_scored,
+    classify_dispatch_error,
+    dispatch_attempt,
+    pending_job,
+    serves,
+    unstored_capacity,
+)
+from app.workers.submit.types import BackendSlot, DispatchFailure
 
 logger = logging.getLogger("submit-worker")
 
@@ -210,7 +215,7 @@ class SubmitWorker:
         with job_span("dispatch", job_id, state, backend_id=backend.id):
             await self.dispatch_job(job_id, original_score, backend, backend_domains, state)
 
-    async def dispatch_job(  # noqa: C901, PLR0915 - split up on refactor/complexity
+    async def dispatch_job(
         self,
         job_id: str,
         original_score: float,
@@ -218,35 +223,15 @@ class SubmitWorker:
         backend_domains: dict[str, frozenset[str]],
         state: JobState,
     ) -> None:
-        r = self.r
-        username = state.username
-        external_id = state.external_id
-        ext = state.ext
-        domain = state.domain
-        outputs = state.outputs
-
-        def event(name: JobEventName, **fields: Any) -> JobEvent:
-            return JobEvent.from_state(
-                utcnow(),
-                name,
-                job_id,
-                state,
-                backend_id=backend.id,
-                backend=backend.display_label,
-                adapter=backend.adapter,
-                device=backend.device,
-                **fields,
-            )
-
         # Skip if this backend does not serve the job's domain + outputs. Checked against
         # the capabilities loaded once per tick (no per-job DB round-trip); the job goes
         # back on the queue for a backend that does serve it.
-        if not serves(backend_domains, domain, outputs):
-            await requeue_job(r, job_id, original_score)
+        if not serves(backend_domains, state.domain, state.outputs):
+            await requeue_job(self.r, job_id, original_score)
             return
 
         # Read image from MinIO — keyed by job_id (the server PK), matching the submit upload.
-        object_path = f"{username}/{job_id}{ext}"
+        object_path = f"{state.username}/{job_id}{state.ext}"
         try:
             with self.timer.stage("image_get"):
                 image_bytes = await get_object(
@@ -255,180 +240,196 @@ class SubmitWorker:
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
-            attempt = Attempt(
-                at=utcnow(),
-                stage=FailureStage.DISPATCH,
-                backend_id=backend.id,
-                http_status=None,
-                error=msg,
-                retry=False,
+            attempt = dispatch_attempt(backend.id, None, msg, retry=False)
+            await self._fail_job(
+                job_id, state, backend, attempt, failure(FailureStage.DISPATCH, None)
             )
-            async with self.session_factory() as db:
-                state_ttl = await config_service.get_state_ttl_seconds(db)
-                batch = await set_failed(r, job_id, msg, state_ttl)
-                await db.execute(
-                    update(Job)
-                    .where(Job.id == job_id)
-                    .values(
-                        status=JobStatus.FAILED,
-                        error=msg,
-                        finished_at=utcnow(),
-                        **append_attempt(attempt),
-                    )
-                )
-                await batch_store.finish_if_done(db, state.batch_id)
-                await db.commit()
-            self.emitter.emit(event(JobEventName.FAILED, **failure(FailureStage.DISPATCH, None)))
-            await publish_event(
-                r,
-                username,
-                job_event_payload(
-                    job_id, external_id, JobStatus.FAILED, batch_id=state.batch_id, error=msg
-                ),
-            )
-            if batch is not None:
-                await publish_event(r, username, batch_event(batch))
             return
 
-        # Named by job id: the external id is the caller's free text, not a file name.
-        filename = f"{job_id}{ext}"
         try:
-            adapter = self.adapters.for_backend(backend, backend.url)
-            with self.timer.stage("engine_submit"):
-                engine_job_id = await adapter.submit(
-                    image_bytes, filename, domain, outputs, state.options
-                )
-            logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
-            with self.timer.stage("engine_version"):
-                engine_version = await adapter.version()
-
-            async with self.session_factory() as db:
-                state_ttl = await config_service.get_state_ttl_seconds(db)
-                with self.timer.stage("set_running"):
-                    await set_running(r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
-                with self.timer.stage("db_update"):
-                    await db.execute(
-                        update(Job)
-                        .where(Job.id == job_id)
-                        .values(
-                            status=JobStatus.RUNNING,
-                            dispatched_at=utcnow(),
-                            engine_job_id=engine_job_id,
-                            engine_version=engine_version,
-                            backend_id=backend.id,
-                        )
-                    )
-                    await db.commit()
-            submitted_at = state.submitted_at
-            self.emitter.emit(
-                event(
-                    JobEventName.DISPATCHED,
-                    engine_version=engine_version or "",
-                    queue_s=max(time.time() - submitted_at, 0.0),
-                )
-            )
-
+            await self._submit(job_id, state, backend, image_bytes)
         except EngineFullError:
             logger.info(f"Engine {backend.url} full, requeuing job {job_id}")
-            await requeue_job(r, job_id, original_score)
-
+            await requeue_job(self.r, job_id, original_score)
         except Exception as e:
-            msg = describe_exception(e)
-            transient = is_retryable_dispatch_error(e)
-            http_st = http_status_of(e)
-            failed_fields = failure(
-                FailureStage.DISPATCH, http_st, isinstance(e, httpx.TransportError)
-            )
-            async with self.session_factory() as db:
-                max_requeues = (await config_service.get_runtime_config(db)).max_requeues
-                state_ttl = await config_service.get_state_ttl_seconds(db)
-            requeues = state.requeues
+            await self._dispatch_failed(job_id, original_score, state, backend, e)
 
-            # Transient failure (backend down/overloaded) with budget left: sideline this
-            # backend for the health-cache window so the retry lands elsewhere, bump the
-            # requeue counter the budget reads (Redis + DB), and schedule a delayed retry.
-            if transient and requeues < max_requeues:
-                delay = backoff_seconds(requeues)
-                logger.warning(
-                    "Transient dispatch error for job %s on %s (attempt %d/%d), "
-                    "requeue in %.1fs: %s",
-                    job_id,
-                    backend.url,
-                    requeues + 1,
-                    max_requeues,
-                    delay,
-                    msg,
-                )
-                self.health_cache[backend.id] = (False, time.time())
-                await count_requeue(r, job_id)
-                await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
-                await perf.record_failure(r, backend.id, domain)
-                attempt = Attempt(
-                    at=utcnow(),
-                    stage=FailureStage.DISPATCH,
-                    backend_id=backend.id,
-                    http_status=http_st,
-                    error=msg,
-                    retry=True,
-                )
-                async with self.session_factory() as db:
-                    await db.execute(
-                        update(Job)
-                        .where(Job.id == job_id)
-                        .values(
-                            requeues=Job.requeues + 1,
-                            **append_attempt(attempt),
-                        )
-                    )
-                    await db.commit()
-                self.emitter.emit(event(JobEventName.RETRIED, **failed_fields))
-                return
-
-            # Terminal: not transient, or the retry budget is spent.
-            if transient:
-                logger.error(
-                    "Dispatch for job %s failed after %d requeue attempts: %s",
-                    job_id,
-                    max_requeues,
-                    msg,
-                )
-                msg = f"{msg} (exceeded {max_requeues} requeue attempts)"
-            else:
-                logger.exception("Failed to dispatch job %s", job_id)
-            attempt = Attempt(
-                at=utcnow(),
-                stage=FailureStage.DISPATCH,
-                backend_id=backend.id,
-                http_status=http_st,
-                error=msg,
-                retry=False,
+    async def _submit(
+        self, job_id: str, state: JobState, backend: Backend, image_bytes: bytes
+    ) -> None:
+        """Hand the image to the engine and record the job as running there."""
+        adapter = self.adapters.for_backend(backend, backend.url)
+        # Named by job id: the external id is the caller's free text, not a file name.
+        filename = f"{job_id}{state.ext}"
+        with self.timer.stage("engine_submit"):
+            engine_job_id = await adapter.submit(
+                image_bytes, filename, state.domain, state.outputs, state.options
             )
-            if perf.counts_against_backend(http_st):
-                await perf.record_failure(r, backend.id, domain)
-            async with self.session_factory() as db:
-                batch = await set_failed(r, job_id, msg, state_ttl)
+        logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
+        with self.timer.stage("engine_version"):
+            engine_version = await adapter.version()
+
+        async with self.session_factory() as db:
+            state_ttl = await config_service.get_state_ttl_seconds(db)
+            with self.timer.stage("set_running"):
+                await set_running(self.r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
+            with self.timer.stage("db_update"):
                 await db.execute(
                     update(Job)
                     .where(Job.id == job_id)
                     .values(
-                        status=JobStatus.FAILED,
-                        error=msg,
-                        finished_at=utcnow(),
-                        **append_attempt(attempt),
+                        status=JobStatus.RUNNING,
+                        dispatched_at=utcnow(),
+                        engine_job_id=engine_job_id,
+                        engine_version=engine_version,
+                        backend_id=backend.id,
                     )
                 )
-                await batch_store.finish_if_done(db, state.batch_id)
                 await db.commit()
-            self.emitter.emit(event(JobEventName.FAILED, **failed_fields))
-            await publish_event(
-                r,
-                username,
-                job_event_payload(
-                    job_id, external_id, JobStatus.FAILED, batch_id=state.batch_id, error=msg
-                ),
+        self.emitter.emit(
+            self._event(
+                JobEventName.DISPATCHED,
+                job_id,
+                state,
+                backend,
+                engine_version=engine_version or "",
+                queue_s=max(time.time() - state.submitted_at, 0.0),
             )
-            if batch is not None:
-                await publish_event(r, username, batch_event(batch))
+        )
+
+    async def _dispatch_failed(
+        self,
+        job_id: str,
+        original_score: float,
+        state: JobState,
+        backend: Backend,
+        error: Exception,
+    ) -> None:
+        """Retry a transient failure while the budget lasts; fail the job otherwise.
+        Called from the ``except`` block, so a terminal failure's traceback is logged."""
+        failed = classify_dispatch_error(error)
+        async with self.session_factory() as db:
+            max_requeues = (await config_service.get_runtime_config(db)).max_requeues
+        if failed.transient and state.requeues < max_requeues:
+            await self._retry_later(job_id, original_score, state, backend, failed, max_requeues)
+            return
+
+        # Terminal: not transient, or the retry budget is spent.
+        msg = failed.error
+        if failed.transient:
+            logger.error(
+                "Dispatch for job %s failed after %d requeue attempts: %s",
+                job_id,
+                max_requeues,
+                msg,
+            )
+            msg = f"{msg} (exceeded {max_requeues} requeue attempts)"
+        else:
+            logger.exception("Failed to dispatch job %s", job_id)
+        if perf.counts_against_backend(failed.http_status):
+            await perf.record_failure(self.r, backend.id, state.domain)
+        attempt = dispatch_attempt(backend.id, failed.http_status, msg, retry=False)
+        await self._fail_job(job_id, state, backend, attempt, failed.event_fields)
+
+    async def _retry_later(
+        self,
+        job_id: str,
+        original_score: float,
+        state: JobState,
+        backend: Backend,
+        failed: DispatchFailure,
+        max_requeues: int,
+    ) -> None:
+        """A transient failure (backend down/overloaded) with budget left: sideline this
+        backend for the health-cache window so the retry lands elsewhere, bump the
+        requeue counter the budget reads (Redis + DB), and schedule a delayed retry."""
+        delay = backoff_seconds(state.requeues)
+        logger.warning(
+            "Transient dispatch error for job %s on %s (attempt %d/%d), requeue in %.1fs: %s",
+            job_id,
+            backend.url,
+            state.requeues + 1,
+            max_requeues,
+            delay,
+            failed.error,
+        )
+        self.health_cache[backend.id] = (False, time.time())
+        await count_requeue(self.r, job_id)
+        await schedule_retry(self.r, job_id, original_score, delay, avoid_backend_id=backend.id)
+        await perf.record_failure(self.r, backend.id, state.domain)
+        attempt = dispatch_attempt(backend.id, failed.http_status, failed.error, retry=True)
+        async with self.session_factory() as db:
+            await db.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(requeues=Job.requeues + 1, **append_attempt(attempt))
+            )
+            await db.commit()
+        self.emitter.emit(
+            self._event(
+                JobEventName.RETRIED,
+                job_id,
+                state,
+                backend,
+                **failed.event_fields,
+            )
+        )
+
+    async def _fail_job(
+        self,
+        job_id: str,
+        state: JobState,
+        backend: Backend,
+        attempt: Attempt,
+        event_fields: dict[str, Any],
+    ) -> None:
+        """Fail the job for good at dispatch, in Redis and its row, and report it."""
+        msg = attempt.error
+        async with self.session_factory() as db:
+            state_ttl = await config_service.get_state_ttl_seconds(db)
+            batch = await set_failed(self.r, job_id, msg, state_ttl)
+            await db.execute(
+                update(Job)
+                .where(Job.id == job_id)
+                .values(
+                    status=JobStatus.FAILED,
+                    error=msg,
+                    finished_at=utcnow(),
+                    **append_attempt(attempt),
+                )
+            )
+            await batch_store.finish_if_done(db, state.batch_id)
+            await db.commit()
+        self.emitter.emit(
+            self._event(
+                JobEventName.FAILED,
+                job_id,
+                state,
+                backend,
+                **event_fields,
+            )
+        )
+        payload = job_event_payload(
+            job_id, state.external_id, JobStatus.FAILED, batch_id=state.batch_id, error=msg
+        )
+        await publish_event(self.r, state.username, payload)
+        if batch is not None:
+            await publish_event(self.r, state.username, batch_event(batch))
+
+    def _event(
+        self, name: JobEventName, job_id: str, state: JobState, backend: Backend, **fields: Any
+    ) -> JobEvent:
+        return JobEvent.from_state(
+            utcnow(),
+            name,
+            job_id,
+            state,
+            backend_id=backend.id,
+            backend=backend.display_label,
+            adapter=backend.adapter,
+            device=backend.device,
+            **fields,
+        )
 
     async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         settings = self.settings
