@@ -7,7 +7,8 @@ from app.services.domain_sync import plan_domain_links
 from app.services.job_spec import options_errors
 from app.services.load import compute_load, group_load
 from app.workers.stages import StageTimer
-from app.workers.submit import BackendSlot, allocate_jobs
+from app.workers.submit.steps import allocate_jobs
+from app.workers.submit.types import BackendSlot
 
 from .conftest import (
     ALTO_TXT,

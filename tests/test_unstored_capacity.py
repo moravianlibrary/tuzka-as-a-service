@@ -1,6 +1,6 @@
 """Dispatch must account for work on engines and results awaiting storage."""
 
-from app.workers.submit import unstored_capacity
+from app.workers.submit.steps import unstored_capacity
 
 
 def test_unstored_capacity_counts_both_phases() -> None:

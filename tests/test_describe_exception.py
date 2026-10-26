@@ -7,7 +7,7 @@ string, so the stored ``error`` is never blank.
 
 import httpx
 
-from app.workers.submit import describe_exception
+from app.services.retry_policy import describe_exception
 
 
 def test_message_bearing_exception_uses_str() -> None:

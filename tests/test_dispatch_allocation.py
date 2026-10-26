@@ -7,7 +7,8 @@ and avoid-backend logic (D7).
 
 from collections import Counter
 
-from app.workers.submit import BackendSlot, PendingJob, allocate_jobs, can_serve
+from app.workers.submit.steps import allocate_jobs, can_serve
+from app.workers.submit.types import BackendSlot, PendingJob
 
 ALTO_TXT = frozenset({"alto", "txt"})
 

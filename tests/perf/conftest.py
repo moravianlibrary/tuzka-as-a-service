@@ -12,7 +12,7 @@ from typing import Any
 from app.engines.base import DomainInfo, EngineInfo
 from app.engines.openapi import options_schema_from_openapi
 from app.services.load import load_field
-from app.workers.submit import BackendSlot, PendingJob
+from app.workers.submit.types import BackendSlot, PendingJob
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 ALTO_TXT = frozenset({"alto", "txt"})

@@ -24,7 +24,7 @@ from app.models.job import Job
 from app.schemas.redis import JobState
 from app.services.redis_jobs import enqueue_job, get_job, peek_pending
 from app.vocabulary import FailureStage, JobEventName, JobStatus
-from app.workers.submit import SubmitWorker
+from app.workers.submit.worker import SubmitWorker
 from tests.factories import job_state
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")

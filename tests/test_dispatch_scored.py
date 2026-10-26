@@ -3,7 +3,8 @@
 from collections import Counter
 from dataclasses import dataclass
 
-from app.workers.submit import BackendSlot, PendingJob, allocate_scored, expected_finish
+from app.workers.submit.steps import allocate_scored, expected_finish
+from app.workers.submit.types import BackendSlot, PendingJob
 
 ALTO_TXT = frozenset({"alto", "txt"})
 
