@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -313,12 +314,15 @@ class PollerWorker:
         job, its events or its timing again. No DB connection is held while storing: one
         per concurrent harvest, idle for the uploads, would drain the pool."""
         context = await self._harvest_context(job_id)
-        result_rows = [
-            await self._store_output(
-                job_id, state.username, output, raw, context.presigned_ttl_minutes
+        # Each output is its own object, so they're stored at once (one per format).
+        result_rows = await asyncio.gather(
+            *(
+                self._store_output(
+                    job_id, state.username, output, raw, context.presigned_ttl_minutes
+                )
+                for output, raw in fetched.items()
             )
-            for output, raw in fetched.items()
-        ]
+        )
 
         stored_at = utcnow()
         stamps = engine_stamps(run)
@@ -367,7 +371,7 @@ class PollerWorker:
         self,
         job_id: str,
         batch_id: str | None,
-        result_rows: list[dict[str, Any]],
+        result_rows: Sequence[dict[str, Any]],
         done_values: dict[str, str | datetime],
     ) -> bool:
         """Record the stored outputs and mark the job done, in one transaction; whether
