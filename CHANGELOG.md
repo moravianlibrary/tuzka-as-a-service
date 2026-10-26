@@ -10,6 +10,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Secrets managed outside the chart.** `secrets.existingSecret` points the api, workers,
+  jobs, MinIO, frps and ClickStack at an existing Secret instead of the `<release>-secret`
+  the chart renders from `secrets.*`, and `cnpg.existingAuthSecret` does the same for
+  the database owner's credentials, so a GitOps repo can keep every credential in
+  encrypted Secrets (SOPS/KSOPS, Sealed Secrets, External Secrets) and none in its Helm
+  values. The keys the Secret needs are listed in `values.yaml`. HyperDX builds its
+  ClickHouse connection from `CLICKHOUSE_PASSWORD` in its own pod, so the Secret carries
+  no `HYPERDX_DEFAULT_CONNECTIONS`.
 - `make admin ARGS="…"` runs `taas-admin` in the running stack's api container
   (`TARGET=compose|k3d`), e.g. `make admin ARGS="user list"`.
 - `make db-upgrade` / `db-downgrade` (`REV=`), `db-history`, and `db-migrate MSG=`, which

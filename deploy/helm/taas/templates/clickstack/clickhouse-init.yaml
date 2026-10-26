@@ -48,7 +48,7 @@ spec:
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "taas.fullname" . }}-secret
+                  name: {{ include "taas.secretName" . }}
                   key: CLICKHOUSE_PASSWORD
           command:
             - /bin/sh

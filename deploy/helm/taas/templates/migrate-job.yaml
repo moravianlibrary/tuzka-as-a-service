@@ -31,4 +31,4 @@ spec:
             - configMapRef:
                 name: {{ include "taas.fullname" . }}-config
             - secretRef:
-                name: {{ include "taas.fullname" . }}-secret
+                name: {{ include "taas.secretName" . }}

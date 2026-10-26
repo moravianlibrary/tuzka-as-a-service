@@ -21,7 +21,7 @@ spec:
       database: {{ .Values.cnpg.database }}
       owner: {{ .Values.cnpg.owner }}
       secret:
-        name: {{ include "taas.fullname" . }}-cnpg-auth
+        name: {{ include "taas.cnpgAuthSecretName" . }}
 
   storage:
     size: {{ .Values.cnpg.storage.size }}

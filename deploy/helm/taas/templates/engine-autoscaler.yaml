@@ -71,7 +71,7 @@ metadata:
 spec:
   secretTargetRef:
     - parameter: token
-      name: {{ $full }}-secret
+      name: {{ include "taas.secretName" $ }}
       key: LOAD_TOKEN
 {{- end }}
 {{- end }}

@@ -33,7 +33,7 @@ spec:
             - configMapRef:
                 name: {{ include "taas.fullname" $ }}-config
             - secretRef:
-                name: {{ include "taas.fullname" $ }}-secret
+                name: {{ include "taas.secretName" $ }}
           resources:
             {{- toYaml (default $.Values.worker.resources $w.resources) | nindent 12 }}
 ---

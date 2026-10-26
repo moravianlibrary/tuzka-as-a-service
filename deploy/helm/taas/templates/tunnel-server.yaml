@@ -65,7 +65,7 @@ spec:
             - name: FRP_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "taas.fullname" . }}-secret
+                  name: {{ include "taas.secretName" . }}
                   key: FRP_TOKEN
           # Only the control port is declared. Each engine's reverse-tunnel port is
           # opened by frps at runtime (from frpc's request) and reached in-cluster via

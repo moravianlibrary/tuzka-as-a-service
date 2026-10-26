@@ -111,12 +111,16 @@ spec:
               value: {{ printf "mongodb://%s:27017/hyperdx" $mongo | quote }}
             # The ClickHouse connection and the sources (files/clickstack/sources.json:
             # job events, live metrics, OTel logs and traces) HyperDX gives the team it
-            # creates at the first sign-up. They're defaults: edits in the UI stick.
-            - name: DEFAULT_CONNECTIONS
+            # creates at the first sign-up. They're defaults: edits in the UI stick. The
+            # password is filled in from the app Secret by Kubernetes ($(VAR) expansion),
+            # so it never appears in the Deployment; it must not contain `"` or `\`.
+            - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $full }}-secret
-                  key: HYPERDX_DEFAULT_CONNECTIONS
+                  name: {{ include "taas.secretName" $ }}
+                  key: CLICKHOUSE_PASSWORD
+            - name: DEFAULT_CONNECTIONS
+              value: {{ list (dict "name" "taas ClickHouse" "host" (printf "http://%s-clickhouse:8123" $full) "port" 8123 "username" .Values.clickstack.clickhouse.user "password" "$(CLICKHOUSE_PASSWORD)") | toJson | quote }}
             - name: DEFAULT_SOURCES
               value: {{ .Files.Get "files/clickstack/sources.json" | fromJsonArray | toJson | quote }}
             - name: FRONTEND_URL

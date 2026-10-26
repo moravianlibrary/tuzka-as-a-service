@@ -292,8 +292,8 @@ Returns a YAML list of enabled engines with defaults filled in. Callers use:
 {{- if lt $maxReplicas $minReplicas -}}
 {{- fail (printf "engines.%s.autoscaling.maxReplicas must be >= minReplicas" $name) -}}
 {{- end -}}
-{{- if not $root.Values.secrets.loadToken -}}
-{{- fail (printf "engines.%s.autoscaling.mode=keda needs secrets.loadToken: KEDA reads the API's /load with it" $name) -}}
+{{- if not (or $root.Values.secrets.loadToken $root.Values.secrets.existingSecret) -}}
+{{- fail (printf "engines.%s.autoscaling.mode=keda needs secrets.loadToken (or LOAD_TOKEN in secrets.existingSecret): KEDA reads the API's /load with it" $name) -}}
 {{- end -}}
 {{- end -}}
 
@@ -505,5 +505,26 @@ context.
 */}}
 {{- define "taas.configChecksums" -}}
 checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.secrets.existingSecret }}
+{{- /* The chart can't see an existing Secret's content: restart the pods after changing it. */}}
+checksum/secret: {{ .Values.secrets.existingSecret | sha256sum }}
+{{- else }}
 checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
+{{- end }}
+{{- end }}
+
+{{/*
+The app Secret every component reads its credentials from: secrets.existingSecret when
+set (managed outside the chart), else the one the chart renders from secrets.*.
+*/}}
+{{- define "taas.secretName" -}}
+{{- .Values.secrets.existingSecret | default (printf "%s-secret" (include "taas.fullname" .)) -}}
+{{- end }}
+
+{{/*
+The database owner's basic-auth Secret CloudNativePG bootstraps with:
+cnpg.existingAuthSecret when set, else the one the chart renders.
+*/}}
+{{- define "taas.cnpgAuthSecretName" -}}
+{{- .Values.cnpg.existingAuthSecret | default (printf "%s-cnpg-auth" (include "taas.fullname" .)) -}}
 {{- end }}

@@ -64,7 +64,7 @@ spec:
             - configMapRef:
                 name: {{ $full }}-config
             - secretRef:
-                name: {{ $full }}-secret
+                name: {{ include "taas.secretName" $ }}
           {{- with $keyEnvs }}
           env:
             {{- range . }}

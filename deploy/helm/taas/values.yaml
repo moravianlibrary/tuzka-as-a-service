@@ -95,6 +95,11 @@ cnpg:
     storageClassName: ""
   database: taas
   owner: taas
+  # -- Name of an existing kubernetes.io/basic-auth Secret (username: <owner>,
+  #    password) to bootstrap the database owner with, managed outside the chart
+  #    (SOPS/KSOPS, Sealed Secrets, External Secrets). Empty => the chart renders
+  #    <release>-cnpg-auth from secrets.postgresPassword.
+  existingAuthSecret: ""
   # -- Collect per-query stats in pg_stat_statements (CNPG loads + creates the extension)
   pgStatStatements: true
   resources:
@@ -515,6 +520,20 @@ config:
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:
+  # -- Name of an existing Secret holding the app credentials, managed outside the chart
+  #    (SOPS/KSOPS, Sealed Secrets, External Secrets). When set, the chart renders no
+  #    <release>-secret and ignores the values below; the Secret needs these keys:
+  #      DATABASE_URL               postgresql+asyncpg://<owner>:<password>@<cnpg.name>-rw:5432/<database>
+  #      KEY_ENCRYPTION_SECRET      Fernet key; keep it once set, it decrypts the stored engine keys
+  #      LOAD_TOKEN                 bearer token for GET /load (KEDA); may be empty without KEDA
+  #      MINIO_INCOMING_ACCESS_KEY, MINIO_INCOMING_SECRET_KEY
+  #      MINIO_RESULTS_ACCESS_KEY,  MINIO_RESULTS_SECRET_KEY
+  #      FRP_TOKEN                  with tunnel.enabled
+  #      CLICKHOUSE_PASSWORD        with clickstack.enabled; no `"` or `\` in it
+  #      HYPERDX_API_KEY            with clickstack.enabled; may be empty
+  #    The pods don't restart when it changes (the chart can't see its content):
+  #    restart them after rotating a value.
+  existingSecret: ""
   # Bearer token for GET /load, the metric KEDA scales on. Required for any
   # engines.<name>.autoscaling.mode=keda; empty => /load answers 404.
   loadToken: ""

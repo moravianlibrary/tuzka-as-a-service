@@ -32,12 +32,12 @@ spec:
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "taas.fullname" $ }}-secret
+                  name: {{ include "taas.secretName" $ }}
                   key: MINIO_{{ $key | upper }}_ACCESS_KEY
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "taas.fullname" $ }}-secret
+                  name: {{ include "taas.secretName" $ }}
                   key: MINIO_{{ $key | upper }}_SECRET_KEY
             - name: MINIO_SITE_REGION
               value: {{ $.Values.minio.region | quote }}
