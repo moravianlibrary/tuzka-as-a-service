@@ -9,12 +9,12 @@ from datetime import timedelta
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
 from app.config import Settings
 from app.models.backend import Backend  # noqa: F401 — registers FK target with mapper
-from app.models.db import make_engine
+from app.models.db import make_engine, make_session_factory
 from app.models.job import Job
 from app.services import batch_store, live_metrics
 from app.services.config import get_runtime_config
@@ -74,7 +74,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     settings = Settings()
     db_engine = make_engine(settings)
     setup_telemetry(settings, "taas-cleanup", db_engine=db_engine)
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    session_factory = make_session_factory(db_engine)
     incoming_client = get_incoming_client(settings)
     results_client = get_results_client(settings)
     r = make_redis(settings)

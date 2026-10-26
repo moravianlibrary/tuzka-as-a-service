@@ -12,10 +12,10 @@ from typing import Any
 import typer
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models.db import make_engine
+from app.models.db import make_engine, make_session_factory
 
 # Exit codes: 1 = the operation was refused (not found, conflict), 2 = bad input.
 EXIT_REFUSED = 1
@@ -24,7 +24,6 @@ EXIT_INVALID = 2
 JsonOption = typer.Option(False, "--json", help="Print JSON instead of a table.")
 
 
-# TODO(rrandiak): We want to use models more. And move / add functions to app.models.db if needed.
 def settings() -> Settings:
     return Settings()
 
@@ -36,7 +35,7 @@ def run[T](op: Callable[[AsyncSession], Awaitable[T]]) -> T:
     async def _main() -> T:
         engine = make_engine(settings())
         try:
-            async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            async with make_session_factory(engine)() as db:
                 return await op(db)
         finally:
             await engine.dispose()

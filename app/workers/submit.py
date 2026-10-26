@@ -10,14 +10,13 @@ from typing import Any
 import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
 from app.engines.base import EngineFullError
 from app.engines.cache import AdapterCache
 from app.models.backend import Backend
-from app.models.db import make_engine
+from app.models.db import make_engine, make_session_factory
 from app.models.job import Job
 from app.schemas.attempt import Attempt
 from app.schemas.redis import JobState
@@ -254,7 +253,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     stages_flushed_at = time.monotonic()
     engine = make_engine(settings)
     setup_telemetry(settings, "taas-submit", db_engine=engine)
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_factory = make_session_factory(engine)
     r = make_redis(settings)
     incoming_client = get_incoming_client(settings)
     http = httpx.AsyncClient(timeout=60.0)

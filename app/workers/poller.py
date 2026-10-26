@@ -14,7 +14,6 @@ import zstandard
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
@@ -22,7 +21,7 @@ from app.engines.base import EngineAdapter, EngineStatus, OutputUnavailable
 from app.engines.cache import AdapterCache
 from app.engines.outputs import ext_for
 from app.models.backend import Backend
-from app.models.db import make_engine
+from app.models.db import make_engine, make_session_factory
 from app.models.job import Job, JobResult
 from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun, JobState
@@ -324,7 +323,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     stages_flushed_at = time.monotonic()
     db_engine = make_engine(settings)
     setup_telemetry(settings, "taas-poller", db_engine=db_engine)
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    session_factory = make_session_factory(db_engine)
     r = make_redis(settings)
     http = httpx.AsyncClient(timeout=60.0)
     results_client = get_results_client(settings)
