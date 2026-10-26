@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end batch test against a running stack: compose (make up first) or, with
-# TARGET=k3d, the local k3d deploy (make local-deploy-forward-up first).
+# TARGET=k3d, the local k3d deploy (make k3d-forward first).
 #
 # Packs N copies of a test image into a .tar.zst, submits it as one batch, polls
 # GET /batches/{id} until it finishes, downloads the results archive, and checks that

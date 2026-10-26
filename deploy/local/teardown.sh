@@ -43,8 +43,8 @@ cat <<EOF
 
 Done. The k3d cluster '$CLUSTER' (and the CloudNativePG operator) are still up, so
 you can redeploy fast with:
-  make local-deploy-up           # rebuilds images + reinstalls the chart + engine
+  make k3d-up           # rebuilds images + reinstalls the chart + engine
 
 To remove the cluster entirely:
-  make local-deploy-clean
+  make k3d-clean
 EOF

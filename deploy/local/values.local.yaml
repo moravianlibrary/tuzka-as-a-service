@@ -2,7 +2,7 @@
 # running on the host (in deploy/local/engine-proxy/) and reached through the
 # in-cluster frps reverse-tunnel proxy.
 #
-#   make local-deploy-up
+#   make k3d-up
 #
 # (Or create <release>-tunnel-engine-key yourself, then `helm install` with this file.)
 #
@@ -80,7 +80,7 @@ tunnelBoxesDefaults:
 # One box with two host engines tunneled in as two backends, to test heterogeneous
 # dispatch + backend prioritization. remotePorts MUST match the frpc proxies in
 # engine-proxy/. Backend priority isn't set here (the deploy never writes it):
-# `make local-deploy-scenarios` sets gpu1=10, cpu1=0 with taas-admin.
+# `make k3d-scenarios` sets gpu1=10, cpu1=0 with taas-admin.
 tunnelBoxes:
   - name: box1
     engines:

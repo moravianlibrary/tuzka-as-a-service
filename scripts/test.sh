@@ -3,7 +3,7 @@
 #
 # compose: brings up the full stack (unless NO_UP=1) and registers the TuzkaOCR
 # backend. k3d (TARGET=k3d): uses the running deploy as it is (the chart registered the
-# backends; port-forwards from `make local-deploy-forward-up`). Either way it creates a
+# backends; port-forwards from `make k3d-forward`). Either way it creates a
 # fresh user, submits an image, polls to completion, then fetches and decompresses
 # the result. Result URLs are presigned with the *public* MinIO endpoint, so — like a
 # real download client — we fetch them from the host and decompress them there (zstd).

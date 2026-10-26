@@ -6,8 +6,8 @@
 # establishes Scenario A's premise itself: it PATCHes gpu backends to priority 10 and cpu
 # to 0 via the admin API before running.
 #
-# Requires: stack up (make local-deploy-up), forwards (make local-deploy-forward-up),
-# users seeded (make local-deploy-seed). Observations are read from the DB via kubectl.
+# Requires: stack up (make k3d-up), forwards (make k3d-forward),
+# users seeded (make k3d-seed). Observations are read from the DB via kubectl.
 #
 #   N=6 ./scenarios.sh           # 6 jobs per burst (override with N=...)
 set -euo pipefail
@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mapfile -t IMAGES < <(ls "$HERE"/../../test-data/*_image.jpeg 2>/dev/null)
 
 # shellcheck disable=SC1091
-source "$HERE/.users.env" 2>/dev/null || { echo "run 'make local-deploy-seed' first" >&2; exit 1; }
+source "$HERE/.users.env" 2>/dev/null || { echo "run 'make k3d-seed' first" >&2; exit 1; }
 [ "${#IMAGES[@]}" -gt 0 ] || { echo "no test images in test-data/" >&2; exit 1; }
 
 # Preflight: confirm the seeded key still matches a live user. A DB wipe or redeploy
@@ -33,7 +33,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$API/api/v1/jobs/00000000-0000-00
   -H "X-API-Key: $alice_KEY")
 if [ "$code" = "401" ]; then
   echo "alice's API key is invalid (401) — users aren't seeded, or .users.env is stale." >&2
-  echo "Run 'make local-deploy-seed' to (re)create users, then retry." >&2
+  echo "Run 'make k3d-seed' to (re)create users, then retry." >&2
   exit 1
 fi
 

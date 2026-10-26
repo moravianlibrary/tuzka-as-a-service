@@ -67,8 +67,8 @@ taas_url = "http://localhost:8080"
 compat_url = "http://localhost:8081"
 requires = """
 move the port-forwards off the published ports first:
-  make local-deploy-forward-down
-  make local-deploy-forward-bench"""
+  make k3d-forward-stop
+  make k3d-forward-bench"""
 
 # --- The sweeps --------------------------------------------------------------
 

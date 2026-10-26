@@ -8,7 +8,7 @@
 #
 # Assumes the stack is already up. compose: rebuilds + restarts the compat container to
 # pick up local changes and registers the engine backend. k3d (TARGET=k3d): uses the
-# running deploy as it is, through `make local-deploy-forward-up`'s port-forwards.
+# running deploy as it is, through `make k3d-forward`'s port-forwards.
 #
 # Env overrides:
 #   TARGET   compose | k3d       (default: compose)

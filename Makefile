@@ -272,63 +272,98 @@ perf-profile: ## Profile API and workers with external py-spy during perf-taas (
 	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_profile.sh
 
 # ─── Local k3d deploy ────────────────────────────────────────────────────────────────
-# Helm chart in k3d + host TuzkaOCR engine via reverse tunnel.
-# All targets share the `local-deploy-` prefix. Typical flow:
-#   make local-deploy-build-cpu        # build the engine image once
-#   make local-deploy-up               # cluster + chart + engine
-#   make local-deploy-forward-up       # port-forwards + open UIs (background)
-#   make local-deploy-forward-down / local-deploy-down / local-deploy-clean
+# The Helm chart in a k3d cluster, plus host TuzkaOCR engines reached through a reverse
+# tunnel (deploy/local/README.md). Typical flow:
+#   make engine-build-cpu     # build the engine image once (engine-build: cpu + gpu)
+#   make k3d-up               # cluster + chart + engines
+#   make k3d-forward          # port-forwards (background) + open the UIs
+#   make k3d-stop / k3d-start # pause and resume it all, keeping the cluster
+#   make k3d-down / k3d-clean # uninstall the chart / delete the cluster
+K3D_CLUSTER   ?= taas
+K3D_CONTEXT   := k3d-$(K3D_CLUSTER)
 LOCAL_DIR     := deploy/local
 LOCAL_COMPOSE := $(COMPOSE) -f $(LOCAL_DIR)/engine-proxy/compose.yaml
 TUZKAOCR_DIR  := TuzkaOCR
 
-.PHONY: local-deploy-build-cpu
-local-deploy-build-cpu: ## Build the local CPU engine image (tuzkaocr:local-cpu)
-	$(DOCKER) build -t tuzkaocr:local-cpu -f $(TUZKAOCR_DIR)/Dockerfile $(TUZKAOCR_DIR)
-
-.PHONY: local-deploy-build-gpu
-local-deploy-build-gpu: ## Build the local GPU engine image (tuzkaocr:local-gpu)
-	$(DOCKER) build -t tuzkaocr:local-gpu -f $(TUZKAOCR_DIR)/Dockerfile.gpu $(TUZKAOCR_DIR)
-
-.PHONY: local-deploy-build
-local-deploy-build: local-deploy-build-cpu local-deploy-build-gpu ## Build both engine images
-
-.PHONY: local-deploy-up
-local-deploy-up: ## Bring up the k3d stack + both host engines (build the images first)
+.PHONY: k3d-up
+k3d-up: ## Create the cluster, install the chart and start the host engines (engine-build first)
 	@for img in $$($(LOCAL_COMPOSE) config --images | grep tuzkaocr); do \
 	  $(DOCKER) image inspect "$$img" >/dev/null 2>&1 || \
-	  { echo "engine image $$img not found — run 'make local-deploy-build' first"; exit 1; }; \
+	  { echo "engine image $$img not found — run 'make engine-build' first"; exit 1; }; \
 	done
-	bash $(LOCAL_DIR)/setup.sh
+	CLUSTER=$(K3D_CLUSTER) bash $(LOCAL_DIR)/setup.sh
 	$(LOCAL_COMPOSE) up -d
 
-.PHONY: local-deploy-down
-local-deploy-down: ## Stop the engine + uninstall the chart, KEEP the k3d cluster
-	bash $(LOCAL_DIR)/teardown.sh
+.PHONY: k3d-start
+k3d-start: ## Resume a stopped cluster and its host engines
+	k3d cluster start $(K3D_CLUSTER)
+	@$(MAKE) k3d-context
+	$(LOCAL_COMPOSE) up -d
+	kubectl --context $(K3D_CONTEXT) wait --for=condition=Ready pods --all --timeout=300s \
+	  --field-selector=status.phase!=Succeeded
 
-.PHONY: local-deploy-clean
-local-deploy-clean: ## Stop the engine + chart AND delete the k3d cluster (full removal)
-	bash $(LOCAL_DIR)/teardown.sh --cluster
+.PHONY: k3d-stop
+k3d-stop: ## Stop the port-forwards, the host engines and the cluster; keep them all
+	-bash $(LOCAL_DIR)/forward.sh down
+	$(LOCAL_COMPOSE) stop
+	k3d cluster stop $(K3D_CLUSTER)
 
-.PHONY: local-deploy-forward-up
-local-deploy-forward-up: ## Start port-forwards (background) + open the UIs
+.PHONY: k3d-status
+k3d-status: ## The cluster, its pods, the host engines, the forwards and the kube context
+	@k3d cluster list $(K3D_CLUSTER) 2>/dev/null || echo "no k3d cluster $(K3D_CLUSTER)"
+	@echo; echo "kube context: $$(kubectl config current-context 2>/dev/null || echo none)"
+	@echo; kubectl --context $(K3D_CONTEXT) get pods 2>/dev/null || echo "cluster not reachable"
+	@echo; $(LOCAL_COMPOSE) ps
+	@echo; pids="$${TMPDIR:-/tmp}/taas-local-forward.pids"; \
+	if [ -f "$$pids" ] && kill -0 "$$(head -1 "$$pids")" 2>/dev/null; then \
+	  echo "port-forwards: running"; else echo "port-forwards: not running"; fi
+
+.PHONY: k3d-down
+k3d-down: k3d-context ## Stop the engines and uninstall the chart; KEEP the cluster
+	CLUSTER=$(K3D_CLUSTER) bash $(LOCAL_DIR)/teardown.sh
+
+.PHONY: k3d-clean
+k3d-clean: ## Stop the engines and DELETE the cluster (everything in it)
+	CLUSTER=$(K3D_CLUSTER) bash $(LOCAL_DIR)/teardown.sh --cluster
+
+.PHONY: k3d-forward
+k3d-forward: k3d-context ## Start the port-forwards (background) and open the UIs
 	bash $(LOCAL_DIR)/forward.sh up
 
-.PHONY: local-deploy-forward-down
-local-deploy-forward-down: ## Stop the background port-forwards
+.PHONY: k3d-forward-stop
+k3d-forward-stop: ## Stop the background port-forwards
 	bash $(LOCAL_DIR)/forward.sh down
 
-.PHONY: local-deploy-seed
-local-deploy-seed: ## Seed 3 test users (alice/bob/carol) with priorities + keys
+.PHONY: k3d-forward-bench
+k3d-forward-bench: k3d-context ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
+	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up
+
+.PHONY: k3d-seed
+k3d-seed: k3d-context ## Seed 3 test users (alice/bob/carol) with priorities and fixed keys
 	bash $(LOCAL_DIR)/seed-users.sh
 
-.PHONY: local-deploy-scenarios
-local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + forwards)
+.PHONY: k3d-scenarios
+k3d-scenarios: k3d-context ## Run the prioritization scenarios (needs k3d-seed and k3d-forward)
 	bash $(LOCAL_DIR)/scenarios.sh
 
-.PHONY: local-deploy-forward-bench
-local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
-	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up
+# Not in help: the k3d targets that use kubectl switch to the cluster's context first,
+# so they never act on whatever cluster the shell last pointed at.
+.PHONY: k3d-context
+k3d-context:
+	@kubectl config use-context $(K3D_CONTEXT) >/dev/null
+
+# ─── Engines (built from ./TuzkaOCR, never pulled) ──────────────────────────────────
+
+.PHONY: engine-build-cpu
+engine-build-cpu: ## Build the CPU engine image (tuzkaocr:local-cpu)
+	$(DOCKER) build -t tuzkaocr:local-cpu -f $(TUZKAOCR_DIR)/Dockerfile $(TUZKAOCR_DIR)
+
+.PHONY: engine-build-gpu
+engine-build-gpu: ## Build the GPU engine image (tuzkaocr:local-gpu)
+	$(DOCKER) build -t tuzkaocr:local-gpu -f $(TUZKAOCR_DIR)/Dockerfile.gpu $(TUZKAOCR_DIR)
+
+.PHONY: engine-build
+engine-build: engine-build-cpu engine-build-gpu ## Build both engine images
 
 # ─── API benchmark: legacy (ProArc/PERO) vs new (taas client) ────────────────────────
 # Two entry points, both driven by bench/api/scenarios.toml — which is the file you
@@ -348,7 +383,7 @@ local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency pr
 #   WITH_GPU=0 make bench-up          # CPU-only rig (~4.5 GB less to build)
 #
 # Latency cases need the ports rewired first; the runner prints the exact fix if
-# they are not (k3d: make local-deploy-forward-down && make local-deploy-forward-bench).
+# they are not (k3d: make k3d-forward-stop && make k3d-forward-bench).
 BENCH_API_DIR ?= bench/api
 
 .PHONY: bench-up

@@ -76,8 +76,8 @@ cat <<EOF
 Done (cluster + chart). Next:
   1) Start the host engine + tunnel (uses the tuzkaocr:local-* image you built):
        docker compose -f deploy/local/engine-proxy/compose.yaml up -d
-     (Tip: 'make local-deploy-up' runs this whole step + the above for you.)
+     (Tip: 'make k3d-up' runs this whole step + the above for you.)
   2) Port-forward the services + open the UIs:
-       make local-deploy-forward-up
+       make k3d-forward
   3) Verify the tunnel + run a job — see deploy/local/README.md "Verify".
 EOF

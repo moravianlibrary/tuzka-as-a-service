@@ -27,27 +27,31 @@ for those (manual edits to them are reverted on the next deploy).
 `docker`, `kubectl`, `helm`, and `k3d` (the script prints an install hint if missing).
 The CloudNativePG operator is installed for you by the script.
 
-The whole lifecycle is driven from the **Makefile** — every target shares the
-`local-deploy-` prefix:
+The whole lifecycle is driven from the **Makefile**: the cluster targets share the
+`k3d-` prefix, the engine images `engine-build-`. Every k3d target that runs kubectl
+switches to the `k3d-taas` context first.
 
 | Target | Does |
 |---|---|
-| `make local-deploy-build-cpu` | Build the engine image `tuzkaocr:local-cpu` from `TuzkaOCR/Dockerfile` |
-| `make local-deploy-build-gpu` | Build the engine image `tuzkaocr:local-gpu` from `TuzkaOCR/Dockerfile.gpu` |
-| `make local-deploy-up` | `setup.sh` (k3d + chart) **+** start host engine + tunnel |
-| `make local-deploy-forward-up` | Start the port-forwards (background) + open the UIs |
-| `make local-deploy-forward-down` | Stop the background port-forwards |
-| `make local-deploy-down` | Stop engine + uninstall chart, **keep** the k3d cluster |
-| `make local-deploy-clean` | Stop engine + chart **and delete** the k3d cluster |
-| `make local-deploy-seed` | Seed 3 users (alice/bob/carol) with priorities 10/5/0 + fixed keys |
-| `make local-deploy-scenarios` | Run the prioritization test scenarios |
+| `make engine-build-cpu` | Build the engine image `tuzkaocr:local-cpu` from `TuzkaOCR/Dockerfile` |
+| `make engine-build-gpu` | Build the engine image `tuzkaocr:local-gpu` from `TuzkaOCR/Dockerfile.gpu` |
+| `make k3d-up` | `setup.sh` (k3d + chart) **+** start host engine + tunnel |
+| `make k3d-stop` | Stop the forwards, the host engines and the cluster; keep everything |
+| `make k3d-start` | Resume a stopped cluster and its host engines, and wait for the pods |
+| `make k3d-status` | The cluster, its pods, the host engines, the forwards and the kube context |
+| `make k3d-forward` | Start the port-forwards (background) + open the UIs |
+| `make k3d-forward-stop` | Stop the background port-forwards |
+| `make k3d-down` | Stop engine + uninstall chart, **keep** the k3d cluster |
+| `make k3d-clean` | Stop engine + chart **and delete** the k3d cluster |
+| `make k3d-seed` | Seed 3 users (alice/bob/carol) with priorities 10/5/0 + fixed keys |
+| `make k3d-scenarios` | Run the prioritization test scenarios |
 
-(`make local-deploy-build` builds both engine images at once.)
+(`make engine-build` builds both engine images at once.)
 
 ## 1. Build the engine image (once)
 
 ```sh
-make local-deploy-build-cpu      # or: make local-deploy-build-gpu
+make engine-build-cpu   # or: make engine-build-gpu
 ```
 
 Built from the local `TuzkaOCR/` checkout (never pulled), so the engine matches the
@@ -58,7 +62,7 @@ also set `OCR_IMAGE=tuzkaocr:local-gpu` and `OCR_DEVICE=cuda` in
 ## 2. Bring up the stack + engine
 
 ```sh
-make local-deploy-up
+make k3d-up
 ```
 
 This runs `setup.sh` — creates the `taas` k3d cluster (mapping host `:32700` → the frps
@@ -71,7 +75,7 @@ starts the host engine + `frpc`. Within a few seconds the
 ## 3. Port-forward the services + open the UIs
 
 ```sh
-make local-deploy-forward-up      # background; stop with: make local-deploy-forward-down
+make k3d-forward   # background; stop with: make k3d-forward-stop
 ```
 
 This starts all three port-forwards detached (PIDs tracked in
@@ -135,8 +139,8 @@ and `docker compose -f deploy/local/engine-proxy/compose.yaml logs -f frpc tuzka
 ## Test users + prioritization scenarios
 
 ```sh
-make local-deploy-seed         # alice (prio 10), bob (5), carol (0) — fixed API keys
-make local-deploy-scenarios    # runs the two scenarios below (N=6 jobs/burst; override N=)
+make k3d-seed      # alice (prio 10), bob (5), carol (0) — fixed API keys
+make k3d-scenarios # runs the two scenarios below (N=6 jobs/burst; override N=)
 ```
 
 `seed` is idempotent — it sets deterministic keys (`test-key-alice`, …) with
@@ -171,9 +175,9 @@ Both engines must be up + healthy for jobs to drain; watch the job events in Hyp
 ## Teardown
 
 ```sh
-make local-deploy-down    # stop engine, uninstall chart, delete PVCs; KEEP cluster
-make local-deploy-clean   # also delete the k3d cluster (full removal)
+make k3d-down     # stop engine, uninstall chart, delete PVCs; KEEP cluster
+make k3d-clean    # also delete the k3d cluster (full removal)
 ```
 
-Keeping the cluster (`down`) lets you redeploy fast with `make local-deploy-up`, since
+Keeping the cluster (`down`) lets you redeploy fast with `make k3d-up`, since
 the k3d cluster and the CloudNativePG operator are already in place.

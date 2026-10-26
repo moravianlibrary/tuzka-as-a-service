@@ -61,7 +61,7 @@ ok "corpus: $corpus pages"
 
 if ! docker image inspect tuzkaocr:local-cpu >/dev/null 2>&1; then
   say "Building the CPU engine image (slow, once)"
-  make local-deploy-build-cpu
+  make engine-build-cpu
 else
   ok "tuzkaocr:local-cpu present"
 fi
@@ -69,7 +69,7 @@ fi
 if [ "$WITH_GPU" = "1" ]; then
   if ! docker image inspect tuzkaocr:local-gpu >/dev/null 2>&1; then
     say "Building the GPU engine image (~4.5 GB, slow, once)"
-    make local-deploy-build-gpu
+    make engine-build-gpu
   else
     ok "tuzkaocr:local-gpu present"
   fi
@@ -86,12 +86,12 @@ if k3d cluster list --no-headers 2>/dev/null | grep -q "^${CLUSTER} "; then
   ok "k3d cluster '${CLUSTER}' exists"
 else
   say "Creating the k3d cluster + installing the chart"
-  make local-deploy-up
+  make k3d-up
 fi
 
 if ! kubectl get deploy taas-api >/dev/null 2>&1; then
   say "Chart not installed in '${CLUSTER}' — installing"
-  make local-deploy-up
+  make k3d-up
 fi
 
 say "Waiting for the API deployment to be available"

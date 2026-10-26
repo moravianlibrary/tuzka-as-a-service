@@ -166,6 +166,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- The local k3d make targets are `k3d-*` (were `local-deploy-*`): `k3d-up`, `k3d-down`,
+  `k3d-clean`, `k3d-forward` / `k3d-forward-stop` / `k3d-forward-bench`, `k3d-seed`,
+  `k3d-scenarios`; the engine images are `engine-build`, `engine-build-cpu` and
+  `engine-build-gpu`. New: `k3d-stop` and `k3d-start` pause and resume the cluster and
+  its host engines without reinstalling anything, and `k3d-status` shows the cluster,
+  its pods, the engines, the forwards and the kube context. Each k3d target that runs
+  kubectl switches to the `k3d-taas` context first.
 - The end-to-end make targets are `e2e`, `e2e-fast`, `e2e-batch` and `e2e-compat` (were
   `test-integration`, `test-integration-fast`, `test-batch` and `test-compat`).
   `make test-integration` now runs the pytest suite with its Postgres and Redis tests

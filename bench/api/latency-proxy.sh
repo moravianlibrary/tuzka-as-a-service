@@ -14,8 +14,8 @@
 # result URLs are SigV4-signed for http://localhost:9100 (minio.results.publicUrl),
 # so they keep working, delay included — no chart change, no re-deploy.
 #
-#   k3d:  make local-deploy-forward-down
-#         API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 make local-deploy-forward-up
+#   k3d:  make k3d-forward-stop
+#         API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 make k3d-forward
 #         bench/latency-proxy.sh up
 #
 # Usage:
