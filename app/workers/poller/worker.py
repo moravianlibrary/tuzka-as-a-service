@@ -604,7 +604,7 @@ class PollerWorker:
             self.released_since_harvest += len(plan.done)
             await signal_poll(self.r)
 
-    async def _release_for_harvest(self, done: list[PollOutcome]) -> None:
+    async def _release_for_harvest(self, done: Sequence[PollOutcome]) -> None:
         """The engine is done: free its slot now and queue the harvest, rather than
         holding the slot through fetch/store/DB. The harvest drain picks these up in this
         same pass when it has capacity."""
@@ -651,7 +651,7 @@ class PollerWorker:
                 job_id, state, failed.error, attempt=failed.attempt, run=failed.outcome.run
             )
 
-    async def _requeue(self, requeued: list[RequeuedPoll], state_ttl: int) -> None:
+    async def _requeue(self, requeued: Sequence[RequeuedPoll], state_ttl: int) -> None:
         """Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so another
         backend picks them up after a jittered backoff. Redis is updated first (release
         slot + schedule the retry + bump the requeue counter the budget reads); the DB

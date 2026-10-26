@@ -1,6 +1,6 @@
 """What a poll of an in-flight job found, and what the poller does with a failed one."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from app.schemas.attempt import Attempt
@@ -106,7 +106,7 @@ class StoredHarvest:
 class PollPlan:
     """What a chunk of poll outcomes comes to: harvest, fail, requeue or keep polling."""
 
-    done: list[PollOutcome] = field(default_factory=list)
-    failed: list[FailedPoll] = field(default_factory=list)
-    requeued: list[RequeuedPoll] = field(default_factory=list)
-    running: list[PollOutcome] = field(default_factory=list)
+    done: tuple[PollOutcome, ...]
+    failed: tuple[FailedPoll, ...]
+    requeued: tuple[RequeuedPoll, ...]
+    running: tuple[PollOutcome, ...]

@@ -149,21 +149,24 @@ def plan_polls(
 ) -> PollPlan:
     """Sort a chunk of poll outcomes by what the poller does with each. Pure apart from
     drawing each requeue's jittered delay from ``rng``."""
-    plan = PollPlan()
+    done: list[PollOutcome] = []
+    failed: list[FailedPoll] = []
+    requeued: list[RequeuedPoll] = []
+    running: list[PollOutcome] = []
     for outcome in statuses:
         requeues = outcome.state.requeues
         action = classify_poll_result(outcome.status, outcome.retryable, requeues, max_requeues)
         if action == PollAction.HARVEST:
-            plan.done.append(outcome)
+            done.append(outcome)
         elif action == PollAction.FAIL:
             error = poll_failure_message(outcome, max_requeues)
-            plan.failed.append(FailedPoll(outcome, error, failed_poll_attempt(outcome, now)))
+            failed.append(FailedPoll(outcome, error, failed_poll_attempt(outcome, now)))
         elif action == PollAction.REQUEUE:
             attempt = retried_poll_attempt(outcome, now)
-            plan.requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues, rng), attempt))
+            requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues, rng), attempt))
         else:
-            plan.running.append(outcome)
-    return plan
+            running.append(outcome)
+    return PollPlan(tuple(done), tuple(failed), tuple(requeued), tuple(running))
 
 
 def next_poll_delay(state: JobState, now: float, initial: float, cap: float) -> float:
