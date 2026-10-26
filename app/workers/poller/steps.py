@@ -16,7 +16,7 @@ from app.vocabulary import (
     PollAction,
     PollStatus,
 )
-from app.workers.poller.types import PollOutcome
+from app.workers.poller.types import OutputStats, PollOutcome
 
 logger = logging.getLogger("poller-worker")
 
@@ -213,3 +213,24 @@ async def probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> in
     except Exception as exc:
         logger.warning("probe_failure_status failed for %s: %s", engine_job_id, exc)
     return None
+
+
+def output_stats(run: EngineRun, alto: tuple[int, int] | None, txt: bytes | None) -> OutputStats:
+    """Lines, blocks, characters and confidence of a harvested page. ``alto`` is the
+    parsed ALTO's ``(blocks, chars)``, when the job produced one. Pure."""
+    # Line count comes straight from the engine's status — it reports n_lines for every
+    # job (computed during OCR), so lines are populated regardless of fmt.
+    n_lines = run.metrics.get("n_lines")
+    blocks, chars = alto if alto is not None else (None, None)
+    # Prefer counting characters from the txt output (present for txt/multi jobs) so the
+    # metric is populated regardless of fmt; count non-whitespace to match ALTO's char
+    # semantics (sum of String CONTENT). ALTO's count stays for alto-only jobs.
+    if txt is not None:
+        chars = sum(1 for c in txt.decode("utf-8", "replace") if not c.isspace())
+    reported_conf = run.metrics.get("mean_conf")
+    return OutputStats(
+        lines=n_lines if isinstance(n_lines, int) else None,
+        blocks=blocks,
+        chars=chars,
+        mean_conf=float(reported_conf) if isinstance(reported_conf, int | float) else None,
+    )

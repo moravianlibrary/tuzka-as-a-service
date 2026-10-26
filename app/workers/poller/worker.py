@@ -24,7 +24,7 @@ from app.models.backend import Backend
 from app.models.db import make_engine, make_session_factory
 from app.models.job import Job, JobResult
 from app.schemas.attempt import Attempt
-from app.schemas.redis import EngineRun, JobState
+from app.schemas.redis import BatchCounts, EngineRun, JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
@@ -88,12 +88,19 @@ from app.workers.poller.steps import (
     fetch_outputs,
     is_transient_harvest_error,
     next_poll_timeout,
+    output_stats,
     poll_attempt,
     poll_failure_message,
     probe_failure_status,
     require_engine_job_id,
 )
-from app.workers.poller.types import FailedPoll, PollOutcome, RequeuedPoll
+from app.workers.poller.types import (
+    FailedPoll,
+    OutputStats,
+    PollOutcome,
+    RequeuedPoll,
+    StoredHarvest,
+)
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 
@@ -223,183 +230,16 @@ class PollerWorker:
             stage=FailureStage.ENGINE,
         )
 
-    async def harvest(self, job_id: str, state: JobState, run: EngineRun | None) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+    async def harvest(self, job_id: str, state: JobState, run: EngineRun | None) -> None:
         # The job was moved to the harvest queue at engine-done, together with the last
         # engine status, so a retry (or a pass after a poller restart) still has the
         # run's timestamps even though the poll outcome is long gone.
         if run is None:
             run = state.harvest_times or EngineRun()
-        username = state.username
-        external_id = state.external_id
         engine_job_id = require_engine_job_id(state)
-        backend_id = state.backend_id
-
         adapter = await self.adapter_for(state)
-        outputs = state.outputs
         try:
-            with self.timer.stage("fetch_outputs"):
-                fetched = await fetch_outputs(adapter, engine_job_id, outputs)
-            alto_bytes_for_analytics = fetched.get("alto")
-            txt_bytes_for_analytics = fetched.get("txt")
-
-            # Line count comes straight from the engine's status — it reports n_lines for
-            # every job (computed during OCR), so lines are populated regardless of fmt.
-            n_lines = run.metrics.get("n_lines")
-            alto_lines = n_lines if isinstance(n_lines, int) else None
-            # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
-            alto_blocks = alto_chars = None
-            if alto_bytes_for_analytics:
-                with self.timer.stage("parse_alto"):
-                    alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
-            # Prefer counting characters from the txt output (present for txt/multi jobs) so
-            # the metric is populated regardless of fmt; count non-whitespace to match ALTO's
-            # char semantics (sum of String CONTENT). ALTO's count stays for alto-only jobs.
-            if txt_bytes_for_analytics is not None:
-                text = txt_bytes_for_analytics.decode("utf-8", "replace")
-                alto_chars = sum(1 for c in text if not c.isspace())
-
-            mean_conf: float | None = None
-            reported_conf = run.metrics.get("mean_conf")
-            if isinstance(reported_conf, int | float):
-                mean_conf = float(reported_conf)
-
-            event_data = job_event_payload(
-                job_id, external_id, JobStatus.DONE, batch_id=state.batch_id
-            )
-
-            async with self.session_factory() as db:
-                # Read the raw job to pick up submitted_at, engine_version, device, file_size.
-                job_row = await db.execute(
-                    select(Job, Backend.device)
-                    .outerjoin(Backend, Job.backend_id == Backend.id)
-                    .where(Job.id == job_id)
-                )
-                job_rec, backend_device = job_row.first() or (None, None)
-
-                presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
-                state_ttl = await config_service.get_state_ttl_seconds(db)
-                result_rows: list[dict[str, Any]] = []
-                for result_fmt, raw_bytes in fetched.items():
-                    obj_path = f"{username}/{job_id}.{ext_for(result_fmt)}.zst"
-                    with self.timer.stage("compress"):
-                        compressed = self.cctx.compress(raw_bytes)
-                    with self.timer.stage("store_put"):
-                        await put_object(
-                            self.results_client,
-                            self.settings.minio_results_bucket,
-                            obj_path,
-                            compressed,
-                            "application/octet-stream",
-                        )
-                    logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
-
-                    with self.timer.stage("presign"):
-                        presigned_url = await presign_get(
-                            self.results_public_client,
-                            self.settings.minio_results_bucket,
-                            obj_path,
-                            presigned_ttl,
-                        )
-
-                    result_rows.append(
-                        {
-                            "job_id": job_id,
-                            "fmt": result_fmt,
-                            "presigned_url": presigned_url,
-                            "presigned_until": utcnow() + timedelta(minutes=presigned_ttl),
-                            "size_bytes": len(compressed),  # what the storage cap counts
-                            "evicted_at": None,
-                        }
-                    )
-                    event_data[f"{result_fmt}_url"] = presigned_url  # alto_url, geojson_url, …
-
-                stored_at = utcnow()
-                done_values: dict[str, str | datetime] = {
-                    "status": JobStatus.DONE,
-                    "stored_at": stored_at,
-                }
-                stamps = engine_stamps(run)
-                done_values.update(stamps)
-                engine_created = stamps.get("engine_received_at")
-                engine_started = stamps.get("started_at")
-                engine_finished = stamps.get("finished_at")
-                finished_at: datetime = engine_finished or utcnow()
-                done_values["finished_at"] = finished_at
-                # Only the first harvest marks it done; a second one (another poller
-                # got there first) must not report the job, its events or its timing again.
-                with self.timer.stage("db_write"):
-                    if result_rows:
-                        # One statement for every output: with the job update below, a
-                        # two-output job costs two round trips instead of three. An
-                        # upsert, because a re-harvest rewrote the same objects.
-                        stmt = pg_insert(JobResult).values(result_rows)
-                        await db.execute(
-                            stmt.on_conflict_do_update(
-                                index_elements=["job_id", "fmt"],
-                                set_={
-                                    "presigned_url": stmt.excluded.presigned_url,
-                                    "presigned_until": stmt.excluded.presigned_until,
-                                    "size_bytes": stmt.excluded.size_bytes,
-                                    "evicted_at": stmt.excluded.evicted_at,
-                                },
-                            )
-                        )
-                    claimed = await db.execute(
-                        update(Job)
-                        .where(Job.id == job_id, Job.status != JobStatus.DONE)
-                        .values(**done_values)
-                    )
-                    first_harvest = getattr(claimed, "rowcount", 1) == 1
-                    await batch_store.finish_if_done(db, state.batch_id)
-                    await db.commit()
-
-            with self.timer.stage("set_done"):
-                batch = await set_done(self.r, job_id, state_ttl, state)  # idempotent
-            if not first_harvest:
-                logger.info("Job %s was already harvested; not reporting it again", job_id)
-                if batch is not None:  # the first harvest died before its set_done
-                    await publish_event(self.r, username, batch_event(batch))
-                return
-            # Engine-clock run time per megapixel scores this backend for dispatch.
-            if backend_id is not None and engine_started and engine_finished:
-                seconds = (engine_finished - engine_started).total_seconds()
-                if seconds > 0:
-                    await perf.record_service(
-                        self.r, backend_id, state.domain, seconds, state.megapixels
-                    )
-            # Engine-clock run time also feeds /load's seconds-per-page estimate.
-            if engine_started is not None and engine_finished is not None:
-                seconds = (engine_finished - engine_started).total_seconds()
-                if seconds > 0:
-                    await record_page_seconds(self.r, state.domain, seconds)
-            with self.timer.stage("events"):
-                self.emitter.emit(
-                    self.job_event(
-                        JobEventName.DONE,
-                        job_id,
-                        state,
-                        job_rec,
-                        device=backend_device or "",
-                        lines=alto_lines,
-                        blocks=alto_blocks,
-                        chars=alto_chars,
-                        mean_conf=mean_conf,
-                        extra=extra_metrics(run.metrics),
-                        **durations(
-                            job_rec.submitted_at if job_rec else None,
-                            job_rec.dispatched_at if job_rec else None,
-                            engine_created,
-                            engine_started,
-                            finished_at,
-                            stored_at,
-                        ),
-                    ),
-                )
-                await publish_event(self.r, username, event_data)
-                if batch is not None:
-                    await publish_event(self.r, username, batch_event(batch))
-            logger.info(f"Published done event for {username}")
-
+            await self._harvest(job_id, state, run, adapter, engine_job_id)
         except OutputUnavailable as e:
             # The engine can't produce an output this job asked for (TuzkaM: georeferencing
             # failed). Retrying gives the same answer, so the job fails for good.
@@ -407,30 +247,223 @@ class PollerWorker:
             attempt = Attempt(
                 at=utcnow(),
                 stage=FailureStage.HARVEST,
-                backend_id=backend_id,
+                backend_id=state.backend_id,
                 http_status=409,
                 error=str(e),
                 retry=False,
             )
             await self.mark_failed(job_id, state, str(e), attempt=attempt, run=run)
         except Exception as e:
-            # The engine already finished this job; a transient DB/storage error here is
-            # not the job's fault. Keep it on the durable harvest queue and retry with
-            # backoff rather than stamping a raw infrastructure traceback as a permanent
-            # user-visible failure.
-            if is_transient_harvest_error(e):
-                harvest_attempt = state.harvest_attempts + 1
-                delay = backoff_seconds(harvest_attempt)
-                await reschedule_harvest(self.r, job_id, delay)
-                logger.warning(
-                    "Transient error harvesting job %s; retrying in %.1fs: %s",
-                    job_id,
-                    delay,
-                    e,
+            await self._harvest_failed(job_id, state, run, e)
+
+    async def _harvest_failed(
+        self, job_id: str, state: JobState, run: EngineRun, error: Exception
+    ) -> None:
+        """The engine already finished this job; a transient DB/storage error here is not
+        the job's fault. Keep it on the durable harvest queue and retry with backoff
+        rather than stamping a raw infrastructure traceback as a permanent user-visible
+        failure. Called from the ``except`` block, so the traceback is still logged."""
+        if is_transient_harvest_error(error):
+            delay = backoff_seconds(state.harvest_attempts + 1)
+            await reschedule_harvest(self.r, job_id, delay)
+            logger.warning(
+                "Transient error harvesting job %s; retrying in %.1fs: %s", job_id, delay, error
+            )
+            return
+
+        logger.exception("Failed to harvest job %s", job_id)
+        await self.mark_failed(job_id, state, str(error), run=run)
+
+    async def _harvest(
+        self,
+        job_id: str,
+        state: JobState,
+        run: EngineRun,
+        adapter: EngineAdapter,
+        engine_job_id: str,
+    ) -> None:
+        """Fetch, store and record the job's outputs, then report it done (once)."""
+        with self.timer.stage("fetch_outputs"):
+            fetched = await fetch_outputs(adapter, engine_job_id, state.outputs)
+        stats = self._output_stats(fetched, run)
+        stored = await self._store_results(job_id, state, run, fetched)
+
+        with self.timer.stage("set_done"):
+            batch = await set_done(self.r, job_id, stored.state_ttl, state)  # idempotent
+        if not stored.first_harvest:
+            logger.info("Job %s was already harvested; not reporting it again", job_id)
+            if batch is not None:  # the first harvest died before its set_done
+                await publish_event(self.r, state.username, batch_event(batch))
+            return
+
+        await self._record_run_time(state, stored)
+        with self.timer.stage("events"):
+            await self._report_done(job_id, state, run, stats, stored, batch)
+        logger.info(f"Published done event for {state.username}")
+
+    def _output_stats(self, fetched: dict[str, bytes], run: EngineRun) -> OutputStats:
+        parsed_alto = None
+        # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
+        if alto := fetched.get("alto"):
+            with self.timer.stage("parse_alto"):
+                parsed_alto = parse_alto(alto)
+        return output_stats(run, parsed_alto, fetched.get("txt"))
+
+    async def _store_results(
+        self, job_id: str, state: JobState, run: EngineRun, fetched: dict[str, bytes]
+    ) -> StoredHarvest:
+        """Store every output, record them and mark the job done. Only the first harvest
+        marks it done; a second one (another poller got there first) must not report the
+        job, its events or its timing again."""
+        async with self.session_factory() as db:
+            # Read the raw job to pick up submitted_at, engine_version, device, file_size.
+            job_row = await db.execute(
+                select(Job, Backend.device)
+                .outerjoin(Backend, Job.backend_id == Backend.id)
+                .where(Job.id == job_id)
+            )
+            job_rec, backend_device = job_row.first() or (None, None)
+
+            presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
+            state_ttl = await config_service.get_state_ttl_seconds(db)
+            result_rows = [
+                await self._store_output(job_id, state.username, output, raw, presigned_ttl)
+                for output, raw in fetched.items()
+            ]
+
+            stored_at = utcnow()
+            stamps = engine_stamps(run)
+            finished_at: datetime = stamps.get("finished_at") or utcnow()
+            done_values: dict[str, str | datetime] = {
+                "status": JobStatus.DONE,
+                "stored_at": stored_at,
+                **stamps,
+                "finished_at": finished_at,
+            }
+            with self.timer.stage("db_write"):
+                if result_rows:
+                    # One statement for every output: with the job update below, a
+                    # two-output job costs two round trips instead of three. An
+                    # upsert, because a re-harvest rewrote the same objects.
+                    stmt = pg_insert(JobResult).values(result_rows)
+                    await db.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=["job_id", "fmt"],
+                            set_={
+                                "presigned_url": stmt.excluded.presigned_url,
+                                "presigned_until": stmt.excluded.presigned_until,
+                                "size_bytes": stmt.excluded.size_bytes,
+                                "evicted_at": stmt.excluded.evicted_at,
+                            },
+                        )
+                    )
+                claimed = await db.execute(
+                    update(Job)
+                    .where(Job.id == job_id, Job.status != JobStatus.DONE)
+                    .values(**done_values)
                 )
-                return
-            logger.exception("Failed to harvest job %s", job_id)
-            await self.mark_failed(job_id, state, str(e), run=run)
+                first_harvest = getattr(claimed, "rowcount", 1) == 1
+                await batch_store.finish_if_done(db, state.batch_id)
+                await db.commit()
+
+        return StoredHarvest(
+            first_harvest=first_harvest,
+            job=job_rec,
+            device=backend_device or "",
+            state_ttl=state_ttl,
+            urls={row["fmt"]: row["presigned_url"] for row in result_rows},
+            engine_received_at=stamps.get("engine_received_at"),
+            started_at=stamps.get("started_at"),
+            engine_finished_at=stamps.get("finished_at"),
+            finished_at=finished_at,
+            stored_at=stored_at,
+        )
+
+    async def _store_output(
+        self, job_id: str, username: str, output: str, raw: bytes, presigned_ttl: int
+    ) -> dict[str, Any]:
+        """Compress and store one output; its ``job_results`` row."""
+        obj_path = f"{username}/{job_id}.{ext_for(output)}.zst"
+        with self.timer.stage("compress"):
+            compressed = self.cctx.compress(raw)
+        with self.timer.stage("store_put"):
+            await put_object(
+                self.results_client,
+                self.settings.minio_results_bucket,
+                obj_path,
+                compressed,
+                "application/octet-stream",
+            )
+        logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
+
+        with self.timer.stage("presign"):
+            presigned_url = await presign_get(
+                self.results_public_client,
+                self.settings.minio_results_bucket,
+                obj_path,
+                presigned_ttl,
+            )
+        return {
+            "job_id": job_id,
+            "fmt": output,
+            "presigned_url": presigned_url,
+            "presigned_until": utcnow() + timedelta(minutes=presigned_ttl),
+            "size_bytes": len(compressed),  # what the storage cap counts
+            "evicted_at": None,
+        }
+
+    async def _record_run_time(self, state: JobState, stored: StoredHarvest) -> None:
+        """Engine-clock run time per megapixel scores this backend for dispatch, and feeds
+        /load's seconds-per-page estimate."""
+        seconds = stored.run_seconds
+        if seconds is None or seconds <= 0:
+            return
+
+        if state.backend_id is not None:
+            await perf.record_service(
+                self.r, state.backend_id, state.domain, seconds, state.megapixels
+            )
+        await record_page_seconds(self.r, state.domain, seconds)
+
+    async def _report_done(
+        self,
+        job_id: str,
+        state: JobState,
+        run: EngineRun,
+        stats: OutputStats,
+        stored: StoredHarvest,
+        batch: BatchCounts | None,
+    ) -> None:
+        job = stored.job
+        self.emitter.emit(
+            self.job_event(
+                JobEventName.DONE,
+                job_id,
+                state,
+                job,
+                device=stored.device,
+                lines=stats.lines,
+                blocks=stats.blocks,
+                chars=stats.chars,
+                mean_conf=stats.mean_conf,
+                extra=extra_metrics(run.metrics),
+                **durations(
+                    job.submitted_at if job else None,
+                    job.dispatched_at if job else None,
+                    stored.engine_received_at,
+                    stored.started_at,
+                    stored.finished_at,
+                    stored.stored_at,
+                ),
+            ),
+        )
+        urls = {f"{output}_url": url for output, url in stored.urls.items()}  # alto_url, …
+        payload = job_event_payload(
+            job_id, state.external_id, JobStatus.DONE, batch_id=state.batch_id, **urls
+        )
+        await publish_event(self.r, state.username, payload)
+        if batch is not None:
+            await publish_event(self.r, state.username, batch_event(batch))
 
     async def mark_failed(
         self,
