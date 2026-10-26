@@ -188,9 +188,9 @@ class PollerWorker:
                 PollStatus.UNREACHABLE,
                 state,
                 EngineRun(),
-                True,
-                None,
-                describe_exception(e),
+                retryable=True,
+                http_status=None,
+                error=describe_exception(e),
             )
         except Exception as e:
             logger.error(f"Failed to check status for job {job_id}: {e}")
@@ -199,9 +199,9 @@ class PollerWorker:
                 PollStatus.ERROR,
                 state,
                 EngineRun(),
-                is_retryable_poll_error(e),
-                http_status_of(e),
-                describe_exception(e),
+                retryable=is_retryable_poll_error(e),
+                http_status=http_status_of(e),
+                error=describe_exception(e),
             )
 
         if status_resp.state not in (EngineState.FAILED, EngineState.ERROR):
@@ -210,9 +210,9 @@ class PollerWorker:
                 PollStatus(status_resp.state),
                 state,
                 engine_run(status_resp),
-                False,
-                None,
-                None,
+                retryable=False,
+                http_status=None,
+                error=None,
             )
         # Engine-reported failure: error_status decides retry vs fail. Engines that
         # predate the field still expose it as the result endpoint's HTTP status (D3).
@@ -224,9 +224,9 @@ class PollerWorker:
             PollStatus(status_resp.state),
             state,
             engine_run(status_resp),
-            is_retryable_engine_failure(error_status),
-            error_status,
-            status_resp.error,
+            retryable=is_retryable_engine_failure(error_status),
+            http_status=error_status,
+            error=status_resp.error,
             stage=FailureStage.ENGINE,
         )
 

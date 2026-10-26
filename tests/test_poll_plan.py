@@ -2,6 +2,7 @@
 
 import random
 from datetime import datetime
+from typing import Any
 
 from app.schemas.redis import EngineRun
 from app.services.retry_policy import backoff_seconds
@@ -13,9 +14,11 @@ from tests.factories import job_state
 NOW = datetime(2026, 10, 26, 12)
 
 
-def _outcome(job_id: str, status: PollStatus, retryable: bool = False, requeues: int = 0):
+def _outcome(job_id: str, status: PollStatus, requeues: int = 0, **fields: Any) -> PollOutcome:
+    """A poll outcome; ``fields`` override the PollOutcome defaults below."""
+    base: dict[str, Any] = {"run": EngineRun(), "retryable": False, "http_status": None}
     state = job_state(backend_id=7, requeues=requeues)
-    return PollOutcome(job_id, status, state, EngineRun(), retryable, None, "boom")
+    return PollOutcome(job_id, status, state, **(base | {"error": "boom"} | fields))
 
 
 def test_each_outcome_lands_in_its_list() -> None:
@@ -24,7 +27,7 @@ def test_each_outcome_lands_in_its_list() -> None:
             _outcome("done", PollStatus.DONE),
             _outcome("running", PollStatus.RUNNING),
             _outcome("failed", PollStatus.FAILED),
-            _outcome("requeued", PollStatus.UNREACHABLE, retryable=True, requeues=2),
+            _outcome("requeued", PollStatus.UNREACHABLE, requeues=2, retryable=True),
         ],
         5,
         NOW,

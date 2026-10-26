@@ -126,16 +126,22 @@ def poll_failure_message(outcome: PollOutcome, max_requeues: int) -> str:
     return outcome.error or outcome.state.error or "Engine error"
 
 
-def poll_attempt(outcome: PollOutcome, retry: bool, at: datetime) -> Attempt:
-    """The ``jobs.attempts`` entry for a failed poll outcome. Pure."""
+def failed_poll_attempt(outcome: PollOutcome, at: datetime) -> Attempt:
+    """The ``jobs.attempts`` entry for a poll outcome that fails the job. Pure."""
     return Attempt(
         stage=outcome.stage,
         backend_id=outcome.state.backend_id,
         http_status=outcome.http_status,
         error=outcome.error or outcome.status,
-        retry=retry,
+        retry=False,
         at=at,
     )
+
+
+def retried_poll_attempt(outcome: PollOutcome, at: datetime) -> Attempt:
+    """The ``jobs.attempts`` entry for a poll outcome that requeues the job: the same
+    failure, marked as retried. Pure."""
+    return failed_poll_attempt(outcome, at).model_copy(update={"retry": True})
 
 
 def plan_polls(
@@ -151,9 +157,9 @@ def plan_polls(
             plan.done.append(outcome)
         elif action == PollAction.FAIL:
             error = poll_failure_message(outcome, max_requeues)
-            plan.failed.append(FailedPoll(outcome, error, poll_attempt(outcome, False, now)))
+            plan.failed.append(FailedPoll(outcome, error, failed_poll_attempt(outcome, now)))
         elif action == PollAction.REQUEUE:
-            attempt = poll_attempt(outcome, True, now)
+            attempt = retried_poll_attempt(outcome, now)
             plan.requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues, rng), attempt))
         else:
             plan.running.append(outcome)

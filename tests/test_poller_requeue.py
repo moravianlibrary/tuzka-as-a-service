@@ -12,9 +12,10 @@ from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
 from app.workers.poller.steps import (
     classify_poll_result,
-    poll_attempt,
+    failed_poll_attempt,
     poll_failure_message,
     probe_failure_status,
+    retried_poll_attempt,
 )
 from app.workers.poller.types import PollOutcome
 from tests.factories import job_state
@@ -102,11 +103,11 @@ def test_engine_failure_message_is_engine_error_text():
 
 def test_poll_attempt_stage_and_backend():
     at = datetime(2026, 6, 1, 12)
-    engine = poll_attempt(_outcome(http_status=500, error="crash", stage="engine"), True, at)
+    engine = retried_poll_attempt(_outcome(http_status=500, error="crash", stage="engine"), at)
     assert engine == Attempt(
         at=at, stage="engine", backend_id=7, http_status=500, error="crash", retry=True
     )
-    poll = poll_attempt(_outcome(status="unreachable", state=job_state()), False, at)
+    poll = failed_poll_attempt(_outcome(status="unreachable", state=job_state()), at)
     assert poll.stage == "poll"
     assert poll.backend_id is None
     assert poll.error == "unreachable"
