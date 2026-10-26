@@ -82,6 +82,8 @@ router = APIRouter()
 
 # Job rows are committed this many at a time while the archive is read.
 COMMIT_EVERY = 100
+# Pages uploaded at once while the archive is read; also bounds the pages held in memory.
+UPLOAD_CONCURRENCY = 8
 
 
 @router.post(
@@ -208,6 +210,7 @@ async def _store_pages(
     bucket = settings.minio_incoming_bucket
     pages: list[UploadedPage] = []
     skipped: list[str] = []
+    uploads = Uploads(incoming, bucket)
     try:
         # Archive reading is blocking I/O: one member at a time, in a worker thread.
         while (member := await asyncio.to_thread(next, members, None)) is not None:
@@ -219,12 +222,14 @@ async def _store_pages(
                 continue
             if len(pages) >= settings.batch_max_pages:
                 raise PayloadTooLarge(f"More than {settings.batch_max_pages} pages")
-            pages.append(await _store_page(db, incoming, bucket, batch, member))
+            pages.append(await _store_page(db, uploads, batch, member))
             if len(pages) % COMMIT_EVERY == 0:
                 await db.commit()
         if not pages:
             raise Unprocessable("No images in the archive")
+        await uploads.finish()
     except Exception as exc:
+        await uploads.cancel()
         await _abandon(db, incoming, bucket, batch.username, batch.id, pages)
         if isinstance(exc, MemberTooLarge):
             raise PayloadTooLarge(str(exc)) from exc
@@ -233,18 +238,17 @@ async def _store_pages(
 
 
 async def _store_page(
-    db: AsyncSession, incoming: Minio, bucket: str, batch: NewBatch, member: Member
+    db: AsyncSession, uploads: "Uploads", batch: NewBatch, member: Member
 ) -> UploadedPage:
-    """Upload one image member and add its job row (committed with the next batch)."""
+    """Start uploading one image member and add its job row (committed with the next
+    batch of rows; undone with the batch if an upload fails)."""
     page = UploadedPage(
         job_id=uuid4(),
         ext=PurePosixPath(member.name).suffix.lower(),
         megapixels=image_megapixels(member.data),
     )
     content_type = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
-    await storage.put_object(
-        incoming, bucket, page.incoming_path(batch.username), member.data, content_type
-    )
+    await uploads.start(page.incoming_path(batch.username), member.data, content_type)
     db.add(
         Job(
             id=page.job_id,
@@ -261,6 +265,47 @@ async def _store_page(
         )
     )
     return page
+
+
+class Uploads:
+    """A batch's page uploads, ``UPLOAD_CONCURRENCY`` at a time while the archive is
+    still being read. The first failed upload is raised by the next ``start`` or by
+    ``finish``; ``cancel`` stops the rest, so the batch can be undone."""
+
+    def __init__(self, incoming: Minio, bucket: str) -> None:
+        self.incoming = incoming
+        self.bucket = bucket
+        self.slots = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+        self.running: set[asyncio.Task[None]] = set()
+
+    async def start(self, path: str, data: bytes, content_type: str) -> None:
+        """Upload in the background once a slot is free."""
+        await self.slots.acquire()
+        self._raise_failed()
+        task = asyncio.create_task(
+            storage.put_object(self.incoming, self.bucket, path, data, content_type)
+        )
+        self.running.add(task)
+        task.add_done_callback(self._release)
+
+    async def finish(self) -> None:
+        """Wait for every upload; raise the first that failed."""
+        await asyncio.gather(*self.running)
+
+    async def cancel(self) -> None:
+        for task in self.running:
+            task.cancel()
+        await asyncio.gather(*self.running, return_exceptions=True)
+
+    def _release(self, task: asyncio.Task[None]) -> None:
+        self.slots.release()
+        if task.cancelled() or task.exception() is None:
+            self.running.discard(task)  # a failed one stays, for _raise_failed
+
+    def _raise_failed(self) -> None:
+        for task in self.running:
+            if task.done() and not task.cancelled() and (error := task.exception()):
+                raise error
 
 
 async def _enqueue_pages(

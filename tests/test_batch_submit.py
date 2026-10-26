@@ -2,6 +2,7 @@
 queue, and how a rejected archive is undone. Against a throwaway migrated Postgres
 (``TEST_DATABASE_URL``) and Redis; skips otherwise. The uploads bucket is a fake."""
 
+import asyncio
 import io
 import os
 import tarfile
@@ -193,6 +194,33 @@ async def test_a_session_that_expires_on_commit_submits_too(db, redis_client, in
 
     assert response.total == 1
     assert len(await peek_pending(redis_client, 10)) == 1
+
+
+class SlowIncoming(FakeIncoming):
+    """Takes a moment per upload, and records how many ran at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = 0
+        self.most_at_once = 0
+
+    async def put_object(self, bucket: str, path: str, stream: Any, length: int, **_: Any) -> None:
+        self.running += 1
+        self.most_at_once = max(self.most_at_once, self.running)
+        await asyncio.sleep(0.01)
+        await super().put_object(bucket, path, stream, length)
+        self.running -= 1
+
+
+@pytest.mark.asyncio
+async def test_pages_upload_a_few_at_a_time(db, redis_client) -> None:
+    incoming = SlowIncoming()
+    archive = _tar({f"p{i:02}.jpg": IMAGE for i in range(20)})
+
+    response = await _submit(db, redis_client, incoming, archive)
+
+    assert response.total == 20 and len(incoming.objects) == 20
+    assert incoming.most_at_once == batches.UPLOAD_CONCURRENCY
 
 
 class FailingIncoming(FakeIncoming):
