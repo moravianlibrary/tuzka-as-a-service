@@ -1,15 +1,23 @@
 # taas — common dev/ops tasks. Run `make help` for the list.
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
-COMPOSE := docker compose
+MAKEFLAGS += --no-print-directory
+
+# ─── Tools ───────────────────────────────────────────────────────────────────────────
+# Docker first, not podman: k3d, the engine proxy (host.docker.internal) and the GPU
+# engine need docker. DOCKER=podman to override where that's enough.
+DOCKER ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null)
+COMPOSE := $(DOCKER) compose
 # Run dev tooling in the locked env (installs the dev extra on demand).
 UV := uv run --extra dev
 
+# ─── Inputs ──────────────────────────────────────────────────────────────────────────
 # Override the test image with: make test IMAGE=path/to/file.jpg
 IMAGE ?= test-data/sample.jpg
 # Stack the e2e/contract/bench targets run against: compose or the local k3d deploy.
 TARGET ?= compose
 
+# ─── Release ─────────────────────────────────────────────────────────────────────────
 # Registry for `make build-push` — there is no public registry, host your own.
 # Usage: make build-push REGISTRY=ghcr.io/yourorg [TAG=0.1.0]
 # TAG defaults to the app version in ./VERSION.
@@ -17,10 +25,13 @@ REGISTRY ?=
 TAG ?= $(shell cat VERSION 2>/dev/null || echo latest)
 GIT_TAG := v$(shell cat VERSION 2>/dev/null)
 
+# ─── Help ────────────────────────────────────────────────────────────────────────────
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
+
+# ─── Env ─────────────────────────────────────────────────────────────────────────────
 
 .PHONY: env
 env: ## Create .env and .env.app from templates (generates a Fernet key)
@@ -33,19 +44,21 @@ env: ## Create .env and .env.app from templates (generates a Fernet key)
 	fi
 	@echo "env ready (.env, .env.app)"
 
+# ─── Compose stack ───────────────────────────────────────────────────────────────────
+
 .PHONY: build
 build: ## Build all images
 	$(COMPOSE) build
 
 .PHONY: build-push
-build-push: ## Build + push api/worker/compat images (REGISTRY=... [TAG=$(TAG)])
-	@test -n "$(REGISTRY)" || { echo "set REGISTRY, e.g. make build-push REGISTRY=ghcr.io/yourorg"; exit 1; }
-	docker build -t $(REGISTRY)/taas-api:$(TAG)    -f api.Containerfile    .
-	docker build -t $(REGISTRY)/taas-worker:$(TAG) -f worker.Containerfile .
-	docker build -t $(REGISTRY)/taas-compat:$(TAG) -f compat/Containerfile compat
-	docker push $(REGISTRY)/taas-api:$(TAG)
-	docker push $(REGISTRY)/taas-worker:$(TAG)
-	docker push $(REGISTRY)/taas-compat:$(TAG)
+build-push: ## Build + push api/worker/compat images (requires REGISTRY=... [TAG=$(TAG)])
+	$(if $(REGISTRY),,$(error REGISTRY is required, e.g. make build-push REGISTRY=ghcr.io/yourorg))
+	$(DOCKER) build -t $(REGISTRY)/taas-api:$(TAG)    -f api.Containerfile    .
+	$(DOCKER) build -t $(REGISTRY)/taas-worker:$(TAG) -f worker.Containerfile .
+	$(DOCKER) build -t $(REGISTRY)/taas-compat:$(TAG) -f compat/Containerfile compat
+	$(DOCKER) push $(REGISTRY)/taas-api:$(TAG)
+	$(DOCKER) push $(REGISTRY)/taas-worker:$(TAG)
+	$(DOCKER) push $(REGISTRY)/taas-compat:$(TAG)
 	@echo "pushed taas-{api,worker,compat}:$(TAG) to $(REGISTRY)"
 
 .PHONY: up
@@ -80,6 +93,8 @@ logs: ## Tail logs from all services
 seed: ## Register the OCR backend + create a test user
 	TAAS_URL=$${TAAS_URL:-http://localhost:8080} bash scripts/seed-backend.sh
 
+# ─── Tests ───────────────────────────────────────────────────────────────────────────
+
 .PHONY: test
 test: ## Run the unit/component tests (pytest; DB/redis tests skip if absent)
 	$(UV) pytest
@@ -105,7 +120,7 @@ test-contract: ## Schemathesis contract/property tests vs a running stack (TARGE
 .PHONY: test-contract-local
 test-contract-local: env ## One command: bring up the API (migrated, no workers/engine), seed, run Schemathesis
 	$(COMPOSE) up -d --build --wait api
-	@TAAS_URL=http://localhost:8080 $(MAKE) --no-print-directory test-contract
+	@TAAS_URL=http://localhost:8080 $(MAKE) test-contract
 
 .PHONY: load-test
 load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= to tune)
@@ -113,6 +128,8 @@ load-test: ## Load-test the API with Locust, headless (USERS=, RATE=, DURATION= 
 	key=$$(TARGET=$(TARGET) TAAS_URL=$$url bash scripts/seed-contract.sh | sed -n 's/^API_KEY=//p'); \
 	TAAS_API_KEY=$$key $(UV) locust -f tests/load/locustfile.py --host $$url \
 	  --headless -u $${USERS:-20} -r $${RATE:-5} -t $${DURATION:-30s}
+
+# ─── Bench ───────────────────────────────────────────────────────────────────────────
 
 .PHONY: bench-micro
 bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make check`)
@@ -143,7 +160,8 @@ test-integration-fast: ## E2E against an already-running stack (no build/up; TAR
 test-compat: ## Run the legacy-compat server e2e (stack must be up; TARGET=compose|k3d)
 	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test-compat.sh
 
-# --- Local k3d deploy: Helm chart in k3d + host TuzkaOCR engine via reverse tunnel ---
+# ─── Local k3d deploy ────────────────────────────────────────────────────────────────
+# Helm chart in k3d + host TuzkaOCR engine via reverse tunnel.
 # All targets share the `local-deploy-` prefix. Typical flow:
 #   make local-deploy-build-cpu        # build the engine image once
 #   make local-deploy-up               # cluster + chart + engine
@@ -155,11 +173,11 @@ TUZKAOCR_DIR  := TuzkaOCR
 
 .PHONY: local-deploy-build-cpu
 local-deploy-build-cpu: ## Build the local CPU engine image (tuzkaocr:local-cpu)
-	docker build -t tuzkaocr:local-cpu -f $(TUZKAOCR_DIR)/Dockerfile $(TUZKAOCR_DIR)
+	$(DOCKER) build -t tuzkaocr:local-cpu -f $(TUZKAOCR_DIR)/Dockerfile $(TUZKAOCR_DIR)
 
 .PHONY: local-deploy-build-gpu
 local-deploy-build-gpu: ## Build the local GPU engine image (tuzkaocr:local-gpu)
-	docker build -t tuzkaocr:local-gpu -f $(TUZKAOCR_DIR)/Dockerfile.gpu $(TUZKAOCR_DIR)
+	$(DOCKER) build -t tuzkaocr:local-gpu -f $(TUZKAOCR_DIR)/Dockerfile.gpu $(TUZKAOCR_DIR)
 
 .PHONY: local-deploy-build
 local-deploy-build: local-deploy-build-cpu local-deploy-build-gpu ## Build both engine images
@@ -167,7 +185,7 @@ local-deploy-build: local-deploy-build-cpu local-deploy-build-gpu ## Build both 
 .PHONY: local-deploy-up
 local-deploy-up: ## Bring up the k3d stack + both host engines (build the images first)
 	@for img in $$($(LOCAL_COMPOSE) config --images | grep tuzkaocr); do \
-	  docker image inspect "$$img" >/dev/null 2>&1 || \
+	  $(DOCKER) image inspect "$$img" >/dev/null 2>&1 || \
 	  { echo "engine image $$img not found — run 'make local-deploy-build' first"; exit 1; }; \
 	done
 	bash $(LOCAL_DIR)/setup.sh
@@ -201,7 +219,7 @@ local-deploy-scenarios: ## Run the prioritization test scenarios (needs seed + f
 local-deploy-forward-bench: ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
 	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up
 
-# --- Legacy (ProArc/PERO) vs new (taas client) API benchmark ---
+# ─── API benchmark: legacy (ProArc/PERO) vs new (taas client) ────────────────────────
 # Two entry points, both driven by bench/api/scenarios.toml — which is the file you
 # edit to change what runs. Full method and findings: bench/api/README.md.
 #
@@ -234,6 +252,8 @@ bench: ## Run the API benchmark scenarios (TARGET=compose|k3d, ONLY=, N=, IMAGES
 	  $(if $(ONLY),--only $(ONLY)) $(if $(N),--n $(N)) $(if $(IMAGES),--images $(IMAGES)) \
 	  $(if $(DRY_RUN),--dry-run) $(if $(ALL_DEVICES),--all-devices)
 
+# ─── Quality ─────────────────────────────────────────────────────────────────────────
+
 .PHONY: check
 check: lint typecheck version-check test ## Run the full quality gate (lint + types + version + unit tests)
 
@@ -255,9 +275,11 @@ typecheck: ## Type-check with mypy --strict
 version-check: ## Fail if version literals have drifted from ./VERSION
 	@bash scripts/check-version.sh
 
+# ─── Release ─────────────────────────────────────────────────────────────────────────
+
 .PHONY: set-version
-set-version: ## Set the app version everywhere (make set-version VERSION=x.y.z)
-	@test -n "$(VERSION)" || { echo "usage: make set-version VERSION=x.y.z"; exit 1; }
+set-version: ## Set the app version everywhere (requires VERSION=x.y.z)
+	$(if $(VERSION),,$(error VERSION is required, e.g. make set-version VERSION=x.y.z))
 	@echo "$(VERSION)" > VERSION
 	@sed -i 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml compat/pyproject.toml
 	@sed -i 's/version="[^"]*"/version="$(VERSION)"/' app/main.py compat/app/main.py
