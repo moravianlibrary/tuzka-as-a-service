@@ -395,6 +395,47 @@ async def test_a_harvest_stores_every_output_and_reports_the_job_done(
     assert await redis_client.hget("load:spp", "default") is not None  # /load's estimate
 
 
+class PoolWatchingStorage(FakeStorage):
+    """Records how many DB connections are checked out during each upload and presign."""
+
+    def __init__(self, session_factory) -> None:
+        super().__init__()
+        self.pool = session_factory.kw["bind"].sync_engine.pool
+        self.checked_out: list[int] = []
+
+    async def put_object(self, bucket: str, path: str, stream: Any, length: int, **_: Any) -> None:
+        self.checked_out.append(self.pool.checkedout())
+        await super().put_object(bucket, path, stream, length)
+
+    async def presigned_get_object(self, bucket: str, path: str, **_: Any) -> str:
+        self.checked_out.append(self.pool.checkedout())
+        return await super().presigned_get_object(bucket, path)
+
+
+@pytest.mark.asyncio
+async def test_a_harvest_holds_no_db_connection_while_it_stores(
+    session_factory, redis_client, emitter
+) -> None:
+    storage = PoolWatchingStorage(session_factory)
+    worker = PollerWorker(
+        Settings(),
+        redis_client,
+        session_factory,
+        httpx.AsyncClient(),
+        storage,  # type: ignore[arg-type]
+        storage,  # type: ignore[arg-type]
+        emitter,  # type: ignore[arg-type]
+        asyncio.Event(),
+    )
+    job_id, state = await _done_job(session_factory, redis_client)
+    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello"})
+
+    await worker.harvest(job_id, state, None)
+
+    assert (await _row(session_factory, job_id)).status == JobStatus.DONE
+    assert storage.checked_out == [0, 0, 0, 0]  # two outputs, each put and presigned
+
+
 @pytest.mark.asyncio
 async def test_a_second_harvest_reports_nothing_again(
     worker, session_factory, redis_client, emitter

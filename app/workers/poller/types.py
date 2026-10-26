@@ -56,6 +56,17 @@ class OutputStats:
 
 
 @dataclass(frozen=True, slots=True)
+class HarvestContext:
+    """What storing a harvest needs from the DB: the job row as dispatched, its
+    backend's device, and the config read for this harvest."""
+
+    job: Job | None
+    device: str
+    presigned_ttl_minutes: int
+    state_ttl: int
+
+
+@dataclass(frozen=True, slots=True)
 class StoredHarvest:
     """A harvest's stored results: whether it was the first to mark the job done, the
     job row as stored, and its timeline (engine clock, then the taas-clock store)."""

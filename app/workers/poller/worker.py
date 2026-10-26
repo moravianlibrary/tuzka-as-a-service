@@ -94,6 +94,7 @@ from app.workers.poller.steps import (
 )
 from app.workers.poller.types import (
     FailedPoll,
+    HarvestContext,
     OutputStats,
     PollOutcome,
     RequeuedPoll,
@@ -310,37 +311,74 @@ class PollerWorker:
     ) -> StoredHarvest:
         """Store every output, record them and mark the job done. Only the first harvest
         marks it done; a second one (another poller got there first) must not report the
-        job, its events or its timing again."""
+        job, its events or its timing again. No DB connection is held while storing: one
+        per concurrent harvest, idle for the uploads, would drain the pool."""
+        context = await self._harvest_context(job_id)
+        result_rows = [
+            await self._store_output(
+                job_id, state.username, output, raw, context.presigned_ttl_minutes
+            )
+            for output, raw in fetched.items()
+        ]
+
+        stored_at = utcnow()
+        stamps = engine_stamps(run)
+        finished_at: datetime = stamps.get("finished_at") or utcnow()
+        done_values: dict[str, str | datetime] = {
+            "status": JobStatus.DONE,
+            "stored_at": stored_at,
+            **stamps,
+            "finished_at": finished_at,
+        }
+        first_harvest = await self._record_done(job_id, state.batch_id, result_rows, done_values)
+
+        return StoredHarvest(
+            first_harvest=first_harvest,
+            job=context.job,
+            device=context.device,
+            state_ttl=context.state_ttl,
+            urls={row["fmt"]: row["presigned_url"] for row in result_rows},
+            engine_received_at=stamps.get("engine_received_at"),
+            started_at=stamps.get("started_at"),
+            engine_finished_at=stamps.get("finished_at"),
+            finished_at=finished_at,
+            stored_at=stored_at,
+        )
+
+    async def _harvest_context(self, job_id: str) -> HarvestContext:
+        """What storing a job's results needs from the DB, read in one short session."""
         async with self.session_factory() as db:
-            # Read the raw job to pick up submitted_at, engine_version, device, file_size.
+            # The raw job, for submitted_at, engine_version, device and file_size.
             job_row = await db.execute(
                 select(Job, Backend.device)
                 .outerjoin(Backend, Job.backend_id == Backend.id)
                 .where(Job.id == job_id)
             )
-            job_rec, backend_device = job_row.first() or (None, None)
-
-            presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
+            job_rec, backend_device = job_row.tuples().first() or (None, None)
+            config = await config_service.get_runtime_config(db)
             state_ttl = await config_service.get_state_ttl_seconds(db)
-            result_rows = [
-                await self._store_output(job_id, state.username, output, raw, presigned_ttl)
-                for output, raw in fetched.items()
-            ]
+        return HarvestContext(
+            job=job_rec,
+            device=backend_device or "",
+            presigned_ttl_minutes=config.presigned_ttl_minutes,
+            state_ttl=state_ttl,
+        )
 
-            stored_at = utcnow()
-            stamps = engine_stamps(run)
-            finished_at: datetime = stamps.get("finished_at") or utcnow()
-            done_values: dict[str, str | datetime] = {
-                "status": JobStatus.DONE,
-                "stored_at": stored_at,
-                **stamps,
-                "finished_at": finished_at,
-            }
+    async def _record_done(
+        self,
+        job_id: str,
+        batch_id: str | None,
+        result_rows: list[dict[str, Any]],
+        done_values: dict[str, str | datetime],
+    ) -> bool:
+        """Record the stored outputs and mark the job done, in one transaction; whether
+        this harvest was the first to mark it."""
+        async with self.session_factory() as db:
             with self.timer.stage("db_write"):
                 if result_rows:
-                    # One statement for every output: with the job update below, a
-                    # two-output job costs two round trips instead of three. An
-                    # upsert, because a re-harvest rewrote the same objects.
+                    # One statement for every output: with the job update below, a two-output
+                    # job costs two round trips instead of three. An upsert, because a
+                    # re-harvest rewrote the same objects.
                     stmt = pg_insert(JobResult).values(result_rows)
                     await db.execute(
                         stmt.on_conflict_do_update(
@@ -358,22 +396,9 @@ class PollerWorker:
                     .where(Job.id == job_id, Job.status != JobStatus.DONE)
                     .values(**done_values)
                 )
-                first_harvest = getattr(claimed, "rowcount", 1) == 1
-                await batch_store.finish_if_done(db, state.batch_id)
+                await batch_store.finish_if_done(db, batch_id)
                 await db.commit()
-
-        return StoredHarvest(
-            first_harvest=first_harvest,
-            job=job_rec,
-            device=backend_device or "",
-            state_ttl=state_ttl,
-            urls={row["fmt"]: row["presigned_url"] for row in result_rows},
-            engine_received_at=stamps.get("engine_received_at"),
-            started_at=stamps.get("started_at"),
-            engine_finished_at=stamps.get("finished_at"),
-            finished_at=finished_at,
-            stored_at=stored_at,
-        )
+        return getattr(claimed, "rowcount", 1) == 1
 
     async def _store_output(
         self, job_id: str, username: str, output: str, raw: bytes, presigned_ttl: int
