@@ -9,7 +9,9 @@ from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
+from miniopy_async.api import Minio
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
@@ -23,7 +25,7 @@ from app.schemas.redis import JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.domain_sync import all_served_capabilities, apply_domain_sync
-from app.services.event_emitter import get_emitter
+from app.services.event_emitter import EventEmitter, get_emitter
 from app.services.events import JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
@@ -240,55 +242,60 @@ def allocate_scored(
     return assignments, leftovers
 
 
-async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
-    logging.basicConfig(level=logging.INFO)
-    # httpx emits one INFO line per request; at dispatch volume it floods the log and
-    # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    settings = Settings()
-    timer = StageTimer()
-    stages_flushed_at = time.monotonic()
-    engine = make_engine(settings)
-    setup_telemetry(settings, "taas-submit", db_engine=engine)
-    session_factory = make_session_factory(engine)
-    r = make_redis(settings)
-    incoming_client = get_incoming_client(settings)
-    http = httpx.AsyncClient(timeout=60.0)
-    emitter = get_emitter(settings)
-    await emitter.start()
-    adapters = AdapterCache(http, settings.key_encryption_secret)
+class SubmitWorker:
+    """The submit worker's long-lived clients and caches, and the steps of a tick."""
 
-    backends: list[Backend] = []
-    backends_refreshed_at = 0.0
-    health_cache: dict[int, tuple[bool, float]] = {}
-    # Background domain-sync tasks, kept referenced so they aren't GC'd mid-flight
-    # and their exceptions surface; gated per backend so concurrent rebuilds of the
-    # same backend's domain set can't race.
-    sync_tasks: set[asyncio.Task[None]] = set()
-    domains_synced_at: dict[int, float] = {}
-    domain_sync_inflight: set[int] = set()
-    # Every backend's capabilities, loaded in one query; 0.0 = reload on next use.
-    capabilities: dict[int, dict[str, frozenset[str]]] = {}
-    capabilities_loaded_at = 0.0
+    def __init__(
+        self,
+        settings: Settings,
+        r: aioredis.Redis,
+        session_factory: async_sessionmaker[AsyncSession],
+        http: httpx.AsyncClient,
+        incoming_client: Minio,
+        emitter: EventEmitter,
+        stop: asyncio.Event,
+    ) -> None:
+        self.settings = settings
+        self.r = r
+        self.session_factory = session_factory
+        self.http = http
+        self.incoming_client = incoming_client
+        self.emitter = emitter
+        self.stop = stop
+        self.timer = StageTimer()
+        self.stages_flushed_at = time.monotonic()
+        self.adapters = AdapterCache(http, settings.key_encryption_secret)
+        self.backends: list[Backend] = []
+        self.backends_refreshed_at = 0.0
+        self.health_cache: dict[int, tuple[bool, float]] = {}
+        # Background domain-sync tasks, kept referenced so they aren't GC'd mid-flight
+        # and their exceptions surface; gated per backend so concurrent rebuilds of the
+        # same backend's domain set can't race.
+        self.sync_tasks: set[asyncio.Task[None]] = set()
+        self.domains_synced_at: dict[int, float] = {}
+        self.domain_sync_inflight: set[int] = set()
+        # Every backend's capabilities, loaded in one query; 0.0 = reload on next use.
+        self.capabilities: dict[int, dict[str, frozenset[str]]] = {}
+        self.capabilities_loaded_at = 0.0
+        self.paused_for_harvest = False
 
-    async def refresh_backends() -> None:
-        nonlocal backends, backends_refreshed_at
-        if time.time() - backends_refreshed_at < settings.backend_refresh_seconds:
+    async def refresh_backends(self) -> None:
+        if time.time() - self.backends_refreshed_at < self.settings.backend_refresh_seconds:
             return
-        async with session_factory() as db:
+        async with self.session_factory() as db:
             result = await db.execute(
                 select(Backend).where(Backend.enabled.is_(True)).order_by(Backend.priority.desc())
             )
-            backends = list(result.scalars().all())
-            for b in backends:
+            self.backends = list(result.scalars().all())
+            for b in self.backends:
                 db.expunge(b)
-        backends_refreshed_at = time.time()
-        logger.info(f"Loaded {len(backends)} backend(s)")
+        self.backends_refreshed_at = time.time()
+        logger.info(f"Loaded {len(self.backends)} backend(s)")
 
-    async def sync_domains(backend: Backend) -> None:
+    async def sync_domains(self, backend: Backend) -> None:
         """Fetch the engine's domains, outputs and options schema; rebuild backend_domains."""
         try:
-            info = await adapters.for_backend(backend, backend.url).describe()
+            info = await self.adapters.for_backend(backend, backend.url).describe()
         except Exception as exc:
             logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
@@ -297,36 +304,36 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             # mapping rather than unlink the backend, and retry on the next tick.
             logger.warning("Domain sync for %s: engine advertised no domains", backend.url)
             return
-        nonlocal capabilities_loaded_at
-        async with session_factory() as db:
+        async with self.session_factory() as db:
             await apply_domain_sync(db, backend.id, info)
             await db.commit()
-        capabilities_loaded_at = 0.0  # this sync changed them: reload on the next tick
-        domains_synced_at[backend.id] = time.time()
+        self.capabilities_loaded_at = 0.0  # this sync changed them: reload on the next tick
+        self.domains_synced_at[backend.id] = time.time()
         logger.debug("Synced %d domain(s) for backend %s", len(info.domains), backend.url)
 
-    def spawn_domain_sync(backend: Backend) -> None:
+    def spawn_domain_sync(self, backend: Backend) -> None:
         """Kick off a background domain sync at most once per interval per backend.
 
         Stamps ``domains_synced_at`` only on success (in ``sync_domains``), so a failed
         sync retries on the next eligible tick; ``domain_sync_inflight`` prevents a second
         concurrent sync of the same backend from starting meanwhile.
         """
-        if backend.id in domain_sync_inflight:
+        if backend.id in self.domain_sync_inflight:
             return
-        if time.time() - domains_synced_at.get(backend.id, 0.0) < settings.domain_sync_seconds:
+        synced_at = self.domains_synced_at.get(backend.id, 0.0)
+        if time.time() - synced_at < self.settings.domain_sync_seconds:
             return
-        domain_sync_inflight.add(backend.id)
-        task = asyncio.create_task(sync_domains(backend))
-        sync_tasks.add(task)
+        self.domain_sync_inflight.add(backend.id)
+        task = asyncio.create_task(self.sync_domains(backend))
+        self.sync_tasks.add(task)
 
         def _done(t: asyncio.Task[None]) -> None:
-            sync_tasks.discard(t)
-            domain_sync_inflight.discard(backend.id)
+            self.sync_tasks.discard(t)
+            self.domain_sync_inflight.discard(backend.id)
 
         task.add_done_callback(_done)
 
-    async def served_domains(backend_id: int) -> dict[str, frozenset[str]]:
+    async def served_domains(self, backend_id: int) -> dict[str, frozenset[str]]:
         """Domain → outputs ``backend_id`` currently serves (from the synced mapping).
 
         Read from one query for all backends, reloaded right after this worker's own
@@ -334,30 +341,30 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         stale a change made elsewhere (another replica's sync, a declared registration)
         can be. The dispatch re-check reads the same snapshot.
         """
-        nonlocal capabilities, capabilities_loaded_at
-        if time.time() - capabilities_loaded_at >= settings.backend_refresh_seconds:
-            async with session_factory() as db:
-                capabilities = await all_served_capabilities(db)
-            capabilities_loaded_at = time.time()
-        return capabilities.get(backend_id, {})
+        if time.time() - self.capabilities_loaded_at >= self.settings.backend_refresh_seconds:
+            async with self.session_factory() as db:
+                self.capabilities = await all_served_capabilities(db)
+            self.capabilities_loaded_at = time.time()
+        return self.capabilities.get(backend_id, {})
 
-    async def check_health(backend: Backend) -> bool:
+    async def check_health(self, backend: Backend) -> bool:
         now = time.time()
-        cached = health_cache.get(backend.id)
-        if cached and now - cached[1] < settings.health_cache_seconds:
+        cached = self.health_cache.get(backend.id)
+        if cached and now - cached[1] < self.settings.health_cache_seconds:
             return cached[0]
 
-        healthy = await adapters.for_backend(backend, backend.url).healthy()
-        health_cache[backend.id] = (healthy, now)
+        healthy = await self.adapters.for_backend(backend, backend.url).healthy()
+        self.health_cache[backend.id] = (healthy, now)
         if healthy:
             logger.info(f"Backend {backend.label or backend.url} healthy")
             # Refresh the backend's served domains in the background (best-effort).
-            spawn_domain_sync(backend)
+            self.spawn_domain_sync(backend)
         else:
             logger.warning(f"Backend {backend.label or backend.url} unhealthy")
         return healthy
 
     async def dispatch(
+        self,
         job_id: str,
         original_score: float,
         backend: Backend,
@@ -366,15 +373,17 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     ) -> None:
         # A child of the job's submit trace, so the engine calls below land in it.
         with job_span("dispatch", job_id, state, backend_id=backend.id):
-            await dispatch_job(job_id, original_score, backend, backend_domains, state)
+            await self.dispatch_job(job_id, original_score, backend, backend_domains, state)
 
     async def dispatch_job(  # noqa: C901, PLR0915 - split up on refactor/complexity
+        self,
         job_id: str,
         original_score: float,
         backend: Backend,
         backend_domains: dict[str, frozenset[str]],
         state: JobState,
     ) -> None:
+        r = self.r
         username = state.username
         external_id = state.external_id
         ext = state.ext
@@ -404,9 +413,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # Read image from MinIO — keyed by job_id (the server PK), matching the submit upload.
         object_path = f"{username}/{job_id}{ext}"
         try:
-            with timer.stage("image_get"):
+            with self.timer.stage("image_get"):
                 image_bytes = await get_object(
-                    incoming_client, settings.minio_incoming_bucket, object_path
+                    self.incoming_client, self.settings.minio_incoming_bucket, object_path
                 )
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
@@ -419,7 +428,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 error=msg,
                 retry=False,
             )
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
@@ -434,7 +443,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 await batch_store.finish_if_done(db, state.batch_id)
                 await db.commit()
-            emitter.emit(event(JobEventName.FAILED, **failure(FailureStage.DISPATCH, None)))
+            self.emitter.emit(event(JobEventName.FAILED, **failure(FailureStage.DISPATCH, None)))
             await publish_event(
                 r,
                 username,
@@ -449,20 +458,20 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # Named by job id: the external id is the caller's free text, not a file name.
         filename = f"{job_id}{ext}"
         try:
-            adapter = adapters.for_backend(backend, backend.url)
-            with timer.stage("engine_submit"):
+            adapter = self.adapters.for_backend(backend, backend.url)
+            with self.timer.stage("engine_submit"):
                 engine_job_id = await adapter.submit(
                     image_bytes, filename, domain, outputs, state.options
                 )
             logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
-            with timer.stage("engine_version"):
+            with self.timer.stage("engine_version"):
                 engine_version = await adapter.version()
 
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 state_ttl = await config_service.get_state_ttl_seconds(db)
-                with timer.stage("set_running"):
+                with self.timer.stage("set_running"):
                     await set_running(r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
-                with timer.stage("db_update"):
+                with self.timer.stage("db_update"):
                     await db.execute(
                         update(Job)
                         .where(Job.id == job_id)
@@ -476,7 +485,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     )
                     await db.commit()
             submitted_at = state.submitted_at
-            emitter.emit(
+            self.emitter.emit(
                 event(
                     JobEventName.DISPATCHED,
                     engine_version=engine_version or "",
@@ -495,7 +504,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             failed_fields = failure(
                 FailureStage.DISPATCH, http_st, isinstance(e, httpx.TransportError)
             )
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 max_requeues = (await config_service.get_runtime_config(db)).max_requeues
                 state_ttl = await config_service.get_state_ttl_seconds(db)
             requeues = state.requeues
@@ -515,7 +524,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     delay,
                     msg,
                 )
-                health_cache[backend.id] = (False, time.time())
+                self.health_cache[backend.id] = (False, time.time())
                 await count_requeue(r, job_id)
                 await schedule_retry(r, job_id, original_score, delay, avoid_backend_id=backend.id)
                 await perf.record_failure(r, backend.id, domain)
@@ -527,7 +536,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     error=msg,
                     retry=True,
                 )
-                async with session_factory() as db:
+                async with self.session_factory() as db:
                     await db.execute(
                         update(Job)
                         .where(Job.id == job_id)
@@ -537,7 +546,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         )
                     )
                     await db.commit()
-                emitter.emit(event(JobEventName.RETRIED, **failed_fields))
+                self.emitter.emit(event(JobEventName.RETRIED, **failed_fields))
                 return
 
             # Terminal: not transient, or the retry budget is spent.
@@ -561,7 +570,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             )
             if perf.counts_against_backend(http_st):
                 await perf.record_failure(r, backend.id, domain)
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 batch = await set_failed(r, job_id, msg, state_ttl)
                 await db.execute(
                     update(Job)
@@ -575,7 +584,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 await batch_store.finish_if_done(db, state.batch_id)
                 await db.commit()
-            emitter.emit(event(JobEventName.FAILED, **failed_fields))
+            self.emitter.emit(event(JobEventName.FAILED, **failed_fields))
             await publish_event(
                 r,
                 username,
@@ -586,14 +595,15 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             if batch is not None:
                 await publish_event(r, username, batch_event(batch))
 
-    stop = install_stop()
-    logger.info("Submit worker started")
-    paused_for_harvest = False
-    try:
-        while not stop.is_set():
+    async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+        settings = self.settings
+        r = self.r
+        timer = self.timer
+        logger.info("Submit worker started")
+        while not self.stop.is_set():
             try:
                 with timer.stage("refresh"):
-                    await refresh_backends()
+                    await self.refresh_backends()
 
                 # Promote delayed retries that are now due.
                 with timer.stage("promote"):
@@ -605,9 +615,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 # domains (each looked up once). Full ones stay in (free=0) so a retry
                 # waits for them rather than falling back to the backend it avoids.
                 healthy_backends: list[Backend] = []
-                for backend in backends:
+                for backend in self.backends:
                     with timer.stage("health"):
-                        healthy = await check_health(backend)
+                        healthy = await self.check_health(backend)
                     if healthy:
                         healthy_backends.append(backend)
                 with timer.stage("backend_state"):
@@ -617,7 +627,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 eligible: list[BackendSlot] = []
                 for backend in healthy_backends:
                     inflight, batches = backend_states[backend.id]
-                    domains = await served_domains(backend.id)
+                    domains = await self.served_domains(backend.id)
                     eligible.append(
                         BackendSlot(
                             backend,
@@ -635,7 +645,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     settings.unstored_job_max, inflight_depth, harvest_depth
                 )
                 if remaining == 0:
-                    if not paused_for_harvest:
+                    if not self.paused_for_harvest:
                         logger.warning(
                             "Unstored jobs at limit (running=%d, storing=%d, limit=%d); "
                             "pausing dispatch",
@@ -643,11 +653,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                             harvest_depth,
                             settings.unstored_job_max,
                         )
-                        paused_for_harvest = True
+                        self.paused_for_harvest = True
                     eligible = []
-                elif paused_for_harvest:
+                elif self.paused_for_harvest:
                     logger.info("Unstored jobs below limit; resuming dispatch")
-                    paused_for_harvest = False
+                    self.paused_for_harvest = False
 
                 # Strict priority tiers: a higher-priority tier drains first; within a tier
                 # spread jobs round-robin so no single backend fills before its peers.
@@ -693,7 +703,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                             r, [slot.backend.id for slot in tier], job_domains
                         )
                         fallback = await _fallback_spp(r, job_domains)
-                        async with session_factory() as db:
+                        async with self.session_factory() as db:
                             tolerance = (
                                 await config_service.get_runtime_config(db)
                             ).affinity_tolerance
@@ -729,7 +739,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     with timer.stage("dispatch"):
                         results = await asyncio.gather(
                             *[
-                                dispatch(
+                                self.dispatch(
                                     job.job_id,
                                     job.score,
                                     slot.backend,
@@ -747,15 +757,15 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             except Exception:
                 logger.exception("Submit worker failed")
 
-            if time.monotonic() - stages_flushed_at >= 60:
-                stages_flushed_at = time.monotonic()
+            if time.monotonic() - self.stages_flushed_at >= 60:
+                self.stages_flushed_at = time.monotonic()
                 p95 = timer.p95()
                 totals = timer.flush()
                 log_stages(logger, totals, p95)
                 if settings.clickhouse_url and totals:
                     try:
                         await live_metrics.insert_rows(
-                            http, settings, stage_metric_rows("submit", totals)
+                            self.http, settings, stage_metric_rows("submit", totals)
                         )
                     except Exception as exc:
                         logger.warning("Stage metrics dropped: %s", exc)
@@ -768,6 +778,31 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             except Exception:  # a Redis hiccup must not end the worker
                 logger.exception("Waiting for the submit signal failed")
                 await asyncio.sleep(settings.submit_tick_seconds)
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    # httpx emits one INFO line per request; at dispatch volume it floods the log and
+    # rotates real errors (e.g. a failed dispatch's traceback) out of `kubectl logs`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    settings = Settings()
+    engine = make_engine(settings)
+    setup_telemetry(settings, "taas-submit", db_engine=engine)
+    r = make_redis(settings)
+    http = httpx.AsyncClient(timeout=60.0)
+    emitter = get_emitter(settings)
+    await emitter.start()
+    worker = SubmitWorker(
+        settings,
+        r,
+        make_session_factory(engine),
+        http,
+        get_incoming_client(settings),
+        emitter,
+        install_stop(),
+    )
+    try:
+        await worker.run()
     finally:
         await emitter.aclose()
         await http.aclose()
