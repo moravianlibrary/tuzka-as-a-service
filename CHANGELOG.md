@@ -306,6 +306,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Locked dependencies with known vulnerabilities (pip-audit) upgraded: aiohttp 3.14.5,
+  anyio 4.15.1, brotli 1.2.1, certifi 2026.10.23, cryptography 50.0.2, graphql-core
+  3.2.13, multidict 6.9.1, urllib3 2.8.0 and werkzeug 3.1.9; miniopy-async 1.23.6, whose
+  1.23.5 capped certifi below 2026.
 - The cleanup worker purges each bucket's expired objects on its own: a bucket it
   can't list no longer stops the purge of the next one.
 - A job the engine accepted is no longer failed when the submit worker can't then
