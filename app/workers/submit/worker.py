@@ -28,6 +28,7 @@ from app.services.event_emitter import EventEmitter, get_emitter
 from app.services.events import JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
+    QueueEntry,
     batch_event,
     claim_pending,
     count_requeue,
@@ -63,7 +64,7 @@ from app.workers.submit.steps import (
     serves,
     unstored_capacity,
 )
-from app.workers.submit.types import BackendSlot, DispatchFailure
+from app.workers.submit.types import BackendSlot, DispatchFailure, PendingJob
 
 logger = logging.getLogger("submit-worker")
 
@@ -431,189 +432,205 @@ class SubmitWorker:
             **fields,
         )
 
-    async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
-        settings = self.settings
-        r = self.r
-        timer = self.timer
+    async def run(self) -> None:
+        """Dispatch, then wait for work or a freed slot, until asked to stop."""
         logger.info("Submit worker started")
         while not self.stop.is_set():
             try:
-                with timer.stage("refresh"):
-                    await self.refresh_backends()
-
-                # Promote delayed retries that are now due.
-                with timer.stage("promote"):
-                    promoted = await promote_due_retries(r, time.time())
-                if promoted:
-                    logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
-
-                # This tick's eligible backends: healthy, with their free capacity + served
-                # domains (each looked up once). Full ones stay in (free=0) so a retry
-                # waits for them rather than falling back to the backend it avoids.
-                healthy_backends: list[Backend] = []
-                for backend in self.backends:
-                    with timer.stage("health"):
-                        healthy = await self.check_health(backend)
-                    if healthy:
-                        healthy_backends.append(backend)
-                with timer.stage("backend_state"):
-                    backend_states = await get_backends_state(
-                        r, [backend.id for backend in healthy_backends]
-                    )
-                eligible: list[BackendSlot] = []
-                for backend in healthy_backends:
-                    inflight, batches = backend_states[backend.id]
-                    domains = await self.served_domains(backend.id)
-                    eligible.append(
-                        BackendSlot(
-                            backend,
-                            max(backend.max_inflight - inflight, 0),
-                            domains,
-                            inflight=inflight,
-                            batches=batches,
-                        )
-                    )
-
-                # In-flight engine work will also need storage, so count it against
-                # the same budget as jobs already waiting for harvest.
-                inflight_depth, harvest_depth = await unstored_depth(r)
-                remaining = unstored_capacity(
-                    settings.unstored_job_max, inflight_depth, harvest_depth
-                )
-                if remaining == 0:
-                    if not self.paused_for_harvest:
-                        logger.warning(
-                            "Unstored jobs at limit (running=%d, storing=%d, limit=%d); "
-                            "pausing dispatch",
-                            inflight_depth,
-                            harvest_depth,
-                            settings.unstored_job_max,
-                        )
-                        self.paused_for_harvest = True
-                    eligible = []
-                elif self.paused_for_harvest:
-                    logger.info("Unstored jobs below limit; resuming dispatch")
-                    self.paused_for_harvest = False
-
-                # Strict priority tiers: a higher-priority tier drains first; within a tier
-                # spread jobs round-robin so no single backend fills before its peers.
-                for priority in sorted({slot.backend.priority for slot in eligible}, reverse=True):
-                    tier = [slot for slot in eligible if slot.backend.priority == priority]
-                    capacity = min(sum(slot.free for slot in tier), remaining)
-                    if capacity == 0:
-                        continue  # this tier is full; a lower one may still have room
-                    # Peeked, not popped: a job leaves its queue only once claimed below,
-                    # so one no backend serves yet, or one in hand when this worker dies,
-                    # stays queued.
-                    with timer.stage("peek"):
-                        entries = await peek_pending(r, capacity)
-                    if not entries:
-                        break  # nothing pending — lower tiers have nothing to do either
-
-                    with timer.stage("meta"):
-                        found = await get_jobs(r, [entry.job_id for entry in entries])
-                    # A job whose state expired or was deleted can't be dispatched; left
-                    # queued it would take a peek slot every tick.
-                    gone = [entry for entry in entries if found[entry.job_id] is None]
-                    if gone:
-                        await drop_pending(r, gone)
-                        logger.warning(
-                            "Dropped %d queued job(s) whose state is gone: %s",
-                            len(gone),
-                            [entry.job_id for entry in gone],
-                        )
-                    states = {job_id: state for job_id, state in found.items() if state is not None}
-                    if not states:
-                        continue
-                    priorities = {entry.job_id: entry.priority for entry in entries}
-                    pending = [
-                        pending_job(entry, states[entry.job_id])
-                        for entry in entries
-                        if entry.job_id in states
-                    ]
-
-                    # Speed scores for this tier's backends and these jobs' domains, once.
-                    job_domains = {job.domain for job in pending}
-                    with timer.stage("scores"):
-                        scores = await perf.load_scores(
-                            r, [slot.backend.id for slot in tier], job_domains
-                        )
-                        fallback = await _fallback_spp(r, job_domains)
-                        async with self.session_factory() as db:
-                            tolerance = (
-                                await config_service.get_runtime_config(db)
-                            ).affinity_tolerance
-
-                    def spp(
-                        backend_id: int,
-                        domain: str,
-                        scores: perf.Scores = scores,
-                        fallback: dict[str, float] = fallback,
-                    ) -> float:
-                        return perf.effective_spp(backend_id, domain, scores, fallback[domain])
-
-                    # Leftovers stay queued for a lower tier or a backend that frees up.
-                    with timer.stage("allocate"):
-                        assignments, _ = allocate_scored(tier, pending, spp, tolerance)
-                    # Another submit worker (two run during a rollout) may have claimed a
-                    # job first; it's dispatched there, not twice.
-                    with timer.stage("claim"):
-                        assignments = [
-                            (job, slot)
-                            for job, slot in assignments
-                            if await claim_pending(r, job.job_id, priorities[job.job_id])
-                        ]
-                    if not assignments:
-                        continue
-
-                    remaining -= len(assignments)
-
-                    logger.info(
-                        f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "
-                        f"at priority {priority}"
-                    )
-                    with timer.stage("dispatch"):
-                        results = await asyncio.gather(
-                            *[
-                                self.dispatch(
-                                    job.job_id,
-                                    job.score,
-                                    slot.backend,
-                                    slot.domains,
-                                    states[job.job_id],
-                                )
-                                for job, slot in assignments
-                            ],
-                            return_exceptions=True,
-                        )
-                    for result in results:
-                        if isinstance(result, Exception):
-                            logger.error("Dispatch failed: %s", result)
-
+                await self.run_tick()
             except Exception:
                 logger.exception("Submit worker failed")
+            await self._flush_stages()
+            await self._wait()
 
-            if time.monotonic() - self.stages_flushed_at >= 60:
-                self.stages_flushed_at = time.monotonic()
-                p95 = timer.p95()
-                totals = timer.flush()
-                log_stages(logger, totals, p95)
-                if settings.clickhouse_url and totals:
-                    try:
-                        await live_metrics.insert_rows(
-                            self.http, settings, stage_metric_rows("submit", totals)
-                        )
-                    except Exception as exc:
-                        logger.warning("Stage metrics dropped: %s", exc)
+    async def run_tick(self) -> None:
+        """Dispatch as many queued jobs as the healthy backends and the storage budget
+        allow, tier by tier."""
+        with self.timer.stage("refresh"):
+            await self.refresh_backends()
+        await self._promote_retries()
+        # Health checks run even while dispatch is paused: they also start domain syncs.
+        eligible = await self._eligible_slots()
+        remaining = await self._dispatch_budget()
+        if remaining == 0:
+            return
 
-            # Block until new work / a freed slot signals (signal_submit), with the tick
-            # as an idle-wait floor. Event-driven so fast jobs refill slots immediately
-            # and slow jobs don't busy-poll.
-            try:
-                await wait_for_submit_signal(r, settings.submit_tick_seconds)
-            except Exception:  # a Redis hiccup must not end the worker
-                logger.exception("Waiting for the submit signal failed")
-                await asyncio.sleep(settings.submit_tick_seconds)
+        # Strict priority tiers: a higher-priority tier drains first; within a tier
+        # spread jobs round-robin so no single backend fills before its peers.
+        for priority in sorted({slot.backend.priority for slot in eligible}, reverse=True):
+            tier = [slot for slot in eligible if slot.backend.priority == priority]
+            capacity = min(sum(slot.free for slot in tier), remaining)
+            if capacity == 0:
+                continue  # this tier is full; a lower one may still have room
+            # Peeked, not popped: a job leaves its queue only once claimed, so one no
+            # backend serves yet, or one in hand when this worker dies, stays queued.
+            with self.timer.stage("peek"):
+                entries = await peek_pending(self.r, capacity)
+            if not entries:
+                return  # nothing pending — lower tiers have nothing to do either
+            remaining -= await self._dispatch_tier(tier, priority, entries)
+
+    async def _promote_retries(self) -> None:
+        """Promote delayed retries that are now due."""
+        with self.timer.stage("promote"):
+            promoted = await promote_due_retries(self.r, time.time())
+        if promoted:
+            logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
+
+    async def _eligible_slots(self) -> list[BackendSlot]:
+        """This tick's eligible backends: healthy, with their free capacity + served
+        domains (each looked up once). Full ones stay in (free=0) so a retry waits for
+        them rather than falling back to the backend it avoids."""
+        healthy_backends: list[Backend] = []
+        for backend in self.backends:
+            with self.timer.stage("health"):
+                healthy = await self.check_health(backend)
+            if healthy:
+                healthy_backends.append(backend)
+        with self.timer.stage("backend_state"):
+            backend_states = await get_backends_state(
+                self.r, [backend.id for backend in healthy_backends]
+            )
+        eligible: list[BackendSlot] = []
+        for backend in healthy_backends:
+            inflight, batches = backend_states[backend.id]
+            eligible.append(
+                BackendSlot(
+                    backend,
+                    max(backend.max_inflight - inflight, 0),
+                    await self.served_domains(backend.id),
+                    inflight=inflight,
+                    batches=batches,
+                )
+            )
+        return eligible
+
+    async def _dispatch_budget(self) -> int:
+        """How many jobs may still be dispatched before results waiting to be stored hit
+        the limit. In-flight engine work will also need storage, so it counts against
+        the same budget as jobs already waiting for harvest."""
+        inflight_depth, harvest_depth = await unstored_depth(self.r)
+        limit = self.settings.unstored_job_max
+        remaining = unstored_capacity(limit, inflight_depth, harvest_depth)
+        if remaining == 0 and not self.paused_for_harvest:
+            logger.warning(
+                "Unstored jobs at limit (running=%d, storing=%d, limit=%d); pausing dispatch",
+                inflight_depth,
+                harvest_depth,
+                limit,
+            )
+            self.paused_for_harvest = True
+        elif remaining > 0 and self.paused_for_harvest:
+            logger.info("Unstored jobs below limit; resuming dispatch")
+            self.paused_for_harvest = False
+        return remaining
+
+    async def _dispatch_tier(
+        self, tier: list[BackendSlot], priority: int, entries: list[QueueEntry]
+    ) -> int:
+        """Allocate the peeked jobs over the tier's backends, claim and dispatch them;
+        how many were dispatched. Leftovers stay queued for a lower tier or a backend
+        that frees up."""
+        states = await self._queued_states(entries)
+        if not states:
+            return 0
+
+        pending = [
+            pending_job(entry, states[entry.job_id]) for entry in entries if entry.job_id in states
+        ]
+        allocated = await self._allocate(tier, pending)
+        priorities = {entry.job_id: entry.priority for entry in entries}
+        # Another submit worker (two run during a rollout) may have claimed a job first;
+        # it's dispatched there, not twice.
+        with self.timer.stage("claim"):
+            assignments = [
+                (job, slot)
+                for job, slot in allocated
+                if await claim_pending(self.r, job.job_id, priorities[job.job_id])
+            ]
+        if not assignments:
+            return 0
+
+        logger.info(
+            f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "
+            f"at priority {priority}"
+        )
+        with self.timer.stage("dispatch"):
+            results = await asyncio.gather(
+                *[
+                    self.dispatch(
+                        job.job_id, job.score, slot.backend, slot.domains, states[job.job_id]
+                    )
+                    for job, slot in assignments
+                ],
+                return_exceptions=True,
+            )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Dispatch failed: %s", result)
+        return len(assignments)
+
+    async def _queued_states(self, entries: list[QueueEntry]) -> dict[str, JobState]:
+        """The peeked jobs' states. A job whose state expired or was deleted can't be
+        dispatched; left queued it would take a peek slot every tick, so it's dropped."""
+        with self.timer.stage("meta"):
+            found = await get_jobs(self.r, [entry.job_id for entry in entries])
+        gone = [entry for entry in entries if found[entry.job_id] is None]
+        if gone:
+            await drop_pending(self.r, gone)
+            logger.warning(
+                "Dropped %d queued job(s) whose state is gone: %s",
+                len(gone),
+                [entry.job_id for entry in gone],
+            )
+        return {job_id: state for job_id, state in found.items() if state is not None}
+
+    async def _allocate(
+        self, tier: list[BackendSlot], pending: list[PendingJob]
+    ) -> list[tuple[PendingJob, BackendSlot]]:
+        """Give each job to the backend that would finish it first."""
+        # Speed scores for this tier's backends and these jobs' domains, once.
+        job_domains = {job.domain for job in pending}
+        with self.timer.stage("scores"):
+            scores = await perf.load_scores(self.r, [slot.backend.id for slot in tier], job_domains)
+            fallback = await _fallback_spp(self.r, job_domains)
+            async with self.session_factory() as db:
+                tolerance = (await config_service.get_runtime_config(db)).affinity_tolerance
+
+        def spp(backend_id: int, domain: str) -> float:
+            return perf.effective_spp(backend_id, domain, scores, fallback[domain])
+
+        with self.timer.stage("allocate"):
+            assignments, _ = allocate_scored(tier, pending, spp, tolerance)
+        return assignments
+
+    async def _flush_stages(self) -> None:
+        """Log the stage timings, and send them to ClickHouse, once a minute."""
+        if time.monotonic() - self.stages_flushed_at < 60:
+            return
+
+        self.stages_flushed_at = time.monotonic()
+        p95 = self.timer.p95()
+        totals = self.timer.flush()
+        log_stages(logger, totals, p95)
+        if not (self.settings.clickhouse_url and totals):
+            return
+        try:
+            await live_metrics.insert_rows(
+                self.http, self.settings, stage_metric_rows("submit", totals)
+            )
+        except Exception as exc:
+            logger.warning("Stage metrics dropped: %s", exc)
+
+    async def _wait(self) -> None:
+        """Block until new work / a freed slot signals (signal_submit), with the tick as
+        an idle-wait floor. Event-driven so fast jobs refill slots immediately and slow
+        jobs don't busy-poll."""
+        try:
+            await wait_for_submit_signal(self.r, self.settings.submit_tick_seconds)
+        except Exception:  # a Redis hiccup must not end the worker
+            logger.exception("Waiting for the submit signal failed")
+            await asyncio.sleep(self.settings.submit_tick_seconds)
 
 
 async def main() -> None:

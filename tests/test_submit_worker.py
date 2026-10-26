@@ -358,3 +358,37 @@ async def test_a_rejected_job_fails_at_once(
     failed = await get_job(redis_client, job_id)
     assert failed is not None and failed.status == JobStatus.FAILED
     assert _event_names(emitter) == [JobEventName.FAILED]
+
+
+# --- a tick ---
+
+
+@pytest.mark.asyncio
+async def test_a_tick_dispatches_a_queued_job_to_a_healthy_backend(
+    worker, session_factory, redis_client, incoming, emitter, engine
+) -> None:
+    job_id, _ = await _queued_job(session_factory, redis_client, incoming)
+
+    await worker.run_tick()
+    await asyncio.gather(*worker.sync_tasks)  # the domain sync the health check started
+
+    assert engine.submitted == [f"{job_id}.jpg"]
+    assert await peek_pending(redis_client, 10) == []
+    assert (await _row(session_factory, job_id)).status == JobStatus.RUNNING
+    assert _event_names(emitter) == [JobEventName.DISPATCHED]
+
+
+@pytest.mark.asyncio
+async def test_a_tick_dispatches_nothing_while_results_wait_to_be_stored(
+    worker, session_factory, redis_client, incoming, engine
+) -> None:
+    job_id, _ = await _queued_job(session_factory, redis_client, incoming)
+    worker.settings = Settings(unstored_job_max=1)
+    await redis_client.zadd("jobs:pending_harvest", {"stored-later": 0})
+
+    await worker.run_tick()
+    await asyncio.gather(*worker.sync_tasks)
+
+    assert engine.submitted == []
+    assert [e.job_id for e in await peek_pending(redis_client, 10)] == [job_id]
+    assert worker.paused_for_harvest
