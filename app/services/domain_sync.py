@@ -54,20 +54,15 @@ def plan_domain_links(
     return links, schemas_to_store, changed
 
 
-async def _domain_rows(
-    db: AsyncSession, names: list[str]
-) -> list[tuple[int, str, dict[str, Any] | None]]:
-    """Make sure every name has a ``domains`` row; return ``(id, name, options_schema)``."""
+async def _domain_rows(db: AsyncSession, names: list[str]) -> list[Domain]:
+    """Make sure every name has a ``domains`` row, and return those rows."""
     if names:
         await db.execute(
             insert(Domain)
             .values([{"name": n} for n in names])
             .on_conflict_do_nothing(index_elements=["name"])
         )
-    rows = await db.execute(
-        select(Domain.id, Domain.name, Domain.options_schema).where(Domain.name.in_(names))
-    )
-    return [(domain_id, name, schema) for domain_id, name, schema in rows.all()]
+    return list(await db.scalars(select(Domain).where(Domain.name.in_(names))))
 
 
 async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo) -> None:
@@ -80,11 +75,9 @@ async def apply_domain_sync(db: AsyncSession, backend_id: int, info: EngineInfo)
     names = sorted(info.domains)
     if not names:
         return
-    ids: dict[str, int] = {}
-    known_schemas: dict[str, dict[str, Any] | None] = {}
-    for domain_id, name, schema in await _domain_rows(db, names):
-        ids[name] = domain_id
-        known_schemas[name] = schema
+    domains = await _domain_rows(db, names)
+    ids = {domain.name: domain.id for domain in domains}
+    known_schemas = {domain.name: domain.options_schema for domain in domains}
 
     links, schemas_to_store, changed = plan_domain_links(info, known_schemas)
     for name in changed:
@@ -115,11 +108,11 @@ async def apply_declared_capabilities(
     the engine hasn't reported itself yet; engine rows are never overwritten. The caller
     commits."""
     names = sorted(declared)
-    for domain_id, name, _ in await _domain_rows(db, names):
-        outputs = sorted(set(declared[name]))
+    for domain in await _domain_rows(db, names):
+        outputs = sorted(set(declared[domain.name]))
         stmt = insert(BackendDomain).values(
             backend_id=backend_id,
-            domain_id=domain_id,
+            domain_id=domain.id,
             outputs=outputs,
             source=DomainSource.DECLARED,
         )
