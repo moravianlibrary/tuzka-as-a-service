@@ -168,14 +168,17 @@ engines:
     port: 8000
     # taas concurrent dispatch cap PER POD. Keep TUZKAOCR_MAX_QUEUE >= this.
     maxInflight: 2
-    # Engine API key. `env` is the variable the engine image reads; the value comes
-    # from the Secret below. For production point at an External Secret / SealedSecret;
-    # `generate: true` creates <release>-ocr-engine-api-key for dev and preserves it
-    # across upgrades via lookup (not reproducible with `helm template`, so avoid it
-    # under Argo CD/Flux). Omit `auth` entirely to run the engine without a key.
+    # Engine API key. `env` is the variable the engine image reads; the key comes from
+    # one of: `value` (the chart renders <release>-ocr-engine-api-key from it, like
+    # secrets.*), `existingSecret` (managed outside the chart: External Secret,
+    # SealedSecret, SOPS), or `generate: true` (creates <release>-ocr-engine-api-key
+    # for dev and preserves it across upgrades via lookup; not reproducible with
+    # `helm template`, so avoid it under Argo CD/Flux). Omit `auth` entirely to run the
+    # engine without a key.
     auth:
       env: TUZKAOCR_API_KEY
       generate: true
+      # value: ""                  # set generate: false when using this
       # existingSecret:            # set generate: false when using this
       #   name: taas-ocr-engine-key
       #   key: api-key
@@ -266,6 +269,7 @@ engines:
     auth:
       env: TUZKAM_API_KEY
       generate: true
+      # value: ""                  # set generate: false when using this
       # existingSecret:            # set generate: false when using this
       #   name: taas-tuzkam-key
       #   key: api-key
@@ -350,11 +354,14 @@ tunnelBoxesDefaults:
   # Engine hardware class registered for this backend: "cpu" or "gpu".
   device: cpu
   # API key for every tunnel engine. There is no `generate`: the box runs the engine,
-  # so both sides must use the same value. With `name: ""` the chart reads
-  # <release>-tunnel-engine-key; create it (or point at an External Secret) before
-  # installing. Each engine may override auth in its tunnelBoxes entry. Omit `auth`
-  # to register the backend without a key (clearing any key from an earlier release).
+  # so both sides must use the same value. Either `value` (the chart renders a
+  # <release>-tunnel-engine-<box>-<engine>-key Secret per engine from it), or
+  # `existingSecret`: with `name: ""` the chart reads <release>-tunnel-engine-key;
+  # create it (or point at an External Secret) before installing. Each engine may
+  # override auth in its tunnelBoxes entry. Omit `auth` to register the backend
+  # without a key (clearing any key from an earlier release).
   # auth:
+  #   value: ""           # or:
   #   existingSecret:
   #     name: ""          # empty => <release>-tunnel-engine-key
   #     key: api-key

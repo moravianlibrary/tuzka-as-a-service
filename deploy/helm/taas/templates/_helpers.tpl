@@ -47,8 +47,9 @@ kube-root-ca.crt ConfigMap covers namespace-scoped credentials.
 
 {{/*
 Normalize an engine auth block. The engine key is never rendered into the shared
-<release>-secret: an in-cluster engine either points at an existing Secret
-(auth.existingSecret) or gets a dedicated generated Secret (auth.generate).
+<release>-secret: an engine points at an existing Secret (auth.existingSecret), or
+gets a dedicated Secret the chart renders from auth.value, or (in-cluster only) a
+generated one (auth.generate).
 
 Inputs:
   root               chart root context
@@ -60,8 +61,8 @@ Inputs:
   defaultSecretName  fallback Secret name when existingSecret.name is empty
                      (tunnel engines use <release>-tunnel-engine-key)
 
-Returns a YAML map with env, secretName, secretKey and generated; an empty map when
-auth is not configured.
+Returns a YAML map with env, secretName, secretKey, generated and value; an empty map
+when auth is not configured.
 */}}
 {{- define "taas.auth" -}}
 {{- $root := .root -}}
@@ -110,29 +111,41 @@ auth is not configured.
 {{- fail (printf "%s.auth: set either existingSecret.name (with generate: false) or generate: true, not both" $path) -}}
 {{- end -}}
 {{- if and $generate (not .allowGenerate) -}}
-{{- fail (printf "%s.auth: tunnel engines need existingSecret; the box must share the key" $path) -}}
+{{- fail (printf "%s.auth: tunnel engines need existingSecret or value; the box must share the key" $path) -}}
+{{- end -}}
+{{- $value := $auth.value | default "" -}}
+{{- if not (kindIs "string" $value) -}}
+{{- fail (printf "%s.auth.value must be a string" $path) -}}
+{{- end -}}
+{{- if and $value (or $generate $existingName) -}}
+{{- fail (printf "%s.auth: set one of existingSecret.name, generate: true and value" $path) -}}
 {{- end -}}
 
 {{- $secretName := "" -}}
 {{- if $existingName -}}
 {{- $secretName = $existingName -}}
-{{- else if $generate -}}
+{{- else if or $generate $value -}}
+{{- /* A Secret the chart renders: from the value, or generated (in-cluster only). */ -}}
+{{- if .allowGenerate -}}
 {{- $secretName = printf "%s-%s-api-key" (include "taas.fullname" $root) .name -}}
+{{- else -}}
+{{- $secretName = printf "%s-tunnel-engine-%s-key" (include "taas.fullname" $root) .name -}}
+{{- end -}}
 {{- if gt (len $secretName) 63 -}}
 {{- fail (printf "%s: generated Secret name %q is %d chars (>63); set auth.existingSecret.name to a shorter name" $path $secretName (len $secretName)) -}}
 {{- end -}}
 {{- else if .defaultSecretName -}}
 {{- $secretName = .defaultSecretName -}}
 {{- else -}}
-{{- fail (printf "%s.auth: set existingSecret.name or generate: true" $path) -}}
+{{- fail (printf "%s.auth: set existingSecret.name, generate: true or value" $path) -}}
 {{- end -}}
 
 {{- /*
 Existing Secrets are checked before anything is applied: a typo in the name or key
 should fail the release, not leave an engine pod in CreateContainerConfigError.
-Generated Secrets are exempt because engine-secret.yaml creates them on install.
+Generated and value-rendered Secrets are exempt: the chart creates them itself.
 */}}
-{{- if and (not $generate) $secretName (include "taas.lookupReady" $root) }}
+{{- if and (not $generate) (not $value) $secretName (include "taas.lookupReady" $root) }}
 {{- $secretObj := lookup "v1" "Secret" $root.Release.Namespace $secretName }}
 {{- if not $secretObj }}
 {{- fail (printf "%s.auth: existing Secret %q not found in namespace %q" $path $secretName $root.Release.Namespace) }}
@@ -145,7 +158,7 @@ Generated Secrets are exempt because engine-secret.yaml creates them on install.
 {{- end }}
 {{- end -}}
 
-{{- toYaml (dict "env" $env "secretName" $secretName "secretKey" $secretKey "generated" $generate) -}}
+{{- toYaml (dict "env" $env "secretName" $secretName "secretKey" $secretKey "generated" $generate "value" $value) -}}
 {{- else -}}
 {{- toYaml (dict) -}}
 {{- end -}}

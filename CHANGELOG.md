@@ -18,6 +18,10 @@ All notable changes to this project are documented here. The format is based on
   values. The keys the Secret needs are listed in `values.yaml`. HyperDX builds its
   ClickHouse connection from `CLICKHOUSE_PASSWORD` in its own pod, so the Secret carries
   no `HYPERDX_DEFAULT_CONNECTIONS`.
+- **Engine keys from values.** `engines.<name>.auth.value` and a tunnel engine's
+  `auth.value` (or `tunnelBoxesDefaults.auth.value`) render the engine's key Secret from
+  the value, like `secrets.*` for the app Secret: unlike `auth.generate`, it renders the
+  same under `helm template` (Argo CD, Flux, kustomize `helmCharts`).
 - `make admin ARGS="…"` runs `taas-admin` in the running stack's api container
   (`TARGET=compose|k3d`), e.g. `make admin ARGS="user list"`.
 - `make db-upgrade` / `db-downgrade` (`REV=`), `db-history`, and `db-migrate MSG=`, which
