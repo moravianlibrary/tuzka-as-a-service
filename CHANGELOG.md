@@ -293,6 +293,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A job the engine accepted is no longer failed when the submit worker can't then
+  update its database row: it's already running in Redis, so the poller harvests it and
+  the harvest marks the row done. If even recording it as running fails, the log names
+  the engine's job id.
 - A job whose Redis state expired between the submit worker's peek and its claim no
   longer leaves a `job:<id>` hash behind with no TTL; the claim drops it instead. The
   jobs a tick dispatches are claimed in one round trip, not one per job.

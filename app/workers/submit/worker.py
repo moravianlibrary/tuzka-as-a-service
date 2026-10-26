@@ -274,21 +274,19 @@ class SubmitWorker:
 
         async with self.session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
+        try:
             with self.timer.stage("set_running"):
                 await set_running(self.r, job_id, engine_job_id, backend.url, backend.id, state_ttl)
-            with self.timer.stage("db_update"):
-                await db.execute(
-                    update(Job)
-                    .where(Job.id == job_id)
-                    .values(
-                        status=JobStatus.RUNNING,
-                        dispatched_at=utcnow(),
-                        engine_job_id=engine_job_id,
-                        engine_version=engine_version,
-                        backend_id=backend.id,
-                    )
-                )
-                await db.commit()
+        except Exception:
+            # Nothing tracks the engine's job now: name it, so it can be found there.
+            logger.error(
+                "Job %s was accepted by %s as %s but not recorded as running",
+                job_id,
+                backend.url,
+                engine_job_id,
+            )
+            raise
+        await self._record_running(job_id, backend, engine_job_id, engine_version)
         self.emitter.emit(
             self._event(
                 JobEventName.DISPATCHED,
@@ -299,6 +297,35 @@ class SubmitWorker:
                 queue_s=max(time.time() - state.submitted_at, 0.0),
             )
         )
+
+    async def _record_running(
+        self, job_id: str, backend: Backend, engine_job_id: str, engine_version: str | None
+    ) -> None:
+        """Mirror the dispatch on the job's row. Redis already has the job running, so the
+        poller harvests it whatever happens here: a row left queued is marked done by the
+        harvest. Failing the job instead would throw away the engine's work."""
+        try:
+            async with self.session_factory() as db:
+                with self.timer.stage("db_update"):
+                    await db.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(
+                            status=JobStatus.RUNNING,
+                            dispatched_at=utcnow(),
+                            engine_job_id=engine_job_id,
+                            engine_version=engine_version,
+                            backend_id=backend.id,
+                        )
+                    )
+                    await db.commit()
+        except Exception:
+            logger.exception(
+                "Job %s runs on %s as %s, but its row wasn't updated; the harvest will",
+                job_id,
+                backend.url,
+                engine_job_id,
+            )
 
     async def _dispatch_failed(
         self,

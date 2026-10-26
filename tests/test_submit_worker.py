@@ -247,6 +247,45 @@ async def test_a_dispatched_job_runs_on_the_backend(
     assert (event.event, event.engine_version) == (JobEventName.DISPATCHED, "1.2.3")
 
 
+class RowWritesFail:
+    """A session factory whose sessions can read but not update a row: the database
+    went away right after the engine took the job."""
+
+    def __init__(self, factory) -> None:
+        self.factory = factory
+
+    def __call__(self):
+        session = self.factory()
+        execute = session.execute
+
+        async def failing_execute(statement, *args: Any, **kwargs: Any):
+            if getattr(statement, "is_dml", False):
+                raise ConnectionRefusedError("database down")
+            return await execute(statement, *args, **kwargs)
+
+        session.execute = failing_execute
+        return session
+
+
+@pytest.mark.asyncio
+async def test_a_job_the_engine_took_stays_running_when_its_row_cannot_be_updated(
+    worker, session_factory, redis_client, incoming, emitter, engine, caplog
+) -> None:
+    job_id, state = await _queued_job(session_factory, redis_client, incoming)
+    backend = await _backend(session_factory)
+    worker.session_factory = RowWritesFail(session_factory)
+
+    await worker.dispatch_job(job_id, 100.0, backend, SERVED, state)
+
+    # The poller harvests it from its Redis state, and the harvest marks the row done.
+    running = await get_job(redis_client, job_id)
+    assert running is not None
+    assert (running.status, running.engine_job_id) == (JobStatus.RUNNING, "e-1")
+    assert (await _row(session_factory, job_id)).status == JobStatus.QUEUED
+    assert _event_names(emitter) == [JobEventName.DISPATCHED]
+    assert f"Job {job_id} runs on http://e:8000 as e-1" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_a_job_the_backend_does_not_serve_goes_back_on_the_queue(
     worker, session_factory, redis_client, incoming, emitter, engine
