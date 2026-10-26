@@ -421,19 +421,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         adapter = await adapter_for(state)
         outputs = state.outputs
         try:
-            results_to_store: list[tuple[str, str, bytes]] = []
-            alto_bytes_for_analytics: bytes | None = None
-            txt_bytes_for_analytics: bytes | None = None
-
             with timer.stage("fetch_outputs"):
                 fetched = await fetch_outputs(adapter, engine_job_id, outputs)
-            for output, content in fetched.items():
-                obj_key = f"{username}/{job_id}.{ext_for(output)}.zst"
-                results_to_store.append((output, obj_key, content))
-                if output == "alto":
-                    alto_bytes_for_analytics = content
-                elif output == "txt":
-                    txt_bytes_for_analytics = content
+            alto_bytes_for_analytics = fetched.get("alto")
+            txt_bytes_for_analytics = fetched.get("txt")
 
             # Line count comes straight from the engine's status — it reports n_lines for
             # every job (computed during OCR), so lines are populated regardless of fmt.
@@ -472,7 +463,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 presigned_ttl = (await config_service.get_runtime_config(db)).presigned_ttl_minutes
                 state_ttl = await config_service.get_state_ttl_seconds(db)
                 result_rows: list[dict[str, Any]] = []
-                for result_fmt, obj_path, raw_bytes in results_to_store:
+                for result_fmt, raw_bytes in fetched.items():
+                    obj_path = f"{username}/{job_id}.{ext_for(result_fmt)}.zst"
                     with timer.stage("compress"):
                         compressed = cctx.compress(raw_bytes)
                     with timer.stage("store_put"):
