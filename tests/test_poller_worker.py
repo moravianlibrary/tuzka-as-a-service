@@ -14,6 +14,7 @@ import httpx
 import pytest
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.engines.base import EngineStatus, OutputUnavailable, Result
@@ -89,6 +90,16 @@ class FakeEngine:
         return Result(answer, "application/octet-stream")
 
 
+class FakeAdapters:
+    """The adapter cache: every backend is ``engine``, which a test swaps."""
+
+    def __init__(self) -> None:
+        self.engine = FakeEngine({})
+
+    def for_backend(self, backend: Any, url: str) -> FakeEngine:
+        return self.engine
+
+
 @pytest.fixture
 async def session_factory(session_factory):
     """The emptied test database, with the engine's backend row."""
@@ -112,12 +123,22 @@ def emitter() -> FakeEmitter:
 
 
 @pytest.fixture
-def worker(session_factory, redis_client, storage, emitter) -> PollerWorker:
+def adapters() -> FakeAdapters:
+    return FakeAdapters()
+
+
+@pytest.fixture
+def worker(session_factory, redis_client, adapters, storage, emitter) -> PollerWorker:
+    return _worker(session_factory, redis_client, adapters, storage, emitter)
+
+
+def _worker(session_factory, r, adapters, storage, emitter) -> PollerWorker:
     return PollerWorker(
         Settings(),
-        redis_client,
+        r,
         session_factory,
         httpx.AsyncClient(),
+        adapters,  # type: ignore[arg-type]
         storage,  # type: ignore[arg-type]
         storage,  # type: ignore[arg-type]
         emitter,  # type: ignore[arg-type]
@@ -309,11 +330,11 @@ async def test_an_exhausted_requeue_budget_fails_the_job(
 
 @pytest.mark.asyncio
 async def test_a_pass_polls_a_finished_job_and_the_next_one_harvests_it(
-    worker, session_factory, redis_client, emitter
+    worker, adapters, session_factory, redis_client, emitter
 ) -> None:
     job_id, _ = await _running_job(session_factory, redis_client)
     await redis_client.hset(f"job:{job_id}", "next_poll_at", "0")  # due now
-    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello"})
+    adapters.engine = FakeEngine({"alto": ALTO, "txt": b"hello"})
 
     await worker.run_pass()
     assert worker.poll_task is not None
@@ -331,10 +352,10 @@ async def test_a_pass_polls_a_finished_job_and_the_next_one_harvests_it(
 
 @pytest.mark.asyncio
 async def test_a_harvest_stores_every_output_and_reports_the_job_done(
-    worker, session_factory, redis_client, storage, emitter
+    worker, adapters, session_factory, redis_client, storage, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello world\n"})
+    adapters.engine = FakeEngine({"alto": ALTO, "txt": b"hello world\n"})
 
     published = await _published(redis_client, lambda: worker.harvest(job_id, state, None))
 
@@ -394,21 +415,12 @@ class PoolWatchingStorage(FakeStorage):
 
 @pytest.mark.asyncio
 async def test_a_harvest_holds_no_db_connection_while_it_stores(
-    session_factory, redis_client, emitter
+    session_factory, redis_client, adapters, emitter
 ) -> None:
     storage = PoolWatchingStorage(session_factory)
-    worker = PollerWorker(
-        Settings(),
-        redis_client,
-        session_factory,
-        httpx.AsyncClient(),
-        storage,  # type: ignore[arg-type]
-        storage,  # type: ignore[arg-type]
-        emitter,  # type: ignore[arg-type]
-        asyncio.Event(),
-    )
+    worker = _worker(session_factory, redis_client, adapters, storage, emitter)
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello"})
+    adapters.engine = FakeEngine({"alto": ALTO, "txt": b"hello"})
 
     await worker.harvest(job_id, state, None)
 
@@ -418,10 +430,10 @@ async def test_a_harvest_holds_no_db_connection_while_it_stores(
 
 @pytest.mark.asyncio
 async def test_a_second_harvest_reports_nothing_again(
-    worker, session_factory, redis_client, emitter
+    worker, adapters, session_factory, redis_client, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": ALTO, "txt": b"hello"})
+    adapters.engine = FakeEngine({"alto": ALTO, "txt": b"hello"})
     await worker.harvest(job_id, state, None)
 
     await worker.harvest(job_id, state, None)
@@ -432,10 +444,10 @@ async def test_a_second_harvest_reports_nothing_again(
 
 @pytest.mark.asyncio
 async def test_an_output_the_engine_cannot_produce_fails_the_job(
-    worker, session_factory, redis_client, storage, emitter
+    worker, adapters, session_factory, redis_client, storage, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine(
+    adapters.engine = FakeEngine(
         {"alto": ALTO, "txt": OutputUnavailable("txt", "georeferencing failed")}
     )
 
@@ -454,10 +466,10 @@ async def test_an_output_the_engine_cannot_produce_fails_the_job(
 
 @pytest.mark.asyncio
 async def test_a_transient_harvest_error_retries_the_harvest_later(
-    worker, session_factory, redis_client, emitter
+    worker, adapters, session_factory, redis_client, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": httpx.ConnectError("storage down"), "txt": b"x"})
+    adapters.engine = FakeEngine({"alto": httpx.ConnectError("storage down"), "txt": b"x"})
     before = await redis_client.zscore(PENDING_HARVEST_KEY, job_id)
 
     await worker.harvest(job_id, state, None)
@@ -473,11 +485,9 @@ async def test_a_backend_lookup_that_cannot_reach_the_db_retries_the_harvest_lat
     worker, session_factory, redis_client, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-
-    async def adapter_for(state: JobState) -> FakeEngine:
-        raise ConnectionRefusedError("database down")
-
-    worker.adapter_for = adapter_for
+    worker.session_factory = async_sessionmaker(  # the database is down
+        create_async_engine("postgresql+asyncpg://taas:taas@127.0.0.1:1/taas")
+    )
     before = await redis_client.zscore(PENDING_HARVEST_KEY, job_id)
 
     await worker.harvest(job_id, state, None)
@@ -490,10 +500,10 @@ async def test_a_backend_lookup_that_cannot_reach_the_db_retries_the_harvest_lat
 
 @pytest.mark.asyncio
 async def test_a_harvest_without_an_engine_job_id_fails_the_job(
-    worker, session_factory, redis_client, emitter
+    worker, adapters, session_factory, redis_client, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": ALTO, "txt": b"x"})
+    adapters.engine = FakeEngine({"alto": ALTO, "txt": b"x"})
 
     await worker.harvest(job_id, state.model_copy(update={"engine_job_id": None}), None)
 
@@ -503,22 +513,13 @@ async def test_a_harvest_without_an_engine_job_id_fails_the_job(
 
 @pytest.mark.asyncio
 async def test_an_unexpected_harvest_error_fails_the_job(
-    worker, session_factory, redis_client, emitter
+    worker, adapters, session_factory, redis_client, emitter
 ) -> None:
     job_id, state = await _done_job(session_factory, redis_client)
-    worker.adapter_for = _engine({"alto": ValueError("garbled"), "txt": b"x"})
+    adapters.engine = FakeEngine({"alto": ValueError("garbled"), "txt": b"x"})
 
     await worker.harvest(job_id, state, None)
 
     row = await _row(session_factory, job_id)
     assert (row.status, row.error, row.attempts) == (JobStatus.FAILED, "garbled", [])
     assert _event_names(emitter) == [JobEventName.FAILED]
-
-
-def _engine(outputs: dict[str, bytes | Exception]):
-    engine = FakeEngine(outputs)
-
-    async def adapter_for(state: JobState) -> FakeEngine:
-        return engine
-
-    return adapter_for

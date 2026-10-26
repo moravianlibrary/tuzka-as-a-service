@@ -117,6 +117,7 @@ class PollerWorker:
         r: aioredis.Redis,
         session_factory: async_sessionmaker[AsyncSession],
         http: httpx.AsyncClient,
+        adapters: AdapterCache,
         results_client: Minio,
         results_public_client: Minio,
         emitter: EventEmitter,
@@ -126,6 +127,9 @@ class PollerWorker:
         self.r = r
         self.session_factory = session_factory
         self.http = http
+        # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
+        # backend re-registered at a new URL still gets its in-flight jobs polled.
+        self.adapters = adapters
         self.results_client = results_client
         self.results_public_client = results_public_client
         self.emitter = emitter
@@ -134,9 +138,6 @@ class PollerWorker:
         self.stages_flushed_at = time.monotonic()
         # Backend rows by id, read from the DB once each; None = the row is gone.
         self.backends: dict[int, Backend | None] = {}
-        # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
-        # backend re-registered at a new URL still gets its in-flight jobs polled.
-        self.adapters = AdapterCache(http, settings.key_encryption_secret)
         self.harvest_sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
         # Bounds a pass's status checks: one per due job, so hundreds at once otherwise,
         # each holding an engine and a Redis connection.
@@ -895,6 +896,7 @@ async def main() -> None:
         r,
         make_session_factory(db_engine),
         http,
+        AdapterCache(http, settings.key_encryption_secret),
         get_results_client(settings),
         get_results_public_client(settings),
         emitter,

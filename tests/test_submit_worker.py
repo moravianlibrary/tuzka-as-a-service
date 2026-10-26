@@ -119,19 +119,33 @@ def engine() -> FakeEngine:
     return FakeEngine()
 
 
+class FakeAdapters:
+    """The adapter cache: every backend is ``engine``, which a test swaps."""
+
+    def __init__(self, engine: FakeEngine) -> None:
+        self.engine = engine
+
+    def for_backend(self, backend: Any, url: str) -> FakeEngine:
+        return self.engine
+
+
 @pytest.fixture
-def worker(session_factory, redis_client, incoming, emitter, engine) -> SubmitWorker:
-    worker = SubmitWorker(
+def adapters(engine) -> FakeAdapters:
+    return FakeAdapters(engine)
+
+
+@pytest.fixture
+def worker(session_factory, redis_client, incoming, emitter, adapters) -> SubmitWorker:
+    return SubmitWorker(
         Settings(),
         redis_client,
         session_factory,
         httpx.AsyncClient(),
+        adapters,  # type: ignore[arg-type]
         incoming,  # type: ignore[arg-type]
         emitter,  # type: ignore[arg-type]
         asyncio.Event(),
     )
-    worker.adapters.for_backend = lambda backend, url: engine  # type: ignore[method-assign,assignment,return-value]
-    return worker
 
 
 async def _backend(session_factory) -> Backend:
@@ -424,12 +438,14 @@ class DescribingEngine(FakeEngine):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_domain_sync_is_logged(worker, session_factory, monkeypatch, caplog) -> None:
+async def test_a_failed_domain_sync_is_logged(
+    worker, session_factory, adapters, monkeypatch, caplog
+) -> None:
     async def broken_sync(*_: Any) -> None:
         raise RuntimeError("domains table locked")
 
     monkeypatch.setattr("app.workers.submit.worker.apply_domain_sync", broken_sync)
-    worker.adapters.for_backend = lambda backend, url: DescribingEngine()  # type: ignore[method-assign,assignment,return-value]
+    adapters.engine = DescribingEngine()
 
     worker.spawn_domain_sync(await _backend(session_factory))
     await asyncio.gather(*worker.sync_tasks, return_exceptions=True)

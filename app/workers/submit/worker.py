@@ -94,6 +94,7 @@ class SubmitWorker:
         r: aioredis.Redis,
         session_factory: async_sessionmaker[AsyncSession],
         http: httpx.AsyncClient,
+        adapters: AdapterCache,
         incoming_client: Minio,
         emitter: EventEmitter,
         stop: asyncio.Event,
@@ -107,7 +108,7 @@ class SubmitWorker:
         self.stop = stop
         self.timer = StageTimer()
         self.stages_flushed_at = time.monotonic()
-        self.adapters = AdapterCache(http, settings.key_encryption_secret)
+        self.adapters = adapters
         self.backends: list[Backend] = []
         self.backends_refreshed_at = 0.0
         self.health_cache: dict[int, tuple[bool, float]] = {}
@@ -687,6 +688,7 @@ async def main() -> None:
         r,
         make_session_factory(engine),
         http,
+        AdapterCache(http, settings.key_encryption_secret),
         get_incoming_client(settings),
         emitter,
         install_stop(),
