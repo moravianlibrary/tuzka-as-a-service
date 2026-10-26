@@ -5,7 +5,7 @@ to the built-in default, so an admin typo degrades a setting instead of 500ing."
 import logging
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 # storage.<bucket>_ttl_minutes: how long the cleanup keeps a bucket's objects.
 _STORAGE_TTL_KEY = re.compile(r"storage\.(?P<bucket>.+)_ttl_minutes")
 STORAGE_TTL_DEFAULT_MINUTES = 60
+BucketTtlMinutes = Annotated[int, Field(ge=1)]
+_BUCKET_TTL = TypeAdapter(BucketTtlMinutes)
 RATE_LIMIT_PREFIX = "rate_limit."
 
 
@@ -67,34 +69,31 @@ class RuntimeConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
-    queued_timeout_seconds: int = Field(900, alias="jobs.queued_timeout_seconds")
-    running_timeout_seconds: int = Field(300, alias="jobs.running_timeout_seconds")
-    max_requeues: int = Field(5, alias="jobs.max_requeues")
+    queued_timeout_seconds: int = Field(900, ge=1, alias="jobs.queued_timeout_seconds")
+    running_timeout_seconds: int = Field(300, ge=1, alias="jobs.running_timeout_seconds")
+    max_requeues: int = Field(5, ge=0, alias="jobs.max_requeues")
     # Retention: finished job rows, and result data.
-    done_ttl_seconds: int = Field(86_400, alias="jobs.done_ttl_seconds")
-    failed_ttl_seconds: int = Field(604_800, alias="jobs.failed_ttl_seconds")
-    presigned_ttl_minutes: int = Field(60, alias="presigned.ttl_minutes")
-    results_max_age_seconds: int = Field(86_400, alias="storage.results_max_age_seconds")
+    done_ttl_seconds: int = Field(86_400, ge=0, alias="jobs.done_ttl_seconds")
+    failed_ttl_seconds: int = Field(604_800, ge=0, alias="jobs.failed_ttl_seconds")
+    # S3 presigns a URL for 1 minute up to 7 days; anything else fails every harvest.
+    presigned_ttl_minutes: int = Field(60, ge=1, le=7 * 24 * 60, alias="presigned.ttl_minutes")
+    results_max_age_seconds: int = Field(86_400, ge=0, alias="storage.results_max_age_seconds")
     # The results storage cap; None (unset) = no cap, results go by age only.
-    results_max_bytes: int | None = Field(None, alias="storage.results_max_bytes")
+    results_max_bytes: int | None = Field(None, ge=1, alias="storage.results_max_bytes")
     # Dispatch: a backend already running a batch's pages wins its next page when it
     # would finish within this fraction of the fastest one.
-    affinity_tolerance: float = Field(0.15, alias="dispatch.affinity_tolerance")
+    affinity_tolerance: float = Field(0.15, ge=0, alias="dispatch.affinity_tolerance")
     # Seconds per page /load assumes for a domain with no measured pages yet.
-    default_seconds_per_page: float = Field(10.0, alias="load.default_seconds_per_page")
+    default_seconds_per_page: float = Field(10.0, gt=0, alias="load.default_seconds_per_page")
     # Per bucket, from storage.<bucket>_ttl_minutes; see storage_ttl_minutes.
-    bucket_ttl_minutes: dict[str, int] = Field(default_factory=dict)
+    bucket_ttl_minutes: dict[str, BucketTtlMinutes] = Field(default_factory=dict)
     rate_limits: dict[LimitClass, RateLimit] = Field(default=FALLBACK_RATE_LIMITS)
 
     @classmethod
     def from_rows(cls, rows: Mapping[str, Any]) -> "RuntimeConfig":
         """Parse the table's ``key -> value`` rows; keys taas doesn't read are ignored."""
         fields = {key: value for key, value in rows.items() if value is not None}
-        fields["bucket_ttl_minutes"] = {
-            match["bucket"]: value
-            for key, value in fields.items()
-            if (match := _STORAGE_TTL_KEY.fullmatch(key))
-        }
+        fields["bucket_ttl_minutes"] = _bucket_ttls(fields)
         fields["rate_limits"] = {
             limit_class: RateLimit.from_config(
                 rows.get(f"{RATE_LIMIT_PREFIX}{limit_class}"), fallback
@@ -131,11 +130,26 @@ class RuntimeConfig(BaseModel):
     @classmethod
     def _annotation_for(cls, key: str) -> Any:
         if _STORAGE_TTL_KEY.fullmatch(key):
-            return int
+            return BucketTtlMinutes
         for field in cls.model_fields.values():
             if field.alias == key:
-                return field.annotation
+                # With the field's bounds: the bare annotation would drop them.
+                return Annotated[field.annotation, *field.metadata]
         raise InvalidConfigEntry(f"unknown config key {key!r}")
+
+
+def _bucket_ttls(rows: Mapping[str, Any]) -> dict[str, int]:
+    """Each bucket's ``storage.<bucket>_ttl_minutes``; a malformed one is logged and
+    left out (the bucket keeps the default), not the other buckets with it."""
+    ttls: dict[str, int] = {}
+    for key, value in rows.items():
+        if not (match := _STORAGE_TTL_KEY.fullmatch(key)):
+            continue
+        try:
+            ttls[match["bucket"]] = _BUCKET_TTL.validate_python(value)
+        except ValidationError:
+            log.warning("config: malformed %s; using the default", key)
+    return ttls
 
 
 def _parse_rate_limit_entry(key: str, value: Any) -> dict[str, int]:

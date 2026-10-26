@@ -160,6 +160,10 @@ All notable changes to this project are documented here. The format is based on
   `jobs.retention_days`) and a value of the wrong type (`"5"` or `true` for a number,
   an unknown field in a `rate_limit.*` object), exiting 2 with the reason. Before, it
   stored either, and readers silently fell back to the default.
+- `taas-admin config set` also refuses an out-of-range value: a timeout, TTL or bucket
+  TTL below one, a negative `jobs.max_requeues` or `dispatch.affinity_tolerance`, and a
+  `presigned.ttl_minutes` outside 1–10080 (S3 presigns 1 minute to 7 days). Such a value
+  already in the table is logged and falls back to its default, like a malformed one.
 - `taas-admin job show` prints its timestamps as ISO 8601 (`2026-10-25T23:58:40`, like
   `--json` elsewhere) instead of with a space.
 - The OpenAPI schema lists the allowed values of every job and batch `status` field
@@ -289,6 +293,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A `presigned.ttl_minutes` of 0, a negative one or one over 7 days no longer fails
+  every harvested job: it's refused on set, and falls back to the default on read.
 - The submit worker drops a queued job whose Redis state has expired or been deleted
   from its queue as soon as it peeks it. Before, it offered the job as a `default`
   domain job: until a backend serving `default` claimed it, it took a dispatch slot every

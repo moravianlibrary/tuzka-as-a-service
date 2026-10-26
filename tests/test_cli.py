@@ -89,8 +89,9 @@ def test_config_set_then_get() -> None:
 def test_config_set_refuses_an_unknown_key_or_a_bad_value() -> None:
     unknown = runner.invoke(app, ["config", "set", "jobs.max_requeue", "7"])
     malformed = runner.invoke(app, ["config", "set", "jobs.max_requeues", "seven"])
+    out_of_range = runner.invoke(app, ["config", "set", "presigned.ttl_minutes", "0"])
 
-    assert (unknown.exit_code, malformed.exit_code) == (2, 2)
+    assert (unknown.exit_code, malformed.exit_code, out_of_range.exit_code) == (2, 2, 2)
     assert "unknown config key 'jobs.max_requeue'" in unknown.output
     assert _ok("config", "list", "--json").strip() == "[]"  # nothing stored
 

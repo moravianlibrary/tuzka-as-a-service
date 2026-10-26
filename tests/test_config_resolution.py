@@ -92,6 +92,16 @@ def test_malformed_value_keeps_its_default_only():
     assert config.presigned_ttl_minutes == 15  # the rest of the table still applies
 
 
+def test_out_of_range_value_keeps_its_default_only():
+    config = RuntimeConfig.from_rows(
+        {"presigned.ttl_minutes": 0, "storage.incoming_ttl_minutes": -1, "jobs.max_requeues": 2}
+    )
+
+    assert config.presigned_ttl_minutes == 60
+    assert config.storage_ttl_minutes("incoming") == 60
+    assert config.max_requeues == 2  # the rest of the table still applies
+
+
 def test_parse_entry_accepts_what_the_reader_reads():
     assert RuntimeConfig.parse_entry("jobs.max_requeues", 7) == 7
     assert RuntimeConfig.parse_entry("dispatch.affinity_tolerance", 1) == 1.0
@@ -115,6 +125,16 @@ def test_parse_entry_accepts_what_the_reader_reads():
         ("rate_limit.query", {"bursts": 1}),
         ("rate_limit.query", {"burst": "many"}),
         ("rate_limit.query", {"burst": 2.5}),
+        # Out of range: the presign TTL is what S3 allows (1 minute to 7 days).
+        ("presigned.ttl_minutes", 0),
+        ("presigned.ttl_minutes", -5),
+        ("presigned.ttl_minutes", 20_000),
+        ("jobs.max_requeues", -1),
+        ("jobs.queued_timeout_seconds", 0),
+        ("dispatch.affinity_tolerance", -0.5),
+        ("load.default_seconds_per_page", 0),
+        ("storage.results_max_bytes", 0),
+        ("storage.incoming_ttl_minutes", 0),
     ],
 )
 def test_parse_entry_refuses_what_the_reader_would_ignore(key, value):
