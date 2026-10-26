@@ -55,7 +55,7 @@ from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
 from app.vocabulary import DEFAULT_DOMAIN, FailureStage, Fmt, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
-from app.workers.stages import StageTimer, stage_metric_rows
+from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 
 logger = logging.getLogger("submit-worker")
 
@@ -743,15 +743,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 stages_flushed_at = time.monotonic()
                 p95 = timer.p95()
                 totals = timer.flush()
-                for stage, (count, total, maximum) in sorted(totals.items()):
-                    logger.info(
-                        "stage=%s n=%d total_s=%.6f max_s=%.6f p95_s=%.6f",
-                        stage,
-                        count,
-                        total,
-                        maximum,
-                        p95[stage],
-                    )
+                log_stages(logger, totals, p95)
                 if settings.clickhouse_url and totals:
                     try:
                         await live_metrics.insert_rows(

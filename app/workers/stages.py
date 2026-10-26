@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
@@ -14,9 +16,21 @@ from app.services.events import ch_datetime
 from app.telemetry import child_span
 
 
+@dataclass(frozen=True)
+class StageTotals:
+    """One stage's runs since the last flush: how many, and their total and longest time."""
+
+    count: int = 0
+    total_s: float = 0.0
+    max_s: float = 0.0
+
+    def added(self, elapsed: float) -> StageTotals:
+        return StageTotals(self.count + 1, self.total_s + elapsed, max(self.max_s, elapsed))
+
+
 class StageTimer:
     def __init__(self) -> None:
-        self._totals: dict[str, tuple[int, float, float]] = {}
+        self._totals: dict[str, StageTotals] = {}
         self._samples: dict[str, list[float]] = {}
         self._stack: ContextVar[tuple[str, ...]] = ContextVar("stage_stack", default=())
 
@@ -31,8 +45,7 @@ class StageTimer:
                 yield
         finally:
             elapsed = time.perf_counter() - start
-            count, total, maximum = self._totals.get(path, (0, 0.0, 0.0))
-            self._totals[path] = (count + 1, total + elapsed, max(maximum, elapsed))
+            self._totals[path] = self._totals.get(path, StageTotals()).added(elapsed)
             self._samples.setdefault(path, []).append(elapsed)
             self._stack.reset(token)
 
@@ -43,23 +56,35 @@ class StageTimer:
             for name, samples in self._samples.items()
         }
 
-    def flush(self) -> dict[str, tuple[int, float, float]]:
+    def flush(self) -> dict[str, StageTotals]:
         totals = self._totals
         self._totals = {}
         self._samples = {}
         return totals
 
 
-def stage_metric_rows(
-    worker: str, totals: dict[str, tuple[int, float, float]]
-) -> list[dict[str, Any]]:
+def log_stages(
+    logger: logging.Logger, totals: dict[str, StageTotals], p95: dict[str, float]
+) -> None:
+    for stage, t in sorted(totals.items()):
+        logger.info(
+            "stage=%s n=%d total_s=%.6f max_s=%.6f p95_s=%.6f",
+            stage,
+            t.count,
+            t.total_s,
+            t.max_s,
+            p95[stage],
+        )
+
+
+def stage_metric_rows(worker: str, totals: dict[str, StageTotals]) -> list[dict[str, Any]]:
     stamp = ch_datetime(utcnow())
     return [
         {
             "ts": stamp,
             "metric": "worker_stage_seconds",
             "labels": {"worker": worker, "stage": stage},
-            "value": total,
+            "value": t.total_s,
         }
-        for stage, (_, total, _) in sorted(totals.items())
+        for stage, t in sorted(totals.items())
     ]
