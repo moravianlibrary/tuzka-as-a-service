@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import statistics
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import redis.asyncio as aioredis
 
@@ -24,7 +25,18 @@ PENALTY = 1.5  # per failed attempt (D6)
 MAX_PENALTY = 10.0
 MIN_MEGAPIXELS = 0.01  # a thumbnail doesn't make the per-MP figure explode
 
-Scores = dict[tuple[int, str], tuple[float, int, float]]  # (spp, samples, penalty)
+
+@dataclass(frozen=True)
+class Score:
+    """One (backend, domain) score: average seconds per megapixel over ``samples`` pages,
+    and the failure penalty factor."""
+
+    spp: float
+    samples: int
+    penalty: float
+
+
+Scores = dict[tuple[int, str], Score]  # keyed by (backend id, domain)
 
 
 def _key(backend_id: int) -> str:
@@ -48,18 +60,18 @@ def effective_spp(backend_id: int, domain: str, scores: Scores, fallback: float)
     the others that have enough (D3); with none, its own few pages, else ``fallback``.
     """
     own = scores.get((backend_id, domain))
-    penalty = own[2] if own else 1.0
-    if own and own[1] >= COLD_SAMPLES:
-        return own[0] * penalty
+    penalty = own.penalty if own else 1.0
+    if own and own.samples >= COLD_SAMPLES:
+        return own.spp * penalty
     warm = [
-        spp
-        for (other, dom), (spp, samples, _) in scores.items()
-        if dom == domain and other != backend_id and samples >= COLD_SAMPLES
+        score.spp
+        for (other, dom), score in scores.items()
+        if dom == domain and other != backend_id and score.samples >= COLD_SAMPLES
     ]
     if warm:
         return statistics.median(warm) * penalty
-    if own and own[1] > 0:
-        return own[0] * penalty
+    if own and own.samples > 0:
+        return own.spp * penalty
     return fallback * penalty
 
 
@@ -107,9 +119,9 @@ async def load_scores(
         for i, domain in enumerate(names):
             spp, samples, pen = values[3 * i : 3 * i + 3]
             if spp is not None:
-                scores[(backend_id, domain)] = (float(spp), int(samples or 0), _f(pen) or 1.0)
+                scores[(backend_id, domain)] = Score(float(spp), int(samples or 0), _f(pen) or 1.0)
             elif pen is not None:
-                scores[(backend_id, domain)] = (0.0, 0, float(pen))
+                scores[(backend_id, domain)] = Score(0.0, 0, float(pen))
     return scores
 
 
