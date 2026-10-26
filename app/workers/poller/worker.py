@@ -130,7 +130,6 @@ class PollerWorker:
         self.stop = stop
         self.timer = StageTimer()
         self.stages_flushed_at = time.monotonic()
-        self.cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
         # Backend rows by id, read from the DB once each; None = the row is gone.
         self.backends: dict[int, Backend | None] = {}
         # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
@@ -282,7 +281,7 @@ class PollerWorker:
         adapter = await self.adapter_for(state)
         with self.timer.stage("fetch_outputs"):
             fetched = await fetch_outputs(adapter, engine_job_id, state.outputs)
-        stats = self._output_stats(fetched, run)
+        stats = await self._output_stats(fetched, run)
         stored = await self._store_results(job_id, state, run, fetched)
 
         with self.timer.stage("set_done"):
@@ -298,12 +297,13 @@ class PollerWorker:
             await self._report_done(job_id, state, run, stats, stored, batch)
         logger.info(f"Published done event for {state.username}")
 
-    def _output_stats(self, fetched: dict[str, bytes], run: EngineRun) -> OutputStats:
+    async def _output_stats(self, fetched: dict[str, bytes], run: EngineRun) -> OutputStats:
         parsed_alto = None
         # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
+        # In a thread: a page's ALTO is megabytes of XML, and the loop serves every poll.
         if alto := fetched.get("alto"):
             with self.timer.stage("parse_alto"):
-                parsed_alto = parse_alto(alto)
+                parsed_alto = await asyncio.to_thread(parse_alto, alto)
         return output_stats(run, parsed_alto, fetched.get("txt"))
 
     async def _store_results(
@@ -409,7 +409,9 @@ class PollerWorker:
         """Compress and store one output; its ``job_results`` row."""
         obj_path = f"{username}/{job_id}.{ext_for(output)}.zst"
         with self.timer.stage("compress"):
-            compressed = self.cctx.compress(raw)
+            compressed = await asyncio.to_thread(
+                _compress, raw, self.settings.zstd_compression_level
+            )
         with self.timer.stage("store_put"):
             await put_object(
                 self.results_client,
@@ -853,6 +855,12 @@ class PollerWorker:
         if current_task is not None and current_task.cancelling():
             self.poll_task.cancel()
         await asyncio.gather(self.poll_task, return_exceptions=True)
+
+
+def _compress(data: bytes, level: int) -> bytes:
+    """Zstd-compress one output; a compressor per call, since this runs in a worker
+    thread and a ``ZstdCompressor`` can't be shared between threads."""
+    return zstandard.ZstdCompressor(level=level).compress(data)
 
 
 async def main() -> None:
