@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 import redis.asyncio as aioredis
@@ -194,12 +195,21 @@ async def _pending_levels(r: aioredis.Redis) -> list[int]:
     return prios or [0]
 
 
-async def peek_pending(r: aioredis.Redis, count: int) -> list[tuple[str, float, int]]:
-    """The first ``count`` pending jobs as ``(job_id, score, priority)``, highest priority
-    first and oldest first within one. Nothing is removed: a job leaves its queue only when
+@dataclass(frozen=True)
+class QueueEntry:
+    """A job in a pending queue: its id, its queue score (submit time) and the priority
+    level whose queue it's in."""
+
+    job_id: str
+    score: float
+    priority: int
+
+
+async def peek_pending(r: aioredis.Redis, count: int) -> list[QueueEntry]:
+    """The first ``count`` pending jobs, highest priority first and oldest first within one. Nothing is removed: a job leaves its queue only when
     a worker claims it (``claim_pending``), so one that no backend can serve yet, or that
     a worker was holding when it died, is never lost."""
-    results: list[tuple[str, float, int]] = []
+    results: list[QueueEntry] = []
     for prio in await _pending_levels(r):
         remaining = count - len(results)
         if remaining <= 0:
@@ -211,7 +221,7 @@ async def peek_pending(r: aioredis.Redis, count: int) -> list[tuple[str, float, 
         )
         for member, score in batch:
             member_str = member.decode() if isinstance(member, bytes) else member
-            results.append((member_str, float(score), prio))
+            results.append(QueueEntry(member_str, float(score), prio))
     return results
 
 

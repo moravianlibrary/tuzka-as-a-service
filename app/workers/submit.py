@@ -28,6 +28,7 @@ from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, failure
 from app.services.job_attempts import append_attempt
 from app.services.redis_jobs import (
+    QueueEntry,
     batch_event,
     claim_pending,
     count_requeue,
@@ -87,15 +88,15 @@ class BackendSlot:
     assigned: int = 0
 
 
-def pending_job(job_id: str, score: float, state: JobState | None) -> PendingJob:
+def pending_job(entry: QueueEntry, state: JobState | None) -> PendingJob:
     """A peeked job as dispatch sees it. One whose state is gone is offered as a default
     job, as it always was: claimed by a backend, its dispatch then finds no state and
     drops it."""
     if state is None:
-        return PendingJob(job_id, score, DEFAULT_DOMAIN, Fmt.MULTI.outputs)
+        return PendingJob(entry.job_id, entry.score, DEFAULT_DOMAIN, Fmt.MULTI.outputs)
     return PendingJob(
-        job_id,
-        score,
+        entry.job_id,
+        entry.score,
         state.domain,
         state.outputs,
         state.avoid_backends,
@@ -672,11 +673,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         break  # nothing pending — lower tiers have nothing to do either
 
                     with timer.stage("meta"):
-                        states = await get_jobs(r, [job_id for job_id, _, _ in entries])
-                    priorities = {job_id: prio for job_id, _, prio in entries}
-                    pending = [
-                        pending_job(job_id, score, states[job_id]) for job_id, score, _ in entries
-                    ]
+                        states = await get_jobs(r, [entry.job_id for entry in entries])
+                    priorities = {entry.job_id: entry.priority for entry in entries}
+                    pending = [pending_job(entry, states[entry.job_id]) for entry in entries]
 
                     # Speed scores for this tier's backends and these jobs' domains, once.
                     job_domains = {job.domain for job in pending}

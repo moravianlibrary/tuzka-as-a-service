@@ -9,6 +9,7 @@ import pytest
 import redis.asyncio as aioredis
 
 from app.services.redis_jobs import (
+    QueueEntry,
     claim_pending,
     enqueue_job,
     get_backend_batches,
@@ -51,12 +52,12 @@ async def test_peek_orders_by_priority_then_age_and_removes_nothing(
     await _enqueue(redis_client, "new", 0, 200.0)
     await _enqueue(redis_client, "urgent", 5, 300.0)
 
-    assert [e[0] for e in await peek_pending(redis_client, 2)] == ["urgent", "old"]
+    assert [e.job_id for e in await peek_pending(redis_client, 2)] == ["urgent", "old"]
     # Peeking again sees the same jobs: nothing left the queue.
     assert await peek_pending(redis_client, 10) == [
-        ("urgent", 300.0, 5),
-        ("old", 100.0, 0),
-        ("new", 200.0, 0),
+        QueueEntry("urgent", 300.0, 5),
+        QueueEntry("old", 100.0, 0),
+        QueueEntry("new", 200.0, 0),
     ]
 
 
@@ -83,7 +84,7 @@ async def test_requeue_orphans_puts_back_only_lost_jobs(redis_client: aioredis.R
 
     ids = ["lost", "fresh", "waiting", "delayed", "running", "unknown"]
     assert await requeue_orphans(redis_client, ids, now) == ["lost"]
-    assert [e[0] for e in await peek_pending(redis_client, 10)] == ["lost", "waiting"]
+    assert [e.job_id for e in await peek_pending(redis_client, 10)] == ["lost", "waiting"]
     # Already back on its queue: a second sweep leaves it alone.
     assert await requeue_orphans(redis_client, ids, now) == []
 
