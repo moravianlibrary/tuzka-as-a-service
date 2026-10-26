@@ -156,12 +156,13 @@ the latency-proxy setup, and which column to read for which question are in
 ## Local development (without containers)
 
 ```bash
-make infra                                  # postgres + redis + minio in Docker
-pip install -e ".[api]"                     # taas + web/api deps (workers need only `.`)
-alembic upgrade head
-cp .env.local.example .env.local            # adjust if needed
-uvicorn app.main:app --reload --port 8080
+make infra          # postgres + redis + minio in Docker (also writes .env.local)
+make db-upgrade     # migrate the infra DB
+make dev-api        # the API with auto-reload on :8080 (DEV_PORT= to move it)
+make dev-submit     # and/or dev-poller, dev-cleanup: one worker per terminal
 ```
+
+All of them run in the locked uv env with `.env.local`'s settings (localhost hostnames).
 
 ## Deployment (Kubernetes / Helm)
 

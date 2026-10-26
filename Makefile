@@ -138,6 +138,28 @@ dev-poller: env ## Run the poller worker on the host
 dev-cleanup: env ## Run the cleanup worker on the host
 	$(UV) python -m app.workers.cleanup
 
+# ─── Database (alembic; DATABASE_URL from the env, else .env.local) ────────────────
+
+.PHONY: db-upgrade
+db-upgrade: ## Migrate the database up to REV (default head)
+	$(UV) alembic upgrade $(or $(REV),head)
+
+.PHONY: db-downgrade
+db-downgrade: ## Migrate the database down to REV (default: one migration back)
+	$(UV) alembic downgrade $(or $(REV),-1)
+
+.PHONY: db-migrate
+db-migrate: ## Start the next numbered migration, to write by hand (requires MSG=...)
+	$(if $(MSG),,$(error MSG is required, e.g. make db-migrate MSG="add job tags"))
+	@# Not --autogenerate: the models don't mirror the schema type for type (String vs
+	@# TEXT, some indexes live only in migrations), so its diff is mostly noise.
+	@last=$$(ls alembic/versions | sed -n 's/^\([0-9]\{3\}\)_.*\.py$$/\1/p' | sort | tail -1); \
+	$(UV) alembic revision --rev-id $$(printf '%03d' $$((10#$$last + 1))) -m "$(MSG)"
+
+.PHONY: db-history
+db-history: ## List the migrations, newest first
+	$(UV) alembic history
+
 # ─── Tests ───────────────────────────────────────────────────────────────────────────
 
 .PHONY: test

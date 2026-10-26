@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `make db-upgrade` / `db-downgrade` (`REV=`), `db-history`, and `db-migrate MSG=`, which
+  starts the next numbered migration (`024_…`) from a template in the repo's style.
+  They use `DATABASE_URL` from the environment, else `.env.local`.
 - `make dev-api`, `dev-submit`, `dev-poller` and `dev-cleanup` run the API (with
   auto-reload) or a worker on the host against `make infra`. `make env` also writes
   `.env.local`, with the same `KEY_ENCRYPTION_SECRET` as `.env.app`.
