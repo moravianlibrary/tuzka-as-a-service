@@ -288,6 +288,8 @@ All notable changes to this project are documented here. The format is based on
 - A malformed value in the `config` table (e.g. a non-numeric timeout, TTL or rate
   limit) is logged and falls back to its default, instead of failing every request or
   worker tick that reads it.
+- A batch page's `dispatched`, `done` and `failed` job events carry its `batch_id`;
+  only `submitted` did, so per-batch charts saw no outcomes.
 - A retried batch page keeps its megapixels. Retry left them out of the job row and its
   Redis state, so dispatch scored the page as 1 MP and the poller recorded the
   backend's seconds per megapixel against the wrong size.

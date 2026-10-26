@@ -94,7 +94,7 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 
 - [x] D3: one backend → adapter cache (`poller.py` and `submit.py` each have one)
 - [x] D4: `Backend.display_label` instead of `label or str(id)` ×4
-- [ ] D7: `JobEvent` built from `JobState` instead of field by field in four places
+- [x] D7: `JobEvent` built from `JobState` instead of field by field in four places
 - [ ] Named types for the tuples: `process_chunk`'s done/failed/requeue lists,
       `results_to_store`, `perf.Scores`, `StageTimer` totals, `peek_pending`,
       `live_metrics` backends, batch `pages`, `job_spec._capabilities`

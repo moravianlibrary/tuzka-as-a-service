@@ -197,34 +197,28 @@ async def submit_job(
     state_ttl = await config_service.get_state_ttl_seconds(db)
     user_row = await db.execute(select(User).where(User.username == username))
     user_priority = (user_row.scalar_one_or_none() or User()).priority or 0
-    await redis_jobs.enqueue_job(
-        r,
-        str(job.id),
-        JobState(
-            username=username,
-            external_id=label,
-            fmt=job_fmt,
-            domain=spec.domain,
-            outputs=spec.outputs,
-            options=spec.options,
-            ext=ext,
-            megapixels=megapixels,
-            submitted_at=time.time(),
-            priority=user_priority,
-            # The workers continue this request's trace from here (empty when off).
-            trace=inject_trace_context(),
-        ),
-        state_ttl,
+    state = JobState(
+        username=username,
+        external_id=label,
+        fmt=job_fmt,
+        domain=spec.domain,
+        outputs=spec.outputs,
+        options=spec.options,
+        ext=ext,
+        megapixels=megapixels,
+        submitted_at=time.time(),
+        priority=user_priority,
+        # The workers continue this request's trace from here (empty when off).
+        trace=inject_trace_context(),
     )
+    await redis_jobs.enqueue_job(r, str(job.id), state, state_ttl)
 
     get_emitter().emit(
-        JobEvent(
-            ts=utcnow(),
-            event=JobEventName.SUBMITTED,
-            job_id=str(job.id),
-            username=username,
-            domain=spec.domain,
-            outputs=sorted(spec.outputs),
+        JobEvent.from_state(
+            utcnow(),
+            JobEventName.SUBMITTED,
+            str(job.id),
+            state,
             file_size_bytes=len(image_bytes),
         )
     )

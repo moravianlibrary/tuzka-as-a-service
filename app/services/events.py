@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from app.schemas.attempt import Attempt
+from app.schemas.redis import JobState
 from app.vocabulary import ErrorClass, FailureStage, JobEventName
 
 
@@ -76,6 +77,21 @@ class JobEvent:
     mean_conf: float | None = None
     # Adapter-specific metrics (step 9), as strings.
     extra: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_state(
+        cls, ts: datetime, event: JobEventName, job_id: str, state: JobState, **fields: Any
+    ) -> JobEvent:
+        """An event for a job, its identity from the job's Redis hash; *fields* add the
+        rest, or override what the hash says (e.g. the backend a job is being sent to)."""
+        identity: dict[str, Any] = {
+            "username": state.username,
+            "domain": state.domain,
+            "outputs": sorted(state.outputs),
+            "batch_id": state.batch_id,
+            "backend_id": state.backend_id,
+        }
+        return cls(ts=ts, event=event, job_id=job_id, **(identity | fields))
 
 
 def failure(

@@ -341,14 +341,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     ) -> JobEvent:
         """An event for a job the poller is finishing, from its hash and DB row."""
         backend = backends.get(state.backend_id) if state.backend_id is not None else None
-        return JobEvent(
-            ts=utcnow(),
-            event=name,
-            job_id=job_id,
-            username=state.username,
-            domain=state.domain,
-            outputs=sorted(state.outputs),
-            backend_id=state.backend_id,
+        return JobEvent.from_state(
+            utcnow(),
+            name,
+            job_id,
+            state,
             backend=backend.display_label if backend else "",
             adapter=backend.adapter if backend else "",
             engine_version=(job_rec.engine_version if job_rec else None) or "",

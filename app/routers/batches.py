@@ -216,35 +216,21 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
     trace = inject_trace_context()
     emitter = get_emitter()
     for index, (job_id, ext, megapixels) in enumerate(pages):
-        await redis_jobs.enqueue_job(
-            r,
-            str(job_id),
-            JobState(
-                username=username,
-                batch_id=str(batch_id),
-                fmt=job_fmt,
-                domain=spec.domain,
-                outputs=spec.outputs,
-                options=spec.options,
-                ext=ext,
-                megapixels=megapixels,
-                submitted_at=page_score(submitted, index),
-                priority=priority,
-                trace=trace,
-            ),
-            state_ttl,
+        state = JobState(
+            username=username,
+            batch_id=str(batch_id),
+            fmt=job_fmt,
+            domain=spec.domain,
+            outputs=spec.outputs,
+            options=spec.options,
+            ext=ext,
+            megapixels=megapixels,
+            submitted_at=page_score(submitted, index),
+            priority=priority,
+            trace=trace,
         )
-        emitter.emit(
-            JobEvent(
-                ts=utcnow(),
-                event=JobEventName.SUBMITTED,
-                job_id=str(job_id),
-                batch_id=str(batch_id),
-                username=username,
-                domain=spec.domain,
-                outputs=sorted(spec.outputs),
-            )
-        )
+        await redis_jobs.enqueue_job(r, str(job_id), state, state_ttl)
+        emitter.emit(JobEvent.from_state(utcnow(), JobEventName.SUBMITTED, str(job_id), state))
     return BatchSubmitResponse(
         batch_id=batch_id, external_id=label, total=len(pages), skipped=skipped
     )

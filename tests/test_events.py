@@ -6,6 +6,7 @@ from datetime import datetime
 import pytest
 
 from app.schemas.attempt import Attempt
+from app.schemas.redis import JobState
 from app.services.events import (
     JobEvent,
     attempt_failure,
@@ -14,7 +15,7 @@ from app.services.events import (
     extra_metrics,
     job_event_row,
 )
-from app.vocabulary import FailureStage
+from app.vocabulary import FailureStage, JobEventName
 
 
 @pytest.mark.parametrize(
@@ -130,3 +131,22 @@ def test_extra_metrics_keeps_adapter_specific_ones_as_strings() -> None:
         "georef.status": "ok",
         "words": "340",
     }
+
+
+def test_from_state_takes_the_job_identity_from_its_hash() -> None:
+    state = JobState(
+        username="alice",
+        batch_id="b1",
+        fmt="multi",
+        domain="maps",
+        outputs=frozenset({"txt", "alto"}),
+        submitted_at=0.0,
+        backend_id=3,
+    )
+    event = JobEvent.from_state(
+        datetime(2026, 10, 20), JobEventName.DONE, "j1", state, backend_id=4, total_s=1.5
+    )
+    assert (event.username, event.domain, event.outputs) == ("alice", "maps", ["alto", "txt"])
+    assert event.batch_id == "b1"
+    assert event.backend_id == 4  # a field overrides the hash
+    assert event.total_s == 1.5

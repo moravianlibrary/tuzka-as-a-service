@@ -389,13 +389,11 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         outputs = state.outputs
 
         def event(name: JobEventName, **fields: Any) -> JobEvent:
-            return JobEvent(
-                ts=utcnow(),
-                event=name,
-                job_id=job_id,
-                username=username,
-                domain=domain,
-                outputs=sorted(outputs),
+            return JobEvent.from_state(
+                utcnow(),
+                name,
+                job_id,
+                state,
                 backend_id=backend.id,
                 backend=backend.display_label,
                 adapter=backend.adapter,
