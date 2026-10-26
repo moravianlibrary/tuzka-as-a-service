@@ -20,11 +20,12 @@ OCR_DOMAINS = ("default", "kramarky", "handwritten", "kurrent")
 
 
 class FakeBackend:
-    """The allocator reads only ``id`` and ``priority``."""
+    """The allocator reads only ``id``, ``priority`` and ``max_inflight``."""
 
     def __init__(self, id_: int) -> None:
         self.id = id_
         self.priority = 0
+        self.max_inflight = 4
 
 
 def tuzkaocr_schema() -> dict[str, Any]:

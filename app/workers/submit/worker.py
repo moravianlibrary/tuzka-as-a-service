@@ -639,8 +639,7 @@ class SubmitWorker:
             return perf.effective_spp(backend_id, domain, scores, fallback[domain])
 
         with self.timer.stage("allocate"):
-            assignments, _ = allocate_scored(tier, pending, spp, tolerance)
-        return assignments
+            return allocate_scored(tier, pending, spp, tolerance)
 
     async def _flush_stages(self) -> None:
         """Log the stage timings, and send them to ClickHouse, once a minute."""

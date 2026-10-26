@@ -7,7 +7,7 @@ from app.services.domain_sync import plan_domain_links
 from app.services.job_spec import options_errors
 from app.services.load import compute_load, group_load
 from app.workers.stages import StageTimer
-from app.workers.submit.steps import allocate_jobs
+from app.workers.submit.steps import allocate_scored
 from app.workers.submit.types import BackendSlot
 
 from .conftest import (
@@ -20,12 +20,18 @@ from .conftest import (
 )
 
 
-def test_allocate_jobs_10_backends_500_jobs(benchmark) -> None:
+def test_allocate_scored_10_backends_500_jobs(benchmark) -> None:
     slots, jobs = make_slots(10, free=40), make_jobs(500)
 
     def run() -> None:
-        # allocate_jobs decrements free counters, so each round gets fresh (cheap) slots.
-        allocate_jobs([BackendSlot(s.backend, s.free, s.domains) for s in slots], jobs)
+        # allocate_scored updates the slots' counters, so each round gets fresh (cheap)
+        # slots.
+        allocate_scored(
+            [BackendSlot(s.backend, s.free, s.domains) for s in slots],
+            jobs,
+            lambda backend_id, domain: 1.0,
+            0.15,
+        )
 
     benchmark(run)
 
