@@ -332,73 +332,115 @@ def log(message: str) -> None:
     print(f"[schedule] {datetime.now():%Y-%m-%d %H:%M:%S} {message}", flush=True)
 
 
-def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:  # noqa: C901, PLR0912 - split up on refactor/complexity
-    startable = cfg.engine_services + cfg.tunnel_services + cfg.gate_services
-    deadline: datetime | None = None
-    last_logged: str | None = None
+# Plans after which nothing changed, so the next tick can wait a whole poll interval.
+_IDLE_ACTIONS = {"none", "wait"}
 
-    while not stop.is_set():
-        now = datetime.now()
+
+class Scheduler:
+    """Reconciles the box against the schedule, one tick at a time. Keeps what a tick
+    can't observe: the drain deadline, and the steady state last logged."""
+
+    def __init__(self, cfg: Config, project: str, gate: Gate) -> None:
+        self.cfg = cfg
+        self.project = project
+        self.gate = gate
+        self.deadline: datetime | None = None
+        self.last_logged: str | None = None
+
+    def tick(self, now: datetime) -> Plan:
+        """Observe, plan and act; the plan acted on. A failure is logged, not raised:
+        the next tick reconciles again."""
         decision = Plan("none")
         try:
-            engine_up = _service_containers(project, cfg.engine_services, running_only=True)
+            engine_up = self._containers(self.cfg.engine_services, running_only=True)
             decision = plan(
-                want_up=is_up(cfg.windows, now),
-                gate_closed=gate.is_closed(),
+                want_up=is_up(self.cfg.windows, now),
+                gate_closed=self.gate.is_closed(),
                 engine_running=bool(engine_up),
-                drain_deadline=deadline,
+                drain_deadline=self.deadline,
                 now=now,
-                drain=cfg.drain,
+                drain=self.cfg.drain,
             )
-
-            if decision.action == "start":
-                ids = _service_containers(project, startable, running_only=False)
-                if not ids:
-                    # Nothing to start (never brought up, or `compose down`): idle
-                    # quietly instead of retrying every few seconds.
-                    decision = Plan("none")
-                    if last_logged != "absent":
-                        log("in window, but no box containers exist — run `docker compose up -d`")
-                        last_logged = "absent"
-                else:
-                    gate.open()
-                    _docker("start", *ids)
-                    deadline = None
-                    log(f"in window — gate open, {len(ids)} container(s) started")
-            elif decision.action == "close":
-                gate.close()
-                deadline = decision.drain_deadline
-                log(
-                    f"out of window — gate closed, draining engine until {deadline:%H:%M:%S} "
-                    f"({cfg.drain.total_seconds() / 60:g} min)"
-                )
-            elif decision.action in {"stop_engine", "close_stop"}:
-                gate.close()
-                to_stop = list(engine_up)
-                if cfg.stop_tunnel:
-                    to_stop += _service_containers(project, cfg.tunnel_services, running_only=True)
-                if to_stop:
-                    _docker("stop", "-t", str(cfg.stop_timeout), *to_stop)
-                deadline = None
-                reason = "drain over" if decision.action == "stop_engine" else "out of window"
-                log(f"{reason} — stopped {len(to_stop)} container(s)")
-            else:
-                state = "draining" if decision.action == "wait" else ("up" if engine_up else "down")
-                if state != last_logged:
-                    log(f"steady state: {state}")
-                    last_logged = state
+            decision = self._act(decision, engine_up)
         except subprocess.CalledProcessError as exc:
             log(f"docker command failed ({exc.returncode}): {(exc.stderr or '').strip()}")
         except Exception as exc:  # keep the loop alive; the next tick reconciles again
             log(f"tick failed: {exc}")
+        if decision.action not in _IDLE_ACTIONS:
+            self.last_logged = None
+        return decision
 
+    def _act(self, decision: Plan, engine_up: list[str]) -> Plan:
+        if decision.action == "start":
+            return self._start()
+        if decision.action == "close":
+            self._close(decision)
+        elif decision.action in {"stop_engine", "close_stop"}:
+            self._stop(decision, engine_up)
+        else:
+            self._log_steady(decision, engine_up)
+        return decision
+
+    def _start(self) -> Plan:
+        cfg = self.cfg
+        ids = self._containers(
+            cfg.engine_services + cfg.tunnel_services + cfg.gate_services, running_only=False
+        )
+        if not ids:
+            # Nothing to start (never brought up, or `compose down`): idle quietly
+            # instead of retrying every few seconds.
+            self._log_once(
+                "absent", "in window, but no box containers exist — run `docker compose up -d`"
+            )
+            return Plan("none")
+
+        self.gate.open()
+        _docker("start", *ids)
+        self.deadline = None
+        log(f"in window — gate open, {len(ids)} container(s) started")
+        return Plan("start")
+
+    def _close(self, decision: Plan) -> None:
+        self.gate.close()
+        self.deadline = decision.drain_deadline
+        log(
+            f"out of window — gate closed, draining engine until {self.deadline:%H:%M:%S} "
+            f"({self.cfg.drain.total_seconds() / 60:g} min)"
+        )
+
+    def _stop(self, decision: Plan, engine_up: list[str]) -> None:
+        self.gate.close()
+        to_stop = list(engine_up)
+        if self.cfg.stop_tunnel:
+            to_stop += self._containers(self.cfg.tunnel_services, running_only=True)
+        if to_stop:
+            _docker("stop", "-t", str(self.cfg.stop_timeout), *to_stop)
+        self.deadline = None
+        reason = "drain over" if decision.action == "stop_engine" else "out of window"
+        log(f"{reason} — stopped {len(to_stop)} container(s)")
+
+    def _log_steady(self, decision: Plan, engine_up: list[str]) -> None:
+        state = "draining" if decision.action == "wait" else ("up" if engine_up else "down")
+        self._log_once(state, f"steady state: {state}")
+
+    def _log_once(self, state: str, message: str) -> None:
+        """Log ``message`` unless ``state`` is what was logged last."""
+        if state == self.last_logged:
+            return
+        log(message)
+        self.last_logged = state
+
+    def _containers(self, services: list[str], *, running_only: bool) -> list[str]:
+        return _service_containers(self.project, services, running_only=running_only)
+
+
+def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:
+    scheduler = Scheduler(cfg, project, gate)
+    while not stop.is_set():
+        decision = scheduler.tick(datetime.now())
         # After acting, re-check soon so the next step of a transition (close -> stop)
         # isn't delayed by a whole poll interval; otherwise idle at the poll interval.
-        if decision.action in {"none", "wait"}:
-            stop.wait(cfg.poll)
-        else:
-            last_logged = None
-            stop.wait(min(cfg.poll, 5.0))
+        stop.wait(cfg.poll if decision.action in _IDLE_ACTIONS else min(cfg.poll, 5.0))
 
 
 def main() -> int:
