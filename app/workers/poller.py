@@ -10,10 +10,13 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+import redis.asyncio as aioredis
 import zstandard
+from miniopy_async.api import Minio
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
@@ -28,7 +31,7 @@ from app.schemas.redis import EngineRun, JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
-from app.services.event_emitter import get_emitter
+from app.services.event_emitter import EventEmitter, get_emitter
 from app.services.events import (
     JobEvent,
     attempt_failure,
@@ -313,51 +316,63 @@ async def _probe_failure_status(adapter: EngineAdapter, engine_job_id: str) -> i
     return None
 
 
-async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
-    logging.basicConfig(level=logging.INFO)
-    # httpx emits one INFO line per request; at poll volume it floods the log and
-    # rotates real errors out of `kubectl logs`.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    settings = Settings()
-    timer = StageTimer()
-    stages_flushed_at = time.monotonic()
-    db_engine = make_engine(settings)
-    setup_telemetry(settings, "taas-poller", db_engine=db_engine)
-    session_factory = make_session_factory(db_engine)
-    r = make_redis(settings)
-    http = httpx.AsyncClient(timeout=60.0)
-    results_client = get_results_client(settings)
-    results_public_client = get_results_public_client(settings)
-    cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
-    emitter = get_emitter(settings)
-    await emitter.start()
+class PollerWorker:
+    """The poller's long-lived clients and caches, and the steps of a pass."""
 
-    # Backend rows by id, read from the DB once each; None = the row is gone.
-    backends: dict[int, Backend | None] = {}
-    # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
-    # backend re-registered at a new URL still gets its in-flight jobs polled.
-    adapters = AdapterCache(http, settings.key_encryption_secret)
+    def __init__(
+        self,
+        settings: Settings,
+        r: aioredis.Redis,
+        session_factory: async_sessionmaker[AsyncSession],
+        http: httpx.AsyncClient,
+        results_client: Minio,
+        results_public_client: Minio,
+        emitter: EventEmitter,
+        stop: asyncio.Event,
+    ) -> None:
+        self.settings = settings
+        self.r = r
+        self.session_factory = session_factory
+        self.http = http
+        self.results_client = results_client
+        self.results_public_client = results_public_client
+        self.emitter = emitter
+        self.stop = stop
+        self.timer = StageTimer()
+        self.stages_flushed_at = time.monotonic()
+        self.cctx = zstandard.ZstdCompressor(level=settings.zstd_compression_level)
+        # Backend rows by id, read from the DB once each; None = the row is gone.
+        self.backends: dict[int, Backend | None] = {}
+        # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
+        # backend re-registered at a new URL still gets its in-flight jobs polled.
+        self.adapters = AdapterCache(http, settings.key_encryption_secret)
+        self.harvest_sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
+        # Bounds a pass's status checks: one per due job, so hundreds at once otherwise,
+        # each holding an engine and a Redis connection.
+        self.poll_sem = asyncio.Semaphore(settings.poller_poll_concurrency)
+        self.released_since_harvest = 0
+        self.poll_task: asyncio.Task[None] | None = None
 
-    async def backend_for(state: JobState) -> Backend | None:
+    async def backend_for(self, state: JobState) -> Backend | None:
         backend_id = state.backend_id
         if backend_id is None:
             return None
-        if backend_id not in backends:
-            async with session_factory() as db:
-                backends[backend_id] = await db.get(Backend, backend_id)
-        return backends[backend_id]
+        if backend_id not in self.backends:
+            async with self.session_factory() as db:
+                self.backends[backend_id] = await db.get(Backend, backend_id)
+        return self.backends[backend_id]
 
-    async def adapter_for(state: JobState) -> EngineAdapter:
+    async def adapter_for(self, state: JobState) -> EngineAdapter:
         url = state.backend_url
         if url is None:
             raise LookupError(f"job state has no backend_url (status {state.status})")
-        return adapters.for_backend(await backend_for(state), url)
+        return self.adapters.for_backend(await self.backend_for(state), url)
 
     def job_event(
-        name: JobEventName, job_id: str, state: JobState, job_rec: Job | None, **fields: Any
+        self, name: JobEventName, job_id: str, state: JobState, job_rec: Job | None, **fields: Any
     ) -> JobEvent:
         """An event for a job the poller is finishing, from its hash and DB row."""
-        backend = backends.get(state.backend_id) if state.backend_id is not None else None
+        backend = self.backends.get(state.backend_id) if state.backend_id is not None else None
         return JobEvent.from_state(
             utcnow(),
             name,
@@ -370,9 +385,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             **fields,
         )
 
-    async def check_one(job_id: str, state: JobState) -> PollOutcome:
+    async def check_one(self, job_id: str, state: JobState) -> PollOutcome:
         try:
-            adapter = await adapter_for(state)
+            adapter = await self.adapter_for(state)
             engine_job_id = _engine_job_id(state)
             status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
@@ -424,7 +439,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             stage=FailureStage.ENGINE,
         )
 
-    async def harvest(job_id: str, state: JobState, run: EngineRun | None) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+    async def harvest(self, job_id: str, state: JobState, run: EngineRun | None) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         # The job was moved to the harvest queue at engine-done, together with the last
         # engine status, so a retry (or a pass after a poller restart) still has the
         # run's timestamps even though the poll outcome is long gone.
@@ -435,10 +450,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         engine_job_id = _engine_job_id(state)
         backend_id = state.backend_id
 
-        adapter = await adapter_for(state)
+        adapter = await self.adapter_for(state)
         outputs = state.outputs
         try:
-            with timer.stage("fetch_outputs"):
+            with self.timer.stage("fetch_outputs"):
                 fetched = await fetch_outputs(adapter, engine_job_id, outputs)
             alto_bytes_for_analytics = fetched.get("alto")
             txt_bytes_for_analytics = fetched.get("txt")
@@ -450,7 +465,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             # Blocks are ALTO-only, so parse those (present for multi/alto) before compression.
             alto_blocks = alto_chars = None
             if alto_bytes_for_analytics:
-                with timer.stage("parse_alto"):
+                with self.timer.stage("parse_alto"):
                     alto_blocks, alto_chars = parse_alto(alto_bytes_for_analytics)
             # Prefer counting characters from the txt output (present for txt/multi jobs) so
             # the metric is populated regardless of fmt; count non-whitespace to match ALTO's
@@ -468,7 +483,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 job_id, external_id, JobStatus.DONE, batch_id=state.batch_id
             )
 
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 # Read the raw job to pick up submitted_at, engine_version, device, file_size.
                 job_row = await db.execute(
                     select(Job, Backend.device)
@@ -482,22 +497,22 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 result_rows: list[dict[str, Any]] = []
                 for result_fmt, raw_bytes in fetched.items():
                     obj_path = f"{username}/{job_id}.{ext_for(result_fmt)}.zst"
-                    with timer.stage("compress"):
-                        compressed = cctx.compress(raw_bytes)
-                    with timer.stage("store_put"):
+                    with self.timer.stage("compress"):
+                        compressed = self.cctx.compress(raw_bytes)
+                    with self.timer.stage("store_put"):
                         await put_object(
-                            results_client,
-                            settings.minio_results_bucket,
+                            self.results_client,
+                            self.settings.minio_results_bucket,
                             obj_path,
                             compressed,
                             "application/octet-stream",
                         )
                     logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
 
-                    with timer.stage("presign"):
+                    with self.timer.stage("presign"):
                         presigned_url = await presign_get(
-                            results_public_client,
-                            settings.minio_results_bucket,
+                            self.results_public_client,
+                            self.settings.minio_results_bucket,
                             obj_path,
                             presigned_ttl,
                         )
@@ -528,7 +543,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 done_values["finished_at"] = finished_at
                 # Only the first harvest marks it done; a second one (another poller
                 # got there first) must not report the job, its events or its timing again.
-                with timer.stage("db_write"):
+                with self.timer.stage("db_write"):
                     if result_rows:
                         # One statement for every output: with the job update below, a
                         # two-output job costs two round trips instead of three. An
@@ -554,28 +569,28 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     await batch_store.finish_if_done(db, state.batch_id)
                     await db.commit()
 
-            with timer.stage("set_done"):
-                batch = await set_done(r, job_id, state_ttl, state)  # idempotent
+            with self.timer.stage("set_done"):
+                batch = await set_done(self.r, job_id, state_ttl, state)  # idempotent
             if not first_harvest:
                 logger.info("Job %s was already harvested; not reporting it again", job_id)
                 if batch is not None:  # the first harvest died before its set_done
-                    await publish_event(r, username, batch_event(batch))
+                    await publish_event(self.r, username, batch_event(batch))
                 return
             # Engine-clock run time per megapixel scores this backend for dispatch.
             if backend_id is not None and engine_started and engine_finished:
                 seconds = (engine_finished - engine_started).total_seconds()
                 if seconds > 0:
                     await perf.record_service(
-                        r, backend_id, state.domain, seconds, state.megapixels
+                        self.r, backend_id, state.domain, seconds, state.megapixels
                     )
             # Engine-clock run time also feeds /load's seconds-per-page estimate.
             if engine_started is not None and engine_finished is not None:
                 seconds = (engine_finished - engine_started).total_seconds()
                 if seconds > 0:
-                    await record_page_seconds(r, state.domain, seconds)
-            with timer.stage("events"):
-                emitter.emit(
-                    job_event(
+                    await record_page_seconds(self.r, state.domain, seconds)
+            with self.timer.stage("events"):
+                self.emitter.emit(
+                    self.job_event(
                         JobEventName.DONE,
                         job_id,
                         state,
@@ -596,9 +611,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         ),
                     ),
                 )
-                await publish_event(r, username, event_data)
+                await publish_event(self.r, username, event_data)
                 if batch is not None:
-                    await publish_event(r, username, batch_event(batch))
+                    await publish_event(self.r, username, batch_event(batch))
             logger.info(f"Published done event for {username}")
 
         except OutputUnavailable as e:
@@ -613,7 +628,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 error=str(e),
                 retry=False,
             )
-            await mark_failed(job_id, state, str(e), attempt=attempt, run=run)
+            await self.mark_failed(job_id, state, str(e), attempt=attempt, run=run)
         except Exception as e:
             # The engine already finished this job; a transient DB/storage error here is
             # not the job's fault. Keep it on the durable harvest queue and retry with
@@ -622,7 +637,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             if is_transient_harvest_error(e):
                 harvest_attempt = state.harvest_attempts + 1
                 delay = backoff_seconds(harvest_attempt)
-                await reschedule_harvest(r, job_id, delay)
+                await reschedule_harvest(self.r, job_id, delay)
                 logger.warning(
                     "Transient error harvesting job %s; retrying in %.1fs: %s",
                     job_id,
@@ -631,9 +646,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 )
                 return
             logger.exception("Failed to harvest job %s", job_id)
-            await mark_failed(job_id, state, str(e), run=run)
+            await self.mark_failed(job_id, state, str(e), run=run)
 
     async def mark_failed(
+        self,
         job_id: str,
         state: JobState,
         error: str,
@@ -645,22 +661,22 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         username = state.username
         external_id = state.external_id
         failed_at = utcnow()
-        async with session_factory() as db:
+        async with self.session_factory() as db:
             state_ttl = await config_service.get_state_ttl_seconds(db)
             # A job another harvest already finished stays done: a late failure (say a
             # second harvest that lost the race) mustn't overwrite its results.
             done = await db.scalar(select(Job.status).where(Job.id == job_id)) == JobStatus.DONE
             if done:
                 logger.warning("Job %s is already done; not failing it: %s", job_id, error)
-                await set_done(r, job_id, state_ttl, state)
+                await set_done(self.r, job_id, state_ttl, state)
                 return
-            batch = await set_failed(r, job_id, error, state_ttl)
+            batch = await set_failed(self.r, job_id, error, state_ttl)
             if (
                 attempt
                 and attempt.backend_id is not None
                 and perf.counts_against_backend(attempt.http_status)
             ):
-                await perf.record_failure(r, attempt.backend_id, state.domain)
+                await perf.record_failure(self.r, attempt.backend_id, state.domain)
             values: dict[str, Any] = {
                 "status": JobStatus.FAILED,
                 "error": error,
@@ -684,8 +700,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             await batch_store.finish_if_done(db, state.batch_id)
 
             await db.commit()
-        emitter.emit(
-            job_event(
+        self.emitter.emit(
+            self.job_event(
                 JobEventName.FAILED,
                 job_id,
                 state,
@@ -703,42 +719,39 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             )
         )
         await publish_event(
-            r,
+            self.r,
             username,
             job_event_payload(
                 job_id, external_id, JobStatus.FAILED, batch_id=state.batch_id, error=error
             ),
         )
         if batch is not None:
-            await publish_event(r, username, batch_event(batch))
+            await publish_event(self.r, username, batch_event(batch))
 
-    sem = asyncio.Semaphore(settings.poller_harvest_concurrency)
-    # Bounds a pass's status checks: one per due job, so hundreds at once otherwise,
-    # each holding an engine and a Redis connection.
-    poll_sem = asyncio.Semaphore(settings.poller_poll_concurrency)
-
-    async def check_with_sem(job_id: str, state: JobState) -> PollOutcome:
-        with job_span("poll", job_id, state, backend_id=state.backend_id), timer.stage("poll"):
-            with timer.stage("poll_wait"):
-                await poll_sem.acquire()
+    async def check_with_sem(self, job_id: str, state: JobState) -> PollOutcome:
+        with (
+            job_span("poll", job_id, state, backend_id=state.backend_id),
+            self.timer.stage("poll"),
+        ):
+            with self.timer.stage("poll_wait"):
+                await self.poll_sem.acquire()
             try:
-                return await check_one(job_id, state)
+                return await self.check_one(job_id, state)
             finally:
-                poll_sem.release()
+                self.poll_sem.release()
 
-    async def harvest_with_sem(job_id: str, state: JobState, run: EngineRun | None) -> None:
-        with timer.stage("harvest_wait"):
-            await sem.acquire()
+    async def harvest_with_sem(self, job_id: str, state: JobState, run: EngineRun | None) -> None:
+        with self.timer.stage("harvest_wait"):
+            await self.harvest_sem.acquire()
         try:
             with job_span("harvest", job_id, state, backend_id=state.backend_id):
-                await harvest(job_id, state, run)
+                await self.harvest(job_id, state, run)
         finally:
-            sem.release()
+            self.harvest_sem.release()
 
-    released_since_harvest = 0
-
-    async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
-        nonlocal released_since_harvest
+    async def process_chunk(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+        self, statuses: list[PollOutcome], max_requeues: int, state_ttl: int
+    ) -> None:
         done_jobs: list[PollOutcome] = []
         failed_jobs: list[FailedPoll] = []
         requeue_jobs: list[RequeuedPoll] = []
@@ -747,7 +760,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         for outcome in statuses:
             state = outcome.state
             requeues = state.requeues
-            with timer.stage("classify"):
+            with self.timer.stage("classify"):
                 action = classify_poll_result(
                     outcome.status, outcome.retryable, requeues, max_requeues
                 )
@@ -768,7 +781,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # below picks these up in this same pass when it has capacity.
         if done_jobs:
             released = await asyncio.gather(
-                *[release_done(r, o.job_id, o.state, o.run) for o in done_jobs],
+                *[release_done(self.r, o.job_id, o.state, o.run) for o in done_jobs],
                 return_exceptions=True,
             )
             storing_ids: list[UUID] = []
@@ -781,7 +794,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     storing_ids.append(UUID(done.job_id))
             if storing_ids:
                 # Redis owns durable harvest work before Postgres exposes `storing`.
-                async with session_factory() as db:
+                async with self.session_factory() as db:
                     await db.execute(
                         update(Job)
                         .where(Job.id.in_(storing_ids), Job.status == JobStatus.RUNNING)
@@ -796,20 +809,20 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             now = time.time()
             current_backoff = (state.next_poll_at or now) - (state.last_poll or now)
             next_backoff = min(
-                max(current_backoff * 2, settings.poll_backoff_initial),
-                settings.poll_backoff_max,
+                max(current_backoff * 2, self.settings.poll_backoff_initial),
+                self.settings.poll_backoff_max,
             )
             new_deadline = time.time() + next_backoff
-            await schedule_next_poll(r, running.job_id, new_deadline, time.time())
+            await schedule_next_poll(self.r, running.job_id, new_deadline, time.time())
 
         # Mark failed jobs
         for failed in failed_jobs:
             job_id, state = failed.outcome.job_id, failed.outcome.state
             with (
                 job_span("fail", job_id, state, backend_id=state.backend_id),
-                timer.stage("fail"),
+                self.timer.stage("fail"),
             ):
-                await mark_failed(
+                await self.mark_failed(
                     job_id, state, failed.error, attempt=failed.attempt, run=failed.outcome.run
                 )
 
@@ -822,20 +835,20 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             for requeue in requeue_jobs:
                 job_id, state = requeue.outcome.job_id, requeue.outcome.state
                 delay, avoid_id = requeue.delay_s, state.backend_id
-                with timer.stage("requeue"):
+                with self.timer.stage("requeue"):
                     await release_and_requeue(
-                        r,
+                        self.r,
                         job_id,
                         state.submitted_at,
                         state_ttl,
                         delay_s=delay,
                         avoid_backend_id=avoid_id,
                     )
-                    await count_requeue(r, job_id)
+                    await count_requeue(self.r, job_id)
                     if avoid_id is not None:  # retryable: the backend's fault
-                        await perf.record_failure(r, avoid_id, state.domain)
+                        await perf.record_failure(self.r, avoid_id, state.domain)
                 logger.info(f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})")
-            async with session_factory() as db:
+            async with self.session_factory() as db:
                 for requeue in requeue_jobs:
                     await db.execute(
                         update(Job)
@@ -852,8 +865,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 await db.commit()
             for requeue in requeue_jobs:
                 outcome = requeue.outcome
-                emitter.emit(
-                    job_event(
+                self.emitter.emit(
+                    self.job_event(
                         JobEventName.RETRIED,
                         outcome.job_id,
                         outcome.state,
@@ -862,130 +875,162 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     )
                 )
         if done_jobs:
-            released_since_harvest += len(done_jobs)
-            await signal_poll(r)
+            self.released_since_harvest += len(done_jobs)
+            await signal_poll(self.r)
 
-    async def drain_due(due: list[str], states: dict[str, JobState]) -> None:
+    async def drain_due(self, due: list[str], states: dict[str, JobState]) -> None:
         # Refill each free status slot while the main loop harvests in parallel.
-        async with session_factory() as db:
+        async with self.session_factory() as db:
             max_requeues = (await config_service.get_runtime_config(db)).max_requeues
             state_ttl = await config_service.get_state_ttl_seconds(db)
         await drain_poll_queue(
             due,
-            concurrency=settings.poller_poll_concurrency,
-            check=lambda jid: check_with_sem(jid, states[jid]),
-            process=lambda statuses: process_chunk(statuses, max_requeues, state_ttl),
-            stop=stop,
+            concurrency=self.settings.poller_poll_concurrency,
+            check=lambda jid: self.check_with_sem(jid, states[jid]),
+            process=lambda statuses: self.process_chunk(statuses, max_requeues, state_ttl),
+            stop=self.stop,
         )
 
-    stop = install_stop()
-    poll_task: asyncio.Task[None] | None = None
-    logger.info("Poller worker started")
-    try:
-        while not stop.is_set():
-            # How long to wait before the next pass. Recomputed each iteration from the
-            # nearest scheduled next_poll_at, so we wake exactly when a running job is due
-            # rather than on a coarse grid; capped by poller_tick_seconds as an idle/self-
-            # heal ceiling. A dispatch (signal_poll from set_running) wakes us sooner still.
-            wait_timeout = settings.poller_tick_seconds
-            try:
-                if poll_task is not None and poll_task.done():
-                    try:
-                        poll_task.result()
-                    except Exception:
-                        logger.exception("Background poll batch failed")
-                    poll_task = None
-                pending_deadlines: list[float] = []
-                if poll_task is None:
-                    with timer.stage("inflight_scan"):
-                        job_ids = await get_inflight_ids(r)
-                        states_by_id: dict[str, JobState] = {}
-                        if job_ids:
-                            states = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
-                            states_by_id = {
-                                jid: state
-                                for jid, state in zip(job_ids, states, strict=True)
-                                if state is not None
-                            }
-                    now = time.time()
-                    due = [
-                        jid
-                        for jid, state in states_by_id.items()
-                        if (state.next_poll_at or 0.0) <= now
-                    ]
-                    due_set = set(due)
-                    pending_deadlines = [
-                        state.next_poll_at or 0.0
-                        for jid, state in states_by_id.items()
-                        if jid not in due_set
-                    ]
-                    if due:
-                        logger.info("Checking %d inflight jobs with bounded polling", len(due))
-                        poll_task = asyncio.create_task(drain_due(due, states_by_id))
-
-                # Harvest from the durable queue: the jobs just released above, retries
-                # whose backoff elapsed, and leftovers from a poller restart. This runs
-                # even when nothing is in flight, since a delayed retry can be due then.
-                harvest_limit = max(settings.poller_harvest_concurrency * 2, released_since_harvest)
-                released_since_harvest = 0
-                harvest_ids = await due_harvest_ids(r, harvest_limit)
-                if harvest_ids:
-                    harvest_states = await get_jobs(r, harvest_ids)
-                    missing = [jid for jid, state in harvest_states.items() if state is None]
-                    if missing:
-                        logger.warning(
-                            "Dropping %d harvest entr(ies) with expired job state", len(missing)
-                        )
-                        await forget_harvests(r, missing)
-                    results = await asyncio.gather(
-                        *[
-                            harvest_with_sem(jid, state, None)
-                            for jid, state in harvest_states.items()
-                            if state is not None
-                        ],
-                        return_exceptions=True,
-                    )
-                    for harvest_result in results:
-                        if isinstance(harvest_result, Exception):
-                            logger.error("Harvest failed: %s", harvest_result)
-
-                # Wake at the soonest scheduled poll or harvest retry, capped by the idle
-                # ceiling. A due harvest (score in the past) means don't block at all.
-                wait_timeout = next_poll_timeout(
-                    pending_deadlines, time.time(), settings.poller_tick_seconds
-                )
-                next_harvest = await next_harvest_at(r)
-                if next_harvest is not None:
-                    wait_timeout = min(wait_timeout, max(0.0, next_harvest - time.time()))
-
-            except Exception:
-                logger.exception("Poller worker failed")
+    async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+        settings = self.settings
+        r = self.r
+        logger.info("Poller worker started")
+        try:
+            while not self.stop.is_set():
+                # How long to wait before the next pass. Recomputed each iteration from the
+                # nearest scheduled next_poll_at, so we wake exactly when a running job is
+                # due rather than on a coarse grid; capped by poller_tick_seconds as an
+                # idle/self-heal ceiling. A dispatch (signal_poll from set_running) wakes
+                # us sooner still.
                 wait_timeout = settings.poller_tick_seconds
+                try:
+                    if self.poll_task is not None and self.poll_task.done():
+                        try:
+                            self.poll_task.result()
+                        except Exception:
+                            logger.exception("Background poll batch failed")
+                        self.poll_task = None
+                    pending_deadlines: list[float] = []
+                    if self.poll_task is None:
+                        with self.timer.stage("inflight_scan"):
+                            job_ids = await get_inflight_ids(r)
+                            states_by_id: dict[str, JobState] = {}
+                            if job_ids:
+                                states = await asyncio.gather(*(get_job(r, jid) for jid in job_ids))
+                                states_by_id = {
+                                    jid: state
+                                    for jid, state in zip(job_ids, states, strict=True)
+                                    if state is not None
+                                }
+                        now = time.time()
+                        due = [
+                            jid
+                            for jid, state in states_by_id.items()
+                            if (state.next_poll_at or 0.0) <= now
+                        ]
+                        due_set = set(due)
+                        pending_deadlines = [
+                            state.next_poll_at or 0.0
+                            for jid, state in states_by_id.items()
+                            if jid not in due_set
+                        ]
+                        if due:
+                            logger.info("Checking %d inflight jobs with bounded polling", len(due))
+                            self.poll_task = asyncio.create_task(self.drain_due(due, states_by_id))
 
-            if time.monotonic() - stages_flushed_at >= 60:
-                stages_flushed_at = time.monotonic()
-                p95 = timer.p95()
-                totals = timer.flush()
-                log_stages(logger, totals, p95)
-                if settings.clickhouse_url and totals:
-                    try:
-                        await live_metrics.insert_rows(
-                            http, settings, stage_metric_rows("poller", totals)
+                    # Harvest from the durable queue: the jobs just released above, retries
+                    # whose backoff elapsed, and leftovers from a poller restart. This runs
+                    # even when nothing is in flight, since a delayed retry can be due then.
+                    harvest_limit = max(
+                        settings.poller_harvest_concurrency * 2, self.released_since_harvest
+                    )
+                    self.released_since_harvest = 0
+                    harvest_ids = await due_harvest_ids(r, harvest_limit)
+                    if harvest_ids:
+                        harvest_states = await get_jobs(r, harvest_ids)
+                        missing = [jid for jid, state in harvest_states.items() if state is None]
+                        if missing:
+                            logger.warning(
+                                "Dropping %d harvest entr(ies) with expired job state",
+                                len(missing),
+                            )
+                            await forget_harvests(r, missing)
+                        results = await asyncio.gather(
+                            *[
+                                self.harvest_with_sem(jid, state, None)
+                                for jid, state in harvest_states.items()
+                                if state is not None
+                            ],
+                            return_exceptions=True,
                         )
-                    except Exception as exc:
-                        logger.warning("Stage metrics dropped: %s", exc)
+                        for harvest_result in results:
+                            if isinstance(harvest_result, Exception):
+                                logger.error("Harvest failed: %s", harvest_result)
 
-            try:
-                await wait_for_poll_signal(r, wait_timeout)
-            except Exception:  # a Redis hiccup must not end the worker
-                logger.exception("Waiting for the poll signal failed")
-                await asyncio.sleep(settings.poller_tick_seconds)
+                    # Wake at the soonest scheduled poll or harvest retry, capped by the idle
+                    # ceiling. A due harvest (score in the past) means don't block at all.
+                    wait_timeout = next_poll_timeout(
+                        pending_deadlines, time.time(), settings.poller_tick_seconds
+                    )
+                    next_harvest = await next_harvest_at(r)
+                    if next_harvest is not None:
+                        wait_timeout = min(wait_timeout, max(0.0, next_harvest - time.time()))
+
+                except Exception:
+                    logger.exception("Poller worker failed")
+                    wait_timeout = settings.poller_tick_seconds
+
+                if time.monotonic() - self.stages_flushed_at >= 60:
+                    self.stages_flushed_at = time.monotonic()
+                    p95 = self.timer.p95()
+                    totals = self.timer.flush()
+                    log_stages(logger, totals, p95)
+                    if settings.clickhouse_url and totals:
+                        try:
+                            await live_metrics.insert_rows(
+                                self.http, settings, stage_metric_rows("poller", totals)
+                            )
+                        except Exception as exc:
+                            logger.warning("Stage metrics dropped: %s", exc)
+
+                try:
+                    await wait_for_poll_signal(r, wait_timeout)
+                except Exception:  # a Redis hiccup must not end the worker
+                    logger.exception("Waiting for the poll signal failed")
+                    await asyncio.sleep(settings.poller_tick_seconds)
+        finally:
+            if self.poll_task is not None:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    self.poll_task.cancel()
+                await asyncio.gather(self.poll_task, return_exceptions=True)
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    # httpx emits one INFO line per request; at poll volume it floods the log and
+    # rotates real errors out of `kubectl logs`.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    settings = Settings()
+    db_engine = make_engine(settings)
+    setup_telemetry(settings, "taas-poller", db_engine=db_engine)
+    r = make_redis(settings)
+    http = httpx.AsyncClient(timeout=60.0)
+    emitter = get_emitter(settings)
+    await emitter.start()
+    worker = PollerWorker(
+        settings,
+        r,
+        make_session_factory(db_engine),
+        http,
+        get_results_client(settings),
+        get_results_public_client(settings),
+        emitter,
+        install_stop(),
+    )
+    try:
+        await worker.run()
     finally:
-        if poll_task is not None:
-            current_task = asyncio.current_task()
-            if current_task is not None and current_task.cancelling():
-                poll_task.cancel()
-            await asyncio.gather(poll_task, return_exceptions=True)
         await emitter.aclose()
         await http.aclose()
         await r.aclose()
