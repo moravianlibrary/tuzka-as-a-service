@@ -256,21 +256,6 @@ e2e-batch: ## A batch end to end: archive in, results archive out (PAGES=5, IMAG
 e2e-compat: ## The legacy-compat server end to end
 	TARGET=$(TARGET) IMAGE=$(IMAGE) bash scripts/test-compat.sh
 
-# ─── Bench ───────────────────────────────────────────────────────────────────────────
-
-.PHONY: bench-micro
-bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make check`)
-	$(UV) pytest tests/perf --benchmark-only --benchmark-sort=name \
-	  --benchmark-columns=min,median,mean,stddev,ops
-
-.PHONY: perf-taas
-perf-taas: ## Whole-taas measurement against a fake-engine stack (TARGET=compose|k3d, USERS=, RATE=, DURATION=, OUT=)
-	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
-
-.PHONY: perf-profile
-perf-profile: ## Profile API and workers with external py-spy during perf-taas (TARGET=k3d)
-	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_profile.sh
-
 # ─── Local k3d deploy ────────────────────────────────────────────────────────────────
 # The Helm chart in a k3d cluster, plus host TuzkaOCR engines reached through a reverse
 # tunnel (deploy/local/README.md). Typical flow:
@@ -365,7 +350,23 @@ engine-build-gpu: ## Build the GPU engine image (tuzkaocr:local-gpu)
 .PHONY: engine-build
 engine-build: engine-build-cpu engine-build-gpu ## Build both engine images
 
-# ─── API benchmark: legacy (ProArc/PERO) vs new (taas client) ────────────────────────
+# ─── Bench ───────────────────────────────────────────────────────────────────────────
+# Micro-benchmarks, whole-taas measurement and profiling, then the API benchmark.
+
+.PHONY: bench-micro
+bench-micro: ## Micro-benchmarks of the hot paths (tests/perf; not part of `make check`)
+	$(UV) pytest tests/perf --benchmark-only --benchmark-sort=name \
+	  --benchmark-columns=min,median,mean,stddev,ops
+
+.PHONY: bench-taas
+bench-taas: ## Whole-taas measurement against a fake-engine stack (TARGET=compose|k3d, USERS=, RATE=, DURATION=, OUT=)
+	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_taas.sh
+
+.PHONY: bench-profile
+bench-profile: ## Profile API and workers with external py-spy during bench-taas (TARGET=k3d)
+	TARGET=$(TARGET) USERS=$(or $(USERS),50) RATE=$(or $(RATE),10) DURATION=$(or $(DURATION),2m) bash bench/perf_profile.sh
+
+# API benchmark: legacy (ProArc/PERO) vs new (taas client).
 # Two entry points, both driven by bench/api/scenarios.toml — which is the file you
 # edit to change what runs. Full method and findings: bench/api/README.md.
 #

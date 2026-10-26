@@ -11,7 +11,7 @@ Docker Compose:
 ```bash
 docker compose -f docker-compose.yml -f bench/fake_engine/compose.yaml up -d --build
 # register the fake engines as backends (bench/fake_engine/README.md), then:
-make perf-taas USERS=50 DURATION=2m          # -> bench/perf_out/<timestamp>/
+make bench-taas USERS=50 DURATION=2m         # -> bench/perf_out/<timestamp>/
 ```
 
 k3d (what the baseline below used; ClickStack on, so `queue_s` / `store_s` come back too):
@@ -20,15 +20,16 @@ k3d (what the baseline below used; ClickStack on, so `queue_s` / `store_s` come 
 docker build -t fake-tuzkaocr:local bench/fake_engine && k3d image import fake-tuzkaocr:local -c taas
 helm upgrade taas deploy/helm/taas --reuse-values -f bench/fake_engine/values.k3d.yaml
 # disable every non-fake backend (taas-admin backend disable <id>), wait 30 s, then:
-make perf-taas TARGET=k3d USERS=50 RATE=10 DURATION=2m
+make bench-taas TARGET=k3d USERS=50 RATE=10 DURATION=2m
 # To record external CPU + idle flame graphs and stage timings around the same run:
-make perf-profile TARGET=k3d USERS=50 RATE=10 DURATION=2m
+make bench-profile TARGET=k3d USERS=50 RATE=10 DURATION=2m
 ```
 
-`perf-profile` attaches py-spy from an ephemeral debug container, so the profiled
+`bench-profile` attaches py-spy from an ephemeral debug container, so the profiled
 application keeps its own memory limit. It saves the SVGs and stage logs under the
-chosen `OUT` directory (default `bench/perf_out/<timestamp>/`). A plain `perf-taas`
-run avoids profiler overhead when comparing throughput after a fix.
+chosen `OUT` directory (default `bench/perf_out/<timestamp>/`). A plain `bench-taas`
+run avoids profiler overhead when comparing throughput after a fix. (The runs recorded
+below used the targets' earlier names, `perf-taas` and `perf-profile`.)
 
 ## Baseline
 
@@ -269,7 +270,7 @@ numbers to quote. Raw output: `bench/perf_out/c4-ab-*`, `c4-before-*`, `c4-after
 
 The D4 targets remain missed in these profiling runs: 10b done rate is 10.40/s,
 50b is lower at 9.01/s, 10b Redis use is 52.44 commands/job, and `store_s` p95 is
-12.08 s. Re-run `perf-taas` without attached profilers after each fix for comparable
+12.08 s. Re-run `bench-taas` without attached profilers after each fix for comparable
 before/after numbers.
 
 After the 50b jobs drained, `/load` still showed 17 queued although Redis had zero

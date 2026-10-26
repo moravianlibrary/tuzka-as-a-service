@@ -166,6 +166,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `make perf-taas` and `make perf-profile` are `bench-taas` and `bench-profile`, next to
+  the other `bench-*` targets.
 - The local k3d make targets are `k3d-*` (were `local-deploy-*`): `k3d-up`, `k3d-down`,
   `k3d-clean`, `k3d-forward` / `k3d-forward-stop` / `k3d-forward-bench`, `k3d-seed`,
   `k3d-scenarios`; the engine images are `engine-build`, `engine-build-cpu` and

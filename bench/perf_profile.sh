@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Profile a k3d perf-taas run from ephemeral containers, leaving worker memory untouched.
+# Profile a k3d bench-taas run from ephemeral containers, leaving worker memory untouched.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ "${TARGET:-k3d}" != k3d ]; then
-  echo "perf-profile requires TARGET=k3d" >&2
+  echo "bench-profile requires TARGET=k3d" >&2
   exit 2
 fi
 export KUBECONFIG="$HOME/.kube/k3d-taas.yaml"
 if [ "$(kubectl config current-context)" != k3d-taas ]; then
-  echo "perf-profile requires the local k3d-taas context" >&2
+  echo "bench-profile requires the local k3d-taas context" >&2
   exit 2
 fi
 
@@ -55,7 +55,7 @@ for _ in $(seq 1 60); do
     break
   fi
   if ! kill -0 "$perf_pid" 2>/dev/null; then
-    echo "perf-taas stopped before Locust started; see $OUT/perf_taas.log" >&2
+    echo "bench-taas stopped before Locust started; see $OUT/perf_taas.log" >&2
     wait "$perf_pid" || true
     exit 1
   fi
@@ -115,6 +115,6 @@ done
 
 echo "Profiles and stage totals: $OUT"
 if [ "$profile_status" -ne 0 ] || [ "$perf_status" -ne 0 ]; then
-  echo "perf-profile failed: perf-taas=$perf_status py-spy=$profile_status; see $OUT" >&2
+  echo "bench-profile failed: bench-taas=$perf_status py-spy=$profile_status; see $OUT" >&2
   exit 1
 fi
