@@ -35,12 +35,14 @@ IMAGE ?= test-data/sample.jpg
 TARGET ?= compose
 
 # ─── Release ─────────────────────────────────────────────────────────────────────────
-# Registry for `make build-push` — there is no public registry, host your own.
-# Usage: make build-push REGISTRY=ghcr.io/yourorg [TAG=0.1.0]
-# TAG defaults to the app version in ./VERSION.
+# Images: taas-api, taas-worker, taas-compat, each tagged :$(TAG) and :latest, under
+# REGISTRY/ when it's set. There is no public registry; host your own, e.g.
+# make build-push REGISTRY=ghcr.io/yourorg [TAG=0.1.0]. TAG defaults to ./VERSION.
 REGISTRY ?=
 TAG ?= $(shell cat VERSION 2>/dev/null || echo latest)
 GIT_TAG := v$(shell cat VERSION 2>/dev/null)
+IMAGE_PREFIX := $(if $(REGISTRY),$(REGISTRY)/)
+IMAGES := taas-api taas-worker taas-compat
 
 # ─── Help ────────────────────────────────────────────────────────────────────────────
 .PHONY: help
@@ -69,21 +71,6 @@ secret: ## Generate a Fernet KEY_ENCRYPTION_SECRET
 	@$(UV) python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # ─── Compose stack ───────────────────────────────────────────────────────────────────
-
-.PHONY: build
-build: ## Build all images
-	$(COMPOSE) build
-
-.PHONY: build-push
-build-push: ## Build + push api/worker/compat images (requires REGISTRY=... [TAG=$(TAG)])
-	$(if $(REGISTRY),,$(error REGISTRY is required, e.g. make build-push REGISTRY=ghcr.io/yourorg))
-	$(DOCKER) build -t $(REGISTRY)/taas-api:$(TAG)    -f api.Containerfile    .
-	$(DOCKER) build -t $(REGISTRY)/taas-worker:$(TAG) -f worker.Containerfile .
-	$(DOCKER) build -t $(REGISTRY)/taas-compat:$(TAG) -f compat/Containerfile compat
-	$(DOCKER) push $(REGISTRY)/taas-api:$(TAG)
-	$(DOCKER) push $(REGISTRY)/taas-worker:$(TAG)
-	$(DOCKER) push $(REGISTRY)/taas-compat:$(TAG)
-	@echo "pushed taas-{api,worker,compat}:$(TAG) to $(REGISTRY)"
 
 .PHONY: up
 up: env ## Build + start the full stack (detached)
@@ -447,6 +434,27 @@ version-check: ## Fail if version literals have drifted from ./VERSION
 	@bash scripts/check-version.sh
 
 # ─── Release ─────────────────────────────────────────────────────────────────────────
+
+.PHONY: build
+build: ## Build the api, worker and compat images, tagged :$(TAG) and :latest (REGISTRY= to prefix)
+	$(DOCKER) build -t $(IMAGE_PREFIX)taas-api:$(TAG) -t $(IMAGE_PREFIX)taas-api:latest -f api.Containerfile .
+	$(DOCKER) build -t $(IMAGE_PREFIX)taas-worker:$(TAG) -t $(IMAGE_PREFIX)taas-worker:latest -f worker.Containerfile .
+	$(DOCKER) build -t $(IMAGE_PREFIX)taas-compat:$(TAG) -t $(IMAGE_PREFIX)taas-compat:latest -f compat/Containerfile compat
+
+.PHONY: push
+push: ## Push the built images, :$(TAG) and :latest (requires REGISTRY=...)
+	$(if $(REGISTRY),,$(error REGISTRY is required, e.g. make push REGISTRY=ghcr.io/yourorg))
+	@for image in $(IMAGES); do \
+	  for tag in $(TAG) latest; do \
+	    $(DOCKER) push $(IMAGE_PREFIX)$$image:$$tag || exit 1; \
+	  done; \
+	done
+
+.PHONY: build-push
+build-push: build push ## Build, then push the images (requires REGISTRY=...)
+
+.PHONY: release
+release: build-push tag-version tag-latest ## Push the images and move the v$(VERSION) and latest git tags (requires REGISTRY=...)
 
 .PHONY: set-version
 set-version: ## Set the app version everywhere (requires VERSION=x.y.z)

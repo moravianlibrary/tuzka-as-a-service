@@ -166,6 +166,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `make build` builds the release images (taas-api, taas-worker, taas-compat, tagged
+  with the version and `latest`, under `REGISTRY/` when set) instead of running
+  `docker compose build` (`make up` builds the stack). `make push` pushes them,
+  `build-push` does both, and `make release` pushes and moves the `v<version>` and
+  `latest` git tags.
 - `make perf-taas` and `make perf-profile` are `bench-taas` and `bench-profile`, next to
   the other `bench-*` targets.
 - The local k3d make targets are `k3d-*` (were `local-deploy-*`): `k3d-up`, `k3d-down`,
