@@ -293,6 +293,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A job whose Redis state expired between the submit worker's peek and its claim no
+  longer leaves a `job:<id>` hash behind with no TTL; the claim drops it instead. The
+  jobs a tick dispatches are claimed in one round trip, not one per job.
 - The poller no longer loops without pause while its database is unreachable and
   harvests are due: a harvest that can't look up its backend, connect, or get a pooled
   connection backs off like any other transient harvest error, instead of staying due.

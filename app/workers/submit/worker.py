@@ -550,15 +550,12 @@ class SubmitWorker:
             pending_job(entry, states[entry.job_id]) for entry in entries if entry.job_id in states
         ]
         allocated = await self._allocate(tier, pending)
-        priorities = {entry.job_id: entry.priority for entry in entries}
+        by_id = {entry.job_id: entry for entry in entries}
         # Another submit worker (two run during a rollout) may have claimed a job first;
         # it's dispatched there, not twice.
         with self.timer.stage("claim"):
-            assignments = [
-                (job, slot)
-                for job, slot in allocated
-                if await claim_pending(self.r, job.job_id, priorities[job.job_id])
-            ]
+            claimed = await claim_pending(self.r, [by_id[job.job_id] for job, _ in allocated])
+        assignments = [(job, slot) for job, slot in allocated if job.job_id in claimed]
         if not assignments:
             return 0
 

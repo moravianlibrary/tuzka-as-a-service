@@ -225,21 +225,39 @@ async def peek_pending(r: aioredis.Redis, count: int) -> list[QueueEntry]:
     return results
 
 
-async def claim_pending(r: aioredis.Redis, job_id: str, priority: int) -> bool:
-    """Take a peeked job off its queue to dispatch it. True for exactly one worker; False
-    when another one claimed it first. ``claimed_at`` tells ``requeue_orphans`` a job
-    being dispatched right now from one that was lost."""
-    async with r.pipeline(transaction=True) as pipe:
-        pipe.zrem(_pending_key(priority), job_id)
-        pipe.hset(f"job:{job_id}", "claimed_at", str(time.time()))
-        removed, _ = await pipe.execute()
-    return bool(removed == 1)
+# claim_pending's take-off-the-queue for one job, atomic so exactly one worker wins it.
+# A job whose hash expired since the peek is only dropped: stamping claimed_at would
+# recreate the hash without a TTL. KEYS: pending ZSET, job hash. ARGV: job id, now.
+_CLAIM_LUA = """
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then return 0 end
+if redis.call('EXISTS', KEYS[2]) == 0 then return 0 end
+redis.call('HSET', KEYS[2], 'claimed_at', ARGV[2])
+return 1
+"""
+
+
+async def claim_pending(r: aioredis.Redis, entries: list[QueueEntry]) -> set[str]:
+    """Take peeked jobs off their queues to dispatch them, in one round trip; the ids
+    this worker claimed. Each job goes to exactly one worker: one another worker claimed
+    first is left out, and so is one whose state expired since the peek (it's dropped).
+    ``claimed_at`` tells ``requeue_orphans`` a job being dispatched right now from one
+    that was lost."""
+    if not entries:
+        return set()
+    sha = await r.script_load(_CLAIM_LUA)
+    now = str(time.time())
+    async with r.pipeline(transaction=False) as pipe:
+        for entry in entries:
+            keys = (_pending_key(entry.priority), f"job:{entry.job_id}")
+            pipe.evalsha(sha, len(keys), *keys, entry.job_id, now)
+        replies = await pipe.execute()
+    return {entry.job_id for entry, claimed in zip(entries, replies, strict=True) if claimed}
 
 
 async def drop_pending(r: aioredis.Redis, entries: list[QueueEntry]) -> None:
-    """Take peeked jobs whose state is gone off their queues. Not claimed: a claim would
-    write ``claimed_at`` into a job hash that no longer exists, leaving one without a TTL.
-    Their Postgres rows stay queued until the reaper times them out."""
+    """Take peeked jobs whose state is gone off their queues, before they're allocated a
+    slot they can't use. Their Postgres rows stay queued until the reaper times them
+    out."""
     async with r.pipeline(transaction=False) as pipe:
         for entry in entries:
             pipe.zrem(_pending_key(entry.priority), entry.job_id)

@@ -62,14 +62,41 @@ async def test_peek_orders_by_priority_then_age_and_removes_nothing(
     ]
 
 
+async def _claim(r: aioredis.Redis, job_id: str, priority: int = 0) -> bool:
+    return job_id in await claim_pending(r, [QueueEntry(job_id, 100.0, priority)])
+
+
 @pytest.mark.asyncio
 async def test_a_job_is_claimed_once(redis_client: aioredis.Redis) -> None:
     await _enqueue(redis_client, "j", 0, 100.0)
 
-    assert await claim_pending(redis_client, "j", 0) is True
-    assert await claim_pending(redis_client, "j", 0) is False  # another worker was first
+    assert await _claim(redis_client, "j") is True
+    assert await _claim(redis_client, "j") is False  # another worker was first
     assert await peek_pending(redis_client, 10) == []
     assert await redis_client.hget("job:j", "claimed_at") is not None
+
+
+@pytest.mark.asyncio
+async def test_peeked_jobs_are_claimed_together(redis_client: aioredis.Redis) -> None:
+    await _enqueue(redis_client, "a", 0, 100.0)
+    await _enqueue(redis_client, "b", 5, 200.0)
+    entries = await peek_pending(redis_client, 10)
+    await claim_pending(redis_client, [entries[0]])  # another worker took "b"
+
+    assert await claim_pending(redis_client, entries) == {"a"}
+    assert await peek_pending(redis_client, 10) == []
+
+
+@pytest.mark.asyncio
+async def test_claiming_a_job_whose_state_expired_leaves_no_trace(
+    redis_client: aioredis.Redis,
+) -> None:
+    await _enqueue(redis_client, "gone", 0, 100.0)
+    await redis_client.delete("job:gone")  # expired between the peek and the claim
+
+    assert await _claim(redis_client, "gone") is False
+    assert await peek_pending(redis_client, 10) == []
+    assert await redis_client.exists("job:gone") == 0  # no TTL-less hash left behind
 
 
 @pytest.mark.asyncio
@@ -83,7 +110,7 @@ async def test_dropping_a_job_whose_state_is_gone_leaves_no_trace(
     await drop_pending(redis_client, [QueueEntry("gone", 100.0, 5)])
 
     assert [e.job_id for e in await peek_pending(redis_client, 10)] == ["kept"]
-    assert await redis_client.exists("job:gone") == 0  # a claim would recreate it, TTL-less
+    assert await redis_client.exists("job:gone") == 0
 
 
 @pytest.mark.asyncio
@@ -92,7 +119,7 @@ async def test_requeue_orphans_puts_back_only_lost_jobs(redis_client: aioredis.R
     for job_id in ("lost", "fresh", "waiting", "delayed", "running"):
         await _enqueue(redis_client, job_id, 0, 100.0)
     for job_id in ("lost", "fresh", "delayed", "running"):
-        await claim_pending(redis_client, job_id, 0)
+        await _claim(redis_client, job_id)
     await redis_client.hset("job:lost", "claimed_at", str(now - 600))  # its worker died
     await schedule_retry(redis_client, "delayed", 100.0, 30.0, None)
     await set_running(redis_client, "running", "e1", "http://e1", 1, TTL)
@@ -110,7 +137,7 @@ async def test_rebuild_backend_counters_matches_the_inflight_jobs(
 ) -> None:
     for job_id in ("a", "b", "c"):
         await _enqueue(redis_client, job_id, 0, 100.0)
-        await claim_pending(redis_client, job_id, 0)
+        await _claim(redis_client, job_id)
     await redis_client.hset("job:c", "batch_id", "B1")
     await set_running(redis_client, "a", "e1", "http://e1", 1, TTL)
     await set_running(redis_client, "b", "e2", "http://e2", 2, TTL)
