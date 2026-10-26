@@ -492,12 +492,12 @@ class SubmitWorker:
         """This tick's eligible backends: healthy, with their free capacity + served
         domains (each looked up once). Full ones stay in (free=0) so a retry waits for
         them rather than falling back to the backend it avoids."""
-        healthy_backends: list[Backend] = []
-        for backend in self.backends:
-            with self.timer.stage("health"):
-                healthy = await self.check_health(backend)
-            if healthy:
-                healthy_backends.append(backend)
+        # At once: a backend that's down takes its whole health timeout to say so.
+        with self.timer.stage("health"):
+            health = await asyncio.gather(*(self.check_health(b) for b in self.backends))
+        healthy_backends = [
+            backend for backend, healthy in zip(self.backends, health, strict=True) if healthy
+        ]
         with self.timer.stage("backend_state"):
             backend_states = await get_backends_state(
                 self.r, [backend.id for backend in healthy_backends]
