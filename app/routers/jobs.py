@@ -1,10 +1,9 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
 import time
-from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
@@ -18,8 +17,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from sqlalchemy import Integer, Text, func, select, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
@@ -55,6 +53,7 @@ from app.schemas.api.job import (
 from app.schemas.redis import JobState
 from app.services import config as config_service
 from app.services import redis_jobs, storage
+from app.services.domains import served_domains
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
 from app.services.imageinfo import image_megapixels
@@ -454,41 +453,6 @@ async def list_jobs(
     )
 
 
-# One row per domain served by at least one enabled backend; outputs are unnested so
-# a domain served by several backends reports the union of what they produce.
-_SERVED_DOMAINS_SQL = text(
-    """
-    SELECT d.name, d.label, d.description, d.options_schema, d.legacy_engine_id,
-           array_agg(DISTINCT o.output ORDER BY o.output) AS outputs
-    FROM domains d
-    JOIN backend_domains bd ON bd.domain_id = d.id
-    JOIN backends b ON b.id = bd.backend_id AND b.enabled
-    CROSS JOIN LATERAL unnest(bd.outputs) AS o(output)
-    GROUP BY d.id
-    ORDER BY d.name
-    """
-).columns(
-    name=Text,
-    label=Text,
-    description=Text,
-    options_schema=JSONB,
-    legacy_engine_id=Integer,
-    outputs=ARRAY(Text),
-)
-
-
-@dataclass(frozen=True)
-class ServedDomain:
-    """A ``_SERVED_DOMAINS_SQL`` row."""
-
-    name: str
-    label: str | None
-    description: str | None
-    options_schema: dict[str, Any] | None
-    legacy_engine_id: int | None
-    outputs: list[str]
-
-
 @router.get(
     "/domains",
     response_model=DomainListResponse,
@@ -511,9 +475,8 @@ async def list_domains(
     submit ``options`` field is validated against, derived from the engine's own OpenAPI.
     A domain your key can't use isn't listed.
     """
-    rows = (await db.execute(_SERVED_DOMAINS_SQL)).mappings()
     entries = []
-    for domain in (ServedDomain(**row) for row in rows):
+    for domain in await served_domains(db):
         outputs = visible_outputs(principal, domain.name, frozenset(domain.outputs))
         if not outputs:
             continue
