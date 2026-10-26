@@ -45,7 +45,7 @@ TAGS_METADATA = [
 
 app = FastAPI(
     title="taas-compat",
-    version="0.8.1",
+    version="0.9.0",
     lifespan=lifespan,
     description=DESCRIPTION,
     license_info={"name": "Apache 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"},
