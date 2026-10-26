@@ -42,7 +42,6 @@ from app.services.redis_jobs import (
     due_harvest_ids,
     forget_harvests,
     get_inflight_ids,
-    get_job,
     get_jobs,
     job_event_payload,
     next_harvest_at,
@@ -771,12 +770,8 @@ class PollerWorker:
             job_ids = await get_inflight_ids(self.r)
             if not job_ids:
                 return {}
-            states = await asyncio.gather(*(get_job(self.r, job_id) for job_id in job_ids))
-        return {
-            job_id: state
-            for job_id, state in zip(job_ids, states, strict=True)
-            if state is not None
-        }
+            states = await get_jobs(self.r, list(job_ids))  # one pipeline, not one per job
+        return {job_id: state for job_id, state in states.items() if state is not None}
 
     async def _harvest_due(self) -> None:
         """Harvest from the durable queue: the jobs just released, retries whose backoff
