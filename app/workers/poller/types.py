@@ -3,10 +3,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from app.models.job import Job
 from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun, JobState
 from app.vocabulary import (
+    Device,
     FailureStage,
     PollStatus,
 )
@@ -56,12 +56,25 @@ class OutputStats:
 
 
 @dataclass(frozen=True, slots=True)
-class HarvestContext:
-    """What storing a harvest needs from the DB: the job row as dispatched, its
-    backend's device, and the config read for this harvest."""
+class JobRecord:
+    """What a finished job's event takes from its row: its stamps (taas clock, then
+    engine clock), the engine version, the image size and its backend's device."""
 
-    job: Job | None
-    device: str
+    submitted_at: datetime
+    dispatched_at: datetime | None
+    engine_received_at: datetime | None
+    started_at: datetime | None
+    engine_version: str | None
+    file_size_bytes: int | None
+    device: Device | None
+
+
+@dataclass(frozen=True, slots=True)
+class HarvestContext:
+    """What storing a harvest needs from the DB: the job's record (None when its row is
+    gone) and the config read for this harvest."""
+
+    record: JobRecord | None
     presigned_ttl_minutes: int
     state_ttl: int
 
@@ -72,8 +85,7 @@ class StoredHarvest:
     job row as stored, and its timeline (engine clock, then the taas-clock store)."""
 
     first_harvest: bool
-    job: Job | None
-    device: str
+    record: JobRecord | None
     state_ttl: int
     urls: dict[str, str]  # output → presigned URL
     engine_received_at: datetime | None

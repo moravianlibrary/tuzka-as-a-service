@@ -96,6 +96,7 @@ from app.workers.poller.steps import (
 from app.workers.poller.types import (
     FailedPoll,
     HarvestContext,
+    JobRecord,
     OutputStats,
     PollOutcome,
     RequeuedPoll,
@@ -160,7 +161,12 @@ class PollerWorker:
         return self.adapters.for_backend(await self.backend_for(state), url)
 
     def job_event(
-        self, name: JobEventName, job_id: str, state: JobState, job_rec: Job | None, **fields: Any
+        self,
+        name: JobEventName,
+        job_id: str,
+        state: JobState,
+        record: JobRecord | None,
+        **fields: Any,
     ) -> JobEvent:
         """An event for a job the poller is finishing, from its hash and DB row."""
         backend = self.backends.get(state.backend_id) if state.backend_id is not None else None
@@ -171,8 +177,9 @@ class PollerWorker:
             state,
             backend=backend.display_label if backend else "",
             adapter=backend.adapter if backend else "",
-            engine_version=(job_rec.engine_version if job_rec else None) or "",
-            file_size_bytes=job_rec.file_size_bytes if job_rec else None,
+            device=(record.device if record else None) or "",
+            engine_version=(record.engine_version if record else None) or "",
+            file_size_bytes=record.file_size_bytes if record else None,
             **fields,
         )
 
@@ -339,8 +346,7 @@ class PollerWorker:
 
         return StoredHarvest(
             first_harvest=first_harvest,
-            job=context.job,
-            device=context.device,
+            record=context.record,
             state_ttl=context.state_ttl,
             urls={row["fmt"]: row["presigned_url"] for row in result_rows},
             engine_received_at=stamps.get("engine_received_at"),
@@ -353,18 +359,11 @@ class PollerWorker:
     async def _harvest_context(self, job_id: str) -> HarvestContext:
         """What storing a job's results needs from the DB, read in one short session."""
         async with self.session_factory() as db:
-            # The raw job, for submitted_at, engine_version, device and file_size.
-            job_row = await db.execute(
-                select(Job, Backend.device)
-                .outerjoin(Backend, Job.backend_id == Backend.id)
-                .where(Job.id == job_id)
-            )
-            job_rec, backend_device = job_row.tuples().first() or (None, None)
+            record = await _job_record(db, job_id)
             config = await config_service.get_runtime_config(db)
             state_ttl = await config_service.get_state_ttl_seconds(db)
         return HarvestContext(
-            job=job_rec,
-            device=backend_device or "",
+            record=record,
             presigned_ttl_minutes=config.presigned_ttl_minutes,
             state_ttl=state_ttl,
         )
@@ -462,22 +461,21 @@ class PollerWorker:
         stored: StoredHarvest,
         batch: BatchCounts | None,
     ) -> None:
-        job = stored.job
+        record = stored.record
         self.emitter.emit(
             self.job_event(
                 JobEventName.DONE,
                 job_id,
                 state,
-                job,
-                device=stored.device,
+                record,
                 lines=stats.lines,
                 blocks=stats.blocks,
                 chars=stats.chars,
                 mean_conf=stats.mean_conf,
                 extra=extra_metrics(run.metrics),
                 **durations(
-                    job.submitted_at if job else None,
-                    job.dispatched_at if job else None,
+                    record.submitted_at if record else None,
+                    record.dispatched_at if record else None,
                     stored.engine_received_at,
                     stored.started_at,
                     stored.finished_at,
@@ -536,12 +534,7 @@ class PollerWorker:
             )
 
             # The job as it ended, for its failed event.
-            job_row = await db.execute(
-                select(Job, Backend.device)
-                .outerjoin(Backend, Job.backend_id == Backend.id)
-                .where(Job.id == job_id)
-            )
-            job_rec, backend_device = job_row.first() or (None, None)
+            record = await _job_record(db, job_id)
             await batch_store.finish_if_done(db, state.batch_id)
 
             await db.commit()
@@ -550,14 +543,13 @@ class PollerWorker:
                 JobEventName.FAILED,
                 job_id,
                 state,
-                job_rec,
-                device=backend_device or "",
+                record,
                 **attempt_failure(attempt),
                 **durations(
-                    job_rec.submitted_at if job_rec else None,
-                    job_rec.dispatched_at if job_rec else None,
-                    job_rec.engine_received_at if job_rec else None,
-                    job_rec.started_at if job_rec else None,
+                    record.submitted_at if record else None,
+                    record.dispatched_at if record else None,
+                    record.engine_received_at if record else None,
+                    record.started_at if record else None,
                     finished_at,
                     None,
                 ),
@@ -857,6 +849,27 @@ class PollerWorker:
         if current_task is not None and current_task.cancelling():
             self.poll_task.cancel()
         await asyncio.gather(self.poll_task, return_exceptions=True)
+
+
+async def _job_record(db: AsyncSession, job_id: str) -> JobRecord | None:
+    """The job's columns its events need, with its backend's device; None when the row
+    is gone."""
+    row = (
+        await db.execute(
+            select(
+                Job.submitted_at,
+                Job.dispatched_at,
+                Job.engine_received_at,
+                Job.started_at,
+                Job.engine_version,
+                Job.file_size_bytes,
+                Backend.device,
+            )
+            .outerjoin(Backend, Job.backend_id == Backend.id)
+            .where(Job.id == job_id)
+        )
+    ).first()
+    return JobRecord(*row) if row is not None else None
 
 
 def _compress(data: bytes, level: int) -> bytes:

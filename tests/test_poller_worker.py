@@ -384,7 +384,7 @@ async def test_a_harvest_stores_every_output_and_reports_the_job_done(
         10,  # non-whitespace characters of the txt output
         0.9,
     )
-    assert event.run_s == 20.0
+    assert (event.run_s, event.device) == (20.0, "cpu")  # device: its backend row's
     assert [(m["status"], m["alto_url"], m["txt_url"]) for m in published] == [
         (
             "done",
