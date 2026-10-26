@@ -7,6 +7,7 @@ Create Date: ${create_date}
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 ${imports if imports else ""}
 revision: str = ${repr(up_revision).replace("'", '"')}

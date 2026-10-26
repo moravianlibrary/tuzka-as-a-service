@@ -158,12 +158,11 @@ db-downgrade: ## Migrate the database down to REV (default: one migration back)
 	$(UV) alembic downgrade $(or $(REV),-1)
 
 .PHONY: db-migrate
-db-migrate: ## Start the next numbered migration, to write by hand (requires MSG=...)
+db-migrate: ## Autogenerate the next numbered migration from the models (requires MSG=...); read it before committing
 	$(if $(MSG),,$(error MSG is required, e.g. make db-migrate MSG="add job tags"))
-	@# Not --autogenerate: the models don't mirror the schema type for type (String vs
-	@# TEXT, some indexes live only in migrations), so its diff is mostly noise.
+	@# Against a database at head: the diff is between it and the models.
 	@last=$$(ls alembic/versions | sed -n 's/^\([0-9]\{3\}\)_.*\.py$$/\1/p' | sort | tail -1); \
-	$(UV) alembic revision --rev-id $$(printf '%03d' $$((10#$$last + 1))) -m "$(MSG)"
+	$(UV) alembic revision --autogenerate --rev-id $$(printf '%03d' $$((10#$$last + 1))) -m "$(MSG)"
 
 .PHONY: db-history
 db-history: ## List the migrations, newest first
@@ -252,7 +251,13 @@ e2e-compat: ## The legacy-compat server end to end
 #   make k3d-stop / k3d-start # pause and resume it all, keeping the cluster
 #   make k3d-down / k3d-clean # uninstall the chart / delete the cluster
 K3D_CLUSTER   ?= taas
-K3D_CONTEXT   := k3d-$(K3D_CLUSTER)
+# The cluster's own kubeconfig, never the shell's KUBECONFIG (which may point at a
+# real cluster): every k3d target, and anything run with TARGET=k3d, uses only this.
+K3D_KUBECONFIG ?= $(HOME)/.kube/k3d-$(K3D_CLUSTER).yaml
+k3d-%: export KUBECONFIG := $(K3D_KUBECONFIG)
+ifeq ($(TARGET),k3d)
+export KUBECONFIG := $(K3D_KUBECONFIG)
+endif
 LOCAL_DIR     := deploy/local
 LOCAL_COMPOSE := $(COMPOSE) -f $(LOCAL_DIR)/engine-proxy/compose.yaml
 TUZKAOCR_DIR  := TuzkaOCR
@@ -269,9 +274,9 @@ k3d-up: ## Create the cluster, install the chart and start the host engines (eng
 .PHONY: k3d-start
 k3d-start: ## Resume a stopped cluster and its host engines
 	k3d cluster start $(K3D_CLUSTER)
-	@$(MAKE) k3d-context
+	@$(MAKE) k3d-kubeconfig
 	$(LOCAL_COMPOSE) up -d
-	kubectl --context $(K3D_CONTEXT) wait --for=condition=Ready pods --all --timeout=300s \
+	kubectl wait --for=condition=Ready pods --all --timeout=300s \
 	  --field-selector=status.phase!=Succeeded
 
 .PHONY: k3d-stop
@@ -281,17 +286,17 @@ k3d-stop: ## Stop the port-forwards, the host engines and the cluster; keep them
 	k3d cluster stop $(K3D_CLUSTER)
 
 .PHONY: k3d-status
-k3d-status: ## The cluster, its pods, the host engines, the forwards and the kube context
+k3d-status: ## The cluster, its pods, the host engines and the forwards
 	@k3d cluster list $(K3D_CLUSTER) 2>/dev/null || echo "no k3d cluster $(K3D_CLUSTER)"
-	@echo; echo "kube context: $$(kubectl config current-context 2>/dev/null || echo none)"
-	@echo; kubectl --context $(K3D_CONTEXT) get pods 2>/dev/null || echo "cluster not reachable"
+	@echo; echo "kubeconfig: $(K3D_KUBECONFIG)"
+	@echo; kubectl get pods 2>/dev/null || echo "cluster not reachable"
 	@echo; $(LOCAL_COMPOSE) ps
 	@echo; pids="$${TMPDIR:-/tmp}/taas-local-forward.pids"; \
 	if [ -f "$$pids" ] && kill -0 "$$(head -1 "$$pids")" 2>/dev/null; then \
 	  echo "port-forwards: running"; else echo "port-forwards: not running"; fi
 
 .PHONY: k3d-down
-k3d-down: k3d-context ## Stop the engines and uninstall the chart; KEEP the cluster
+k3d-down: k3d-kubeconfig ## Stop the engines and uninstall the chart; KEEP the cluster
 	CLUSTER=$(K3D_CLUSTER) bash $(LOCAL_DIR)/teardown.sh
 
 .PHONY: k3d-clean
@@ -299,7 +304,7 @@ k3d-clean: ## Stop the engines and DELETE the cluster (everything in it)
 	CLUSTER=$(K3D_CLUSTER) bash $(LOCAL_DIR)/teardown.sh --cluster
 
 .PHONY: k3d-forward
-k3d-forward: k3d-context ## Start the port-forwards (background) and open the UIs
+k3d-forward: k3d-kubeconfig ## Start the port-forwards (background) and open the UIs
 	bash $(LOCAL_DIR)/forward.sh up
 
 .PHONY: k3d-forward-stop
@@ -307,22 +312,22 @@ k3d-forward-stop: ## Stop the background port-forwards
 	bash $(LOCAL_DIR)/forward.sh down
 
 .PHONY: k3d-forward-bench
-k3d-forward-bench: k3d-context ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
+k3d-forward-bench: k3d-kubeconfig ## Port-forwards on shifted ports, so the latency proxy can own 8080/8081/9100
 	API_PORT=18080 COMPAT_PORT=18081 RESULTS_PORT=19100 bash $(LOCAL_DIR)/forward.sh up
 
 .PHONY: k3d-seed
-k3d-seed: k3d-context ## Seed 3 test users (alice/bob/carol) with priorities and fixed keys
+k3d-seed: k3d-kubeconfig ## Seed 3 test users (alice/bob/carol) with priorities and fixed keys
 	bash $(LOCAL_DIR)/seed-users.sh
 
 .PHONY: k3d-scenarios
-k3d-scenarios: k3d-context ## Run the prioritization scenarios (needs k3d-seed and k3d-forward)
+k3d-scenarios: k3d-kubeconfig ## Run the prioritization scenarios (needs k3d-seed and k3d-forward)
 	bash $(LOCAL_DIR)/scenarios.sh
 
-# Not in help: the k3d targets that use kubectl switch to the cluster's context first,
-# so they never act on whatever cluster the shell last pointed at.
-.PHONY: k3d-context
-k3d-context:
-	@kubectl config use-context $(K3D_CONTEXT) >/dev/null
+# Not in help: (re)write the cluster's kubeconfig, for the targets that run kubectl.
+.PHONY: k3d-kubeconfig
+k3d-kubeconfig:
+	@mkdir -p $(dir $(K3D_KUBECONFIG))
+	@k3d kubeconfig get $(K3D_CLUSTER) > $(K3D_KUBECONFIG)
 
 # ─── Engines (built from ./TuzkaOCR, never pulled) ──────────────────────────────────
 

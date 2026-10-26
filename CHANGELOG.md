@@ -166,6 +166,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `make db-migrate MSG=` autogenerates the next numbered migration from the models,
+  written with plain column types (no app imports) and formatted by ruff. Read it before
+  committing.
 - `make build` builds the release images (taas-api, taas-worker, taas-compat, tagged
   with the version and `latest`, under `REGISTRY/` when set) instead of running
   `docker compose build` (`make up` builds the stack). `make push` pushes them,
