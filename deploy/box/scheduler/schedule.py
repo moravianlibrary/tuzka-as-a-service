@@ -257,11 +257,20 @@ def _docker(*args: str) -> str:
     return result.stdout.strip()
 
 
-def _service_containers(project: str, services: list[str], *, running_only: bool) -> list[str]:
+def _running_containers(project: str, services: list[str]) -> list[str]:
+    return _containers_listed(["ps", "-q"], project, services)
+
+
+def _all_containers(project: str, services: list[str]) -> list[str]:
+    """The services' containers, stopped ones too."""
+    return _containers_listed(["ps", "-aq"], project, services)
+
+
+def _containers_listed(ps: list[str], project: str, services: list[str]) -> list[str]:
     ids: list[str] = []
     for service in services:
-        args = ["ps", "-q"] if running_only else ["ps", "-aq"]
-        args += [
+        args = [
+            *ps,
             "--filter",
             f"label=com.docker.compose.project={project}",
             "--filter",
@@ -352,7 +361,7 @@ class Scheduler:
         the next tick reconciles again."""
         decision = Plan("none")
         try:
-            engine_up = self._containers(self.cfg.engine_services, running_only=True)
+            engine_up = _running_containers(self.project, self.cfg.engine_services)
             decision = plan(
                 want_up=is_up(self.cfg.windows, now),
                 gate_closed=self.gate.is_closed(),
@@ -383,8 +392,8 @@ class Scheduler:
 
     def _start(self) -> Plan:
         cfg = self.cfg
-        ids = self._containers(
-            cfg.engine_services + cfg.tunnel_services + cfg.gate_services, running_only=False
+        ids = _all_containers(
+            self.project, cfg.engine_services + cfg.tunnel_services + cfg.gate_services
         )
         if not ids:
             # Nothing to start (never brought up, or `compose down`): idle quietly
@@ -412,7 +421,7 @@ class Scheduler:
         self.gate.close()
         to_stop = list(engine_up)
         if self.cfg.stop_tunnel:
-            to_stop += self._containers(self.cfg.tunnel_services, running_only=True)
+            to_stop += _running_containers(self.project, self.cfg.tunnel_services)
         if to_stop:
             _docker("stop", "-t", str(self.cfg.stop_timeout), *to_stop)
         self.deadline = None
@@ -429,9 +438,6 @@ class Scheduler:
             return
         log(message)
         self.last_logged = state
-
-    def _containers(self, services: list[str], *, running_only: bool) -> list[str]:
-        return _service_containers(self.project, services, running_only=running_only)
 
 
 def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:
