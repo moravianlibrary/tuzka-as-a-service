@@ -129,3 +129,9 @@ def test_zero_drain_closes_and_stops_in_one_step():
 def test_engine_already_down_only_reconciles_the_gate():
     assert plan(engine_running=False).action == "close_stop"
     assert plan(engine_running=False, gate_closed=True).action == "none"
+
+
+@pytest.mark.parametrize("action", [schedule.Action.CLOSE, schedule.Action.WAIT])
+def test_a_drain_plan_without_its_deadline_cannot_be_made(action):
+    with pytest.raises(ValueError, match="drain deadline"):
+        schedule.Plan(action)

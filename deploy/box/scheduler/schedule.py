@@ -52,6 +52,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 _DAY_NUMBERS = {
@@ -180,9 +181,8 @@ def is_up(windows: tuple[Window, ...], now: datetime) -> bool:
     return False
 
 
-@dataclass(frozen=True)
-class Plan:
-    """What to do this tick. ``action`` is one of:
+class Action(StrEnum):
+    """What a tick does.
 
     start        — open the gate and bring the containers up
     close        — close the gate and start the drain clock (engine keeps working)
@@ -192,8 +192,28 @@ class Plan:
     none         — observed state already matches the schedule
     """
 
-    action: str
+    START = "start"
+    CLOSE = "close"
+    STOP_ENGINE = "stop_engine"
+    CLOSE_STOP = "close_stop"
+    WAIT = "wait"
+    NONE = "none"
+
+
+# Actions after which nothing changed, so the next tick can wait a whole poll interval.
+_IDLE_ACTIONS = frozenset({Action.NONE, Action.WAIT})
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What to do this tick, and for a drain (close, wait) when it ends."""
+
+    action: Action
     drain_deadline: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.action in (Action.CLOSE, Action.WAIT) and self.drain_deadline is None:
+            raise ValueError(f"a {self.action} plan needs its drain deadline")
 
 
 def plan(
@@ -208,25 +228,25 @@ def plan(
     """Decide this tick's action from observed state. Pure, so it's unit-testable."""
     if want_up:
         if engine_running and not gate_closed:
-            return Plan("none")
-        return Plan("start")
+            return Plan(Action.NONE)
+        return Plan(Action.START)
 
     if not engine_running:
         # Nothing left to drain; just make sure the gate reflects the schedule.
-        return Plan("none") if gate_closed else Plan("close_stop")
+        return Plan(Action.NONE) if gate_closed else Plan(Action.CLOSE_STOP)
 
     if drain <= timedelta(0):
-        return Plan("close_stop")
+        return Plan(Action.CLOSE_STOP)
 
     # Either the gate is still open (the drain starts now), or we found it closed with
     # no deadline — a scheduler restart mid-drain, so give the engine a fresh grace
     # period rather than killing it outright.
     if not gate_closed or drain_deadline is None:
-        return Plan("close", now + drain)
+        return Plan(Action.CLOSE, now + drain)
 
     if now >= drain_deadline:
-        return Plan("stop_engine")
-    return Plan("wait", drain_deadline)
+        return Plan(Action.STOP_ENGINE)
+    return Plan(Action.WAIT, drain_deadline)
 
 
 # ------------------------------------------------------------------------------- gate
@@ -341,13 +361,10 @@ def log(message: str) -> None:
     print(f"[schedule] {datetime.now():%Y-%m-%d %H:%M:%S} {message}", flush=True)
 
 
-# Plans after which nothing changed, so the next tick can wait a whole poll interval.
-_IDLE_ACTIONS = {"none", "wait"}
-
-
 class Scheduler:
     """Reconciles the box against the schedule, one tick at a time. Keeps what a tick
-    can't observe: the drain deadline, and the steady state last logged."""
+    can't observe: the drain deadline, the steady state last logged, and what the last
+    tick did."""
 
     def __init__(self, cfg: Config, project: str, gate: Gate) -> None:
         self.cfg = cfg
@@ -355,11 +372,12 @@ class Scheduler:
         self.gate = gate
         self.deadline: datetime | None = None
         self.last_logged: str | None = None
+        self.acted = Action.NONE
 
-    def tick(self, now: datetime) -> Plan:
-        """Observe, plan and act; the plan acted on. A failure is logged, not raised:
-        the next tick reconciles again."""
-        decision = Plan("none")
+    def tick(self, now: datetime) -> None:
+        """Observe, plan and act. A failure is logged, not raised: the next tick
+        reconciles again."""
+        self.acted = Action.NONE
         try:
             engine_up = _running_containers(self.project, self.cfg.engine_services)
             decision = plan(
@@ -370,27 +388,32 @@ class Scheduler:
                 now=now,
                 drain=self.cfg.drain,
             )
-            decision = self._act(decision, engine_up)
+            self.acted = decision.action
+            self._act(decision, engine_up)
         except subprocess.CalledProcessError as exc:
             log(f"docker command failed ({exc.returncode}): {(exc.stderr or '').strip()}")
         except Exception as exc:  # keep the loop alive; the next tick reconciles again
             log(f"tick failed: {exc}")
-        if decision.action not in _IDLE_ACTIONS:
+        if self.acted not in _IDLE_ACTIONS:
             self.last_logged = None
-        return decision
 
-    def _act(self, decision: Plan, engine_up: list[str]) -> Plan:
-        if decision.action == "start":
-            return self._start()
-        if decision.action == "close":
+    def next_wait(self) -> float:
+        """Seconds until the next tick: soon after acting, so the next step of a
+        transition (close -> stop) isn't a whole poll interval later; otherwise idle
+        at the poll interval."""
+        return self.cfg.poll if self.acted in _IDLE_ACTIONS else min(self.cfg.poll, 5.0)
+
+    def _act(self, decision: Plan, engine_up: list[str]) -> None:
+        if decision.action == Action.START:
+            self._start()
+        elif decision.action == Action.CLOSE:
             self._close(decision)
-        elif decision.action in {"stop_engine", "close_stop"}:
+        elif decision.action in (Action.STOP_ENGINE, Action.CLOSE_STOP):
             self._stop(decision, engine_up)
         else:
             self._log_steady(decision, engine_up)
-        return decision
 
-    def _start(self) -> Plan:
+    def _start(self) -> None:
         cfg = self.cfg
         ids = _all_containers(
             self.project, cfg.engine_services + cfg.tunnel_services + cfg.gate_services
@@ -398,16 +421,16 @@ class Scheduler:
         if not ids:
             # Nothing to start (never brought up, or `compose down`): idle quietly
             # instead of retrying every few seconds.
+            self.acted = Action.NONE
             self._log_once(
                 "absent", "in window, but no box containers exist — run `docker compose up -d`"
             )
-            return Plan("none")
+            return
 
         self.gate.open()
         _docker("start", *ids)
         self.deadline = None
         log(f"in window — gate open, {len(ids)} container(s) started")
-        return Plan("start")
 
     def _close(self, decision: Plan) -> None:
         self.gate.close()
@@ -425,11 +448,11 @@ class Scheduler:
         if to_stop:
             _docker("stop", "-t", str(self.cfg.stop_timeout), *to_stop)
         self.deadline = None
-        reason = "drain over" if decision.action == "stop_engine" else "out of window"
+        reason = "drain over" if decision.action == Action.STOP_ENGINE else "out of window"
         log(f"{reason} — stopped {len(to_stop)} container(s)")
 
     def _log_steady(self, decision: Plan, engine_up: list[str]) -> None:
-        state = "draining" if decision.action == "wait" else ("up" if engine_up else "down")
+        state = "draining" if decision.action == Action.WAIT else ("up" if engine_up else "down")
         self._log_once(state, f"steady state: {state}")
 
     def _log_once(self, state: str, message: str) -> None:
@@ -443,10 +466,8 @@ class Scheduler:
 def run(cfg: Config, project: str, gate: Gate, stop: threading.Event) -> None:
     scheduler = Scheduler(cfg, project, gate)
     while not stop.is_set():
-        decision = scheduler.tick(datetime.now())
-        # After acting, re-check soon so the next step of a transition (close -> stop)
-        # isn't delayed by a whole poll interval; otherwise idle at the poll interval.
-        stop.wait(cfg.poll if decision.action in _IDLE_ACTIONS else min(cfg.poll, 5.0))
+        scheduler.tick(datetime.now())
+        stop.wait(scheduler.next_wait())
 
 
 def main() -> int:
