@@ -5,6 +5,8 @@ and the archive out."""
 import asyncio
 import mimetypes
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
@@ -47,7 +49,13 @@ from app.schemas.api.batch import (
 from app.schemas.redis import BatchCounts, JobState
 from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
-from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
+from app.services.archive import (
+    HEAD_BYTES,
+    Member,
+    MemberTooLarge,
+    detect_archive,
+    iter_members,
+)
 from app.services.batch_archive import PageRow, batch_archive_path, build_results_archive
 from app.services.batches import UploadedPage, page_score, plan_batch_member
 from app.services.event_emitter import get_emitter
@@ -93,7 +101,7 @@ COMMIT_EVERY = 100
         429: {"description": "Rate limit exceeded (one submit per batch)"},
     },
 )
-async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+async def submit_batch(
     request: Request,
     archive: UploadFile = File(..., description="A .tar, .tar.gz, .tar.zst or .zip of pages."),
     external_id: str | None = Form(None, description="Your own label for the batch."),
@@ -136,10 +144,9 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
     if kind is None:
         raise UnsupportedMediaType("Expected a tar, tar.gz, tar.zst or zip archive")
 
-    batch_id = uuid4()
     submitted = time.time()
     batch = Batch(
-        id=batch_id,
+        id=uuid4(),
         username=username,
         external_id=label,
         domain=spec.domain,
@@ -151,17 +158,43 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
     await db.commit()
 
     incoming = request.app.state.incoming_client
-    bucket = settings.minio_incoming_bucket
-    job_fmt = fmt_label(spec.outputs)
-    pages: list[UploadedPage] = []  # in archive order
-    skipped: list[str] = []
     members = iter_members(upload, kind, settings.max_upload_bytes)
+    stored = await _store_pages(db, incoming, settings, batch, members)
+    batch.total = len(stored.pages)
+    batch.status = BatchStatus.QUEUED
+    await db.commit()
+
+    await _enqueue_pages(db, r, batch, stored.pages, submitted)
+    return BatchSubmitResponse(
+        batch_id=batch.id, external_id=label, total=len(stored.pages), skipped=stored.skipped
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StoredPages:
+    """A batch archive's pages, uploaded and with job rows, in archive order; and the
+    members that weren't images."""
+
+    pages: list[UploadedPage]
+    skipped: list[str]
+
+
+async def _store_pages(
+    db: AsyncSession,
+    incoming: Minio,
+    settings: Settings,
+    batch: Batch,
+    members: Iterator[Member],
+) -> StoredPages:
+    """Upload every image member and add its job row. A refused or failed archive is
+    undone (``_abandon``) before the error goes on; a member over the upload limit is
+    a 413."""
+    bucket = settings.minio_incoming_bucket
+    pages: list[UploadedPage] = []
+    skipped: list[str] = []
     try:
-        while True:
-            # Archive reading is blocking I/O: one member at a time, in a worker thread.
-            member = await asyncio.to_thread(next, members, None)
-            if member is None:
-                break
+        # Archive reading is blocking I/O: one member at a time, in a worker thread.
+        while (member := await asyncio.to_thread(next, members, None)) is not None:
             if (
                 not member.data
                 or plan_batch_member(member.name, settings.allowed_extensions) == "skip"
@@ -170,61 +203,72 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
                 continue
             if len(pages) >= settings.batch_max_pages:
                 raise PayloadTooLarge(f"More than {settings.batch_max_pages} pages")
-            page = UploadedPage(
-                job_id=uuid4(),
-                ext=PurePosixPath(member.name).suffix.lower(),
-                megapixels=image_megapixels(member.data),
-            )
-            content_type = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
-            await storage.put_object(
-                incoming, bucket, page.incoming_path(username), member.data, content_type
-            )
-            db.add(
-                Job(
-                    id=page.job_id,
-                    username=username,
-                    batch_id=batch_id,
-                    source_name=member.name,
-                    status=JobStatus.QUEUED,
-                    fmt=job_fmt,
-                    domain=spec.domain,
-                    outputs=sorted(spec.outputs),
-                    options=spec.options,
-                    file_size_bytes=member.size,
-                    megapixels=page.megapixels,
-                )
-            )
-            pages.append(page)
+            pages.append(await _store_page(db, incoming, bucket, batch, member))
             if len(pages) % COMMIT_EVERY == 0:
                 await db.commit()
         if not pages:
             raise Unprocessable("No images in the archive")
-    except (MemberTooLarge, PayloadTooLarge, Unprocessable) as exc:
-        await _abandon(db, incoming, bucket, username, batch_id, pages)
+    except Exception as exc:
+        await _abandon(db, incoming, bucket, batch.username, batch.id, pages)
         if isinstance(exc, MemberTooLarge):
             raise PayloadTooLarge(str(exc)) from exc
         raise
-    except Exception:
-        await _abandon(db, incoming, bucket, username, batch_id, pages)
-        raise
+    return StoredPages(pages, skipped)
 
-    batch.total = len(pages)
-    batch.status = BatchStatus.QUEUED
-    await db.commit()
 
+async def _store_page(
+    db: AsyncSession, incoming: Minio, bucket: str, batch: Batch, member: Member
+) -> UploadedPage:
+    """Upload one image member and add its job row (committed with the next batch)."""
+    page = UploadedPage(
+        job_id=uuid4(),
+        ext=PurePosixPath(member.name).suffix.lower(),
+        megapixels=image_megapixels(member.data),
+    )
+    content_type = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
+    await storage.put_object(
+        incoming, bucket, page.incoming_path(batch.username), member.data, content_type
+    )
+    db.add(
+        Job(
+            id=page.job_id,
+            username=batch.username,
+            batch_id=batch.id,
+            source_name=member.name,
+            status=JobStatus.QUEUED,
+            fmt=fmt_label(frozenset(batch.outputs)),
+            domain=batch.domain,
+            outputs=batch.outputs,
+            options=batch.options,
+            file_size_bytes=member.size,
+            megapixels=page.megapixels,
+        )
+    )
+    return page
+
+
+async def _enqueue_pages(
+    db: AsyncSession,
+    r: aioredis.Redis,
+    batch: Batch,
+    pages: list[UploadedPage],
+    submitted: float,
+) -> None:
+    """Start the batch's counters and queue its pages, in archive order."""
     state_ttl = await config_service.get_state_ttl_seconds(db)
-    priority = await _user_priority(db, username)
-    await redis_jobs.init_batch(r, BatchCounts(batch_id=str(batch_id), total=len(pages)), state_ttl)
+    priority = await _user_priority(db, batch.username)
+    await redis_jobs.init_batch(r, BatchCounts(batch_id=str(batch.id), total=len(pages)), state_ttl)
     trace = inject_trace_context()
     emitter = get_emitter()
+    outputs = frozenset(batch.outputs)
     for index, page in enumerate(pages):
         state = JobState(
-            username=username,
-            batch_id=str(batch_id),
-            fmt=job_fmt,
-            domain=spec.domain,
-            outputs=spec.outputs,
-            options=spec.options,
+            username=batch.username,
+            batch_id=str(batch.id),
+            fmt=fmt_label(outputs),
+            domain=batch.domain,
+            outputs=outputs,
+            options=batch.options,
             ext=page.ext,
             megapixels=page.megapixels,
             submitted_at=page_score(submitted, index),
@@ -234,9 +278,6 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
         job_id = str(page.job_id)
         await redis_jobs.enqueue_job(r, job_id, state, state_ttl)
         emitter.emit(JobEvent.from_state(utcnow(), JobEventName.SUBMITTED, job_id, state))
-    return BatchSubmitResponse(
-        batch_id=batch_id, external_id=label, total=len(pages), skipped=skipped
-    )
 
 
 async def _user_priority(db: AsyncSession, username: str) -> int:
