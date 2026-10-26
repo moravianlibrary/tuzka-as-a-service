@@ -347,7 +347,7 @@ async def get_batch(
         listed = [
             BatchPage(
                 source_name=page.source_name or "",
-                job_id=page.id,
+                job_id=page.job_id,
                 status=page.status,
                 error=page.error,
             )
@@ -411,7 +411,11 @@ async def get_batch_results(
         stored = await batch_store.stored_results(db, batch_id)
         rows = [
             PageRow(
-                page.id, page.source_name or "", page.status, page.error, stored.get(page.id, [])
+                page.job_id,
+                page.source_name or "",
+                page.status,
+                page.error,
+                stored.get(page.job_id, []),
             )
             for page in await batch_store.pages(db, batch_id)
         ]
@@ -456,7 +460,7 @@ async def retry_batch(
         raise Conflict("Only a finished batch can be retried")
 
     failed = [
-        (page.id, page.source_name or "")
+        (page.job_id, page.source_name or "")
         for page in await batch_store.pages(db, batch_id)
         if page.status == JobStatus.FAILED
     ]

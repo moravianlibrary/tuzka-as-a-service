@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import Subquery, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
@@ -53,10 +53,27 @@ async def domain_slots(db: AsyncSession, domain: str) -> int:
     return int(total or 0)
 
 
-async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[Job]:
-    """Every page (its current job), ordered by source name."""
-    latest = aliased(Job, _latest_pages(batch_id))
-    return list(await db.scalars(select(latest).order_by(latest.source_name)))
+@dataclass(frozen=True, slots=True)
+class CurrentPage:
+    """A page of a batch as its listing and its results archive show it: its current
+    job's id, status and error."""
+
+    job_id: uuid.UUID
+    source_name: str | None
+    status: JobStatus
+    error: str | None
+
+
+async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[CurrentPage]:
+    """Every page (its current job), ordered by source name. Four columns, not the
+    jobs: a batch has up to 2000 pages, and a job row carries its attempts."""
+    latest = _latest_pages(batch_id)
+    rows = await db.execute(
+        select(latest.c.id, latest.c.source_name, latest.c.status, latest.c.error).order_by(
+            latest.c.source_name
+        )
+    )
+    return [CurrentPage(*row) for row in rows.tuples()]
 
 
 async def stored_results(db: AsyncSession, batch_id: uuid.UUID) -> dict[uuid.UUID, list[str]]:
