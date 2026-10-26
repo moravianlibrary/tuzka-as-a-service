@@ -86,6 +86,12 @@ def test_config_set_then_get() -> None:
     assert _ok("config", "get", "jobs.max_requeues").strip() == "7"
 
 
+def test_config_set_prints_the_value_as_stored() -> None:
+    assert _ok("config", "set", "dispatch.affinity_tolerance", "1").strip() == (
+        "dispatch.affinity_tolerance = 1.0"  # a float key stores a float
+    )
+
+
 def test_config_set_refuses_an_unknown_key_or_a_bad_value() -> None:
     unknown = runner.invoke(app, ["config", "set", "jobs.max_requeue", "7"])
     malformed = runner.invoke(app, ["config", "set", "jobs.max_requeues", "seven"])

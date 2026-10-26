@@ -47,4 +47,5 @@ def set_value(key: str, value: str) -> None:
     """Set a config value, e.g. ``jobs.max_requeues 5``. Workers see it within ~10 s.
     An unknown key or a value of the wrong type is refused."""
     run(lambda db: admin_ops.set_config(db, {key: _parse(value)}))
-    typer.echo(f"{key} = {json.dumps(_parse(value))}")
+    stored = run(admin_ops.get_config)[key]  # normalized: a float key's 1 is 1.0
+    typer.echo(f"{key} = {json.dumps(stored)}")
