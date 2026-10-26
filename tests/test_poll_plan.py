@@ -1,8 +1,10 @@
 """Pins how a chunk of poll outcomes is sorted, and a running job's poll backoff."""
 
+import random
 from datetime import datetime
 
 from app.schemas.redis import EngineRun
+from app.services.retry_policy import backoff_seconds
 from app.vocabulary import PollStatus
 from app.workers.poller.steps import next_poll_delay, plan_polls
 from app.workers.poller.types import PollOutcome
@@ -26,6 +28,7 @@ def test_each_outcome_lands_in_its_list() -> None:
         ],
         5,
         NOW,
+        random.Random(7),
     )
 
     assert [o.job_id for o in plan.done] == ["done"]
@@ -35,7 +38,7 @@ def test_each_outcome_lands_in_its_list() -> None:
     (requeued,) = plan.requeued
     assert requeued.outcome.job_id == "requeued"
     assert requeued.attempt.retry and requeued.attempt.at == NOW
-    assert 0 <= requeued.delay_s <= 4.0  # full jitter over 1 s * 2**requeues
+    assert requeued.delay_s == backoff_seconds(2, random.Random(7))  # the jitter from rng
 
 
 def test_a_running_job_backs_off_by_doubling_within_bounds() -> None:

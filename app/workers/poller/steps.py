@@ -3,6 +3,7 @@ poll drain. Pure where possible, so they're unit-testable without the worker."""
 
 import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 
@@ -137,8 +138,11 @@ def poll_attempt(outcome: PollOutcome, retry: bool, at: datetime) -> Attempt:
     )
 
 
-def plan_polls(statuses: list[PollOutcome], max_requeues: int, now: datetime) -> PollPlan:
-    """Sort a chunk of poll outcomes by what the poller does with each. Pure."""
+def plan_polls(
+    statuses: list[PollOutcome], max_requeues: int, now: datetime, rng: random.Random
+) -> PollPlan:
+    """Sort a chunk of poll outcomes by what the poller does with each. Pure apart from
+    drawing each requeue's jittered delay from ``rng``."""
     plan = PollPlan()
     for outcome in statuses:
         requeues = outcome.state.requeues
@@ -150,7 +154,7 @@ def plan_polls(statuses: list[PollOutcome], max_requeues: int, now: datetime) ->
             plan.failed.append(FailedPoll(outcome, error, poll_attempt(outcome, False, now)))
         elif action == PollAction.REQUEUE:
             attempt = poll_attempt(outcome, True, now)
-            plan.requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues), attempt))
+            plan.requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues, rng), attempt))
         else:
             plan.running.append(outcome)
     return plan

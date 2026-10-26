@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -140,6 +141,7 @@ class PollerWorker:
         # each holding an engine and a Redis connection.
         self.poll_sem = asyncio.Semaphore(settings.poller_poll_concurrency)
         self.released_since_harvest = 0
+        self.rng = random.Random()  # the requeues' backoff jitter
         self.poll_task: asyncio.Task[None] | None = None
 
     async def backend_for(self, state: JobState) -> Backend | None:
@@ -596,7 +598,7 @@ class PollerWorker:
         self, statuses: list[PollOutcome], max_requeues: int, state_ttl: int
     ) -> None:
         with self.timer.stage("classify"):
-            plan = plan_polls(statuses, max_requeues, utcnow())
+            plan = plan_polls(statuses, max_requeues, utcnow(), self.rng)
         if plan.done:
             await self._release_for_harvest(plan.done)
         for running in plan.running:
