@@ -108,7 +108,7 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 
 ### 5. Function refactors (the `noqa: C901` list)
 
-- [ ] poller `main`, `harvest`, `process_chunk`, `drain_poll_queue`
+- [x] poller `main`, `harvest`, `process_chunk`, `drain_poll_queue` (`workers/poller/`: worker, steps, types)
 - [ ] submit `main`, `dispatch_job`
 - [ ] cleanup `main`
 - [ ] `routers/batches.py` `submit_batch`
