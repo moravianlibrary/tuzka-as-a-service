@@ -110,8 +110,8 @@ class SubmitWorker:
         self.backends_refreshed_at = 0.0
         self.health_cache: dict[int, tuple[bool, float]] = {}
         # Background domain-sync tasks, kept referenced so they aren't GC'd mid-flight
-        # and their exceptions surface; gated per backend so concurrent rebuilds of the
-        # same backend's domain set can't race.
+        # and cancelled when the worker stops; gated per backend so concurrent rebuilds
+        # of the same backend's domain set can't race.
         self.sync_tasks: set[asyncio.Task[None]] = set()
         self.domains_synced_at: dict[int, float] = {}
         self.domain_sync_inflight: set[int] = set()
@@ -171,6 +171,8 @@ class SubmitWorker:
         def _done(t: asyncio.Task[None]) -> None:
             self.sync_tasks.discard(t)
             self.domain_sync_inflight.discard(backend.id)
+            if not t.cancelled() and (error := t.exception()) is not None:
+                logger.error("Domain sync for %s failed", backend.url, exc_info=error)
 
         task.add_done_callback(_done)
 
@@ -435,13 +437,22 @@ class SubmitWorker:
     async def run(self) -> None:
         """Dispatch, then wait for work or a freed slot, until asked to stop."""
         logger.info("Submit worker started")
-        while not self.stop.is_set():
-            try:
-                await self.run_tick()
-            except Exception:
-                logger.exception("Submit worker failed")
-            await self._flush_stages()
-            await self._wait()
+        try:
+            while not self.stop.is_set():
+                try:
+                    await self.run_tick()
+                except Exception:
+                    logger.exception("Submit worker failed")
+                await self._flush_stages()
+                await self._wait()
+        finally:
+            await self._cancel_domain_syncs()
+
+    async def _cancel_domain_syncs(self) -> None:
+        """A sync is best-effort and redone on the next start: cancel, don't wait."""
+        for task in self.sync_tasks:
+            task.cancel()
+        await asyncio.gather(*self.sync_tasks, return_exceptions=True)
 
     async def run_tick(self) -> None:
         """Dispatch as many queued jobs as the healthy backends and the storage budget

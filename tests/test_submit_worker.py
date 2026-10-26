@@ -18,7 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.engines.base import EngineFullError
+from app.engines.base import DomainInfo, EngineFullError, EngineInfo
 from app.models.backend import Backend
 from app.models.job import Job
 from app.schemas.redis import JobState
@@ -392,3 +392,47 @@ async def test_a_tick_dispatches_nothing_while_results_wait_to_be_stored(
     assert engine.submitted == []
     assert [e.job_id for e in await peek_pending(redis_client, 10)] == [job_id]
     assert worker.paused_for_harvest
+
+
+# --- domain sync ---
+
+
+class DescribingEngine(FakeEngine):
+    """An engine that advertises the default domain."""
+
+    async def describe(self) -> EngineInfo:
+        return EngineInfo({"default": DomainInfo(frozenset({"alto"}), None)}, "1.2.3")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_domain_sync_is_logged(worker, session_factory, monkeypatch, caplog) -> None:
+    async def broken_sync(*_: Any) -> None:
+        raise RuntimeError("domains table locked")
+
+    monkeypatch.setattr("app.workers.submit.worker.apply_domain_sync", broken_sync)
+    worker.adapters.for_backend = lambda backend, url: DescribingEngine()  # type: ignore[method-assign,assignment,return-value]
+
+    worker.spawn_domain_sync(await _backend(session_factory))
+    await asyncio.gather(*worker.sync_tasks, return_exceptions=True)
+    await asyncio.sleep(0)  # the done callback
+
+    assert "Domain sync for http://e:8000 failed" in caplog.text
+    assert "domains table locked" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_worker_leaves_no_domain_sync_running(worker, session_factory) -> None:
+    started = asyncio.Event()
+
+    async def slow_sync(backend: Backend) -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    worker.sync_domains = slow_sync  # type: ignore[method-assign]
+    worker.spawn_domain_sync(await _backend(session_factory))
+    await started.wait()
+    worker.stop.set()
+
+    await worker.run()
+
+    assert worker.sync_tasks == set()
