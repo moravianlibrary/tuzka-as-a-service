@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -41,14 +42,23 @@ def _counts(raw: dict[Any, Any]) -> dict[str, int]:
     return {s(k): int(v) for k, v in raw.items()}
 
 
+@dataclass(frozen=True)
+class BackendInflight:
+    """An enabled backend and how many of its pages are in flight."""
+
+    backend_id: int
+    label: str
+    inflight: int
+
+
 def metric_rows(
     ts: datetime,
     queued: dict[str, int],
     inflight: dict[str, int],
-    backends: list[tuple[int, str, int]],
+    backends: list[BackendInflight],
 ) -> list[dict[str, Any]]:
     """The rows of one snapshot. ``queued`` / ``inflight`` are the load counters
-    (``domain|outputs`` → pages); ``backends`` is ``(id, label, inflight)``. A counter at
+    (``domain|outputs`` → pages). A counter at
     zero is still written, so a chart drops to zero instead of keeping its last value."""
     stamp = ch_datetime(ts)
     rows: list[dict[str, Any]] = []
@@ -57,9 +67,11 @@ def metric_rows(
             domain, outputs = parse_load_field(field)
             labels = {"domain": domain or "default", "outputs": ",".join(sorted(outputs))}
             rows.append({"ts": stamp, "metric": metric, "labels": labels, "value": value})
-    for backend_id, label, value in backends:
-        labels = {"backend_id": str(backend_id), "backend": label}
-        rows.append({"ts": stamp, "metric": "backend_inflight", "labels": labels, "value": value})
+    for backend in backends:
+        labels = {"backend_id": str(backend.backend_id), "backend": backend.label}
+        rows.append(
+            {"ts": stamp, "metric": "backend_inflight", "labels": labels, "value": backend.inflight}
+        )
     return rows
 
 
@@ -73,7 +85,7 @@ async def snapshot(r: aioredis.Redis, db: AsyncSession) -> list[dict[str, Any]]:
     keys = [f"backend:{backend_id}:inflight" for backend_id, _ in enabled]
     values = await r.mget(keys) if keys else []  # MGET with no keys is an error
     backends = [
-        (backend_id, label, int(value or 0))
+        BackendInflight(backend_id, label, int(value or 0))
         for (backend_id, label), value in zip(enabled, values, strict=True)
     ]
     return metric_rows(utcnow(), queued, inflight, backends)

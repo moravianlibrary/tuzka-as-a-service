@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from app.services.live_metrics import metric_rows
+from app.services.live_metrics import BackendInflight, metric_rows
 
 TS = datetime(2026, 10, 21, 8, 2, 19, 668317)
 
@@ -12,7 +12,7 @@ def test_rows_per_counter_and_backend() -> None:
         TS,
         queued={"default|alto,txt": 3, "maps|geojson,json": 1},
         inflight={"default|alto,txt": 2},
-        backends=[(1, "box1-gpu1", 2), (2, "2", 0)],
+        backends=[BackendInflight(1, "box1-gpu1", 2), BackendInflight(2, "2", 0)],
     )
     assert rows == [
         {
@@ -49,7 +49,7 @@ def test_rows_per_counter_and_backend() -> None:
 
 
 def test_an_idle_system_still_reports_its_backends() -> None:
-    rows = metric_rows(TS, queued={}, inflight={}, backends=[(1, "cpu", 0)])
+    rows = metric_rows(TS, queued={}, inflight={}, backends=[BackendInflight(1, "cpu", 0)])
     assert [r["metric"] for r in rows] == ["backend_inflight"]
 
 
