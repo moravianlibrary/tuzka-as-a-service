@@ -41,7 +41,7 @@ limit each, `deploy/local/values.local.yaml`). Fake engines: `FAKE_LATENCY_S=0.0
 
 | | 10 backends, 50 users | 50 backends, 100 users |
 |---|---|---|
-| commit | `47f31d2` | `1195421` |
+| commit | `7fff869` | `92ea68e` |
 | submit p50 / p95 (ms) | 27 / 60 | 40 / 190 |
 | status p50 / p95 (ms) | 10 / 21 | 13 / 75 |
 | submits/s, jobs done/s | 21.3 / ~19 | 42.1 / ~18 |
@@ -56,7 +56,7 @@ Commands are in `bench/perf_taas.sh`; raw output in `bench/perf_out/baseline-50u
 `baseline-50b-100u/` (not committed).
 
 **10 000 pages as batches** (5 × 2000-page `.tar`, submitted at once, outputs
-`alto,txt`, 10 backends, `8312f83`+): every page done, 0 failed. Upload and split 47 s
+`alto,txt`, 10 backends, `a81346c`+): every page done, 0 failed. Upload and split 47 s
 (~210 pages/s); all finished in 568 s, results archives ready 8 s after each batch;
 **17.6 pages/s**. Batches finish one after another (140 s … 568 s), not side by side:
 pages are dispatched strictly by submit time. (A single 10 000-page batch is over
@@ -108,17 +108,17 @@ One row per fix (T5): what, commit, before → after.
 
 | Fix | Commit | Before | After |
 |---|---|---|---|
-| Poll fan-out bounded (`POLLER_POLL_CONCURRENCY`) and a blocking Redis pool: the poller crash-looped at 400 jobs in flight (`MaxConnectionsError`, OOM) | `1195421` | 50 backends: 107 jobs done in 2 min, poller restarting | 2161 done, no restarts |
-| Orphan requeue checked and requeued atomically (found by the batch run: 23 jobs dispatched twice) | `8312f83` | 23 double dispatches in 10 000 pages | 0 |
-| Backend in-flight counters rebuilt by the cleanup worker (they had drifted to -5…+2 after those double dispatches) | `b10dd36` | 8 backends off | 0 |
-| Harvest cost: fetch outputs concurrently, one multi-row result insert, pipelined `set_done` without the `HGETALL` | `4608429`, `539d2f0`, `f2f0a1d` | 10b: 13.22 done/s, `store_s` p95 9.30 s; 50b: 10.02 done/s | 10b: 15.28 done/s, 7.64 s; 50b: 11.75 done/s with 5 % more offered load |
-| Release the engine slot at engine-done, harvest from a durable `jobs:pending_harvest` queue | `da88fb0` | 10b: 14.04 done/s, 898 jobs still queued at collection | 10b: 18.54 done/s, 245 queued (keep `max_inflight` at 8; 32 is worse) |
+| Poll fan-out bounded (`POLLER_POLL_CONCURRENCY`) and a blocking Redis pool: the poller crash-looped at 400 jobs in flight (`MaxConnectionsError`, OOM) | `92ea68e` | 50 backends: 107 jobs done in 2 min, poller restarting | 2161 done, no restarts |
+| Orphan requeue checked and requeued atomically (found by the batch run: 23 jobs dispatched twice) | `a81346c` | 23 double dispatches in 10 000 pages | 0 |
+| Backend in-flight counters rebuilt by the cleanup worker (they had drifted to -5…+2 after those double dispatches) | `c096852` | 8 backends off | 0 |
+| Harvest cost: fetch outputs concurrently, one multi-row result insert, pipelined `set_done` without the `HGETALL` | `83110a7`, `8acd290`, `075505d` | 10b: 13.22 done/s, `store_s` p95 9.30 s; 50b: 10.02 done/s | 10b: 15.28 done/s, 7.64 s; 50b: 11.75 done/s with 5 % more offered load |
+| Release the engine slot at engine-done, harvest from a durable `jobs:pending_harvest` queue | `bb46194` | 10b: 14.04 done/s, 898 jobs still queued at collection | 10b: 18.54 done/s, 245 queued (keep `max_inflight` at 8; 32 is worse) |
 | Read all healthy backends' in-flight counters and batch hashes in one Redis pipeline | C1 | 10b: 57.22 Redis commands/job, 13.98 done/s; 50b: 45.19 commands/job, 12.44 done/s | 10b: 53.38 commands/job, 14.55 done/s; 50b: 50.09 commands/job, 12.63 done/s |
 
 ## Where the time goes (plan 11 B3)
 
 Measured on the same k3d laptop and worker limits as the baseline, with B1 stage timers
-(`fc7ae38`), py-spy 0.4.2 attached from debug containers, and no in-process profiler.
+(`f722073`), py-spy 0.4.2 attached from debug containers, and no in-process profiler.
 The commands were `OUT=bench/perf_out/b3-10b make perf-profile TARGET=k3d USERS=50
 RATE=10 DURATION=2m` with 10 fake backends and `OUT=bench/perf_out/b3-50b make
 perf-profile TARGET=k3d USERS=100 RATE=10 DURATION=2m` with 50. Each records 60 s of
@@ -219,9 +219,9 @@ and mark the job done without re-reading the job hash.
 
 | Change | Commit | 10b stage mean, B3 → C4 | 50b stage mean, B3 → C4 |
 |---|---|---:|---:|
-| Fetch a job's outputs concurrently | `4608429` | `fetch_outputs` 143 → 122 ms/job | 221 → 173 ms/job |
-| One multi-row `INSERT … ON CONFLICT` for the results, one job update | `539d2f0` | `db_write` 112 → 64 ms/job (3 → 2 round trips) | 124 → 83 ms/job |
-| Pipelined `set_done` with the job hash passed in, no `HGETALL` | `f2f0a1d` | `set_done` 150 → 53 ms/job | 188 → 72 ms/job |
+| Fetch a job's outputs concurrently | `83110a7` | `fetch_outputs` 143 → 122 ms/job | 221 → 173 ms/job |
+| One multi-row `INSERT … ON CONFLICT` for the results, one job update | `8acd290` | `db_write` 112 → 64 ms/job (3 → 2 round trips) | 124 → 83 ms/job |
+| Pipelined `set_done` with the job hash passed in, no `HGETALL` | `075505d` | `set_done` 150 → 53 ms/job | 188 → 72 ms/job |
 
 The "before" means are the last 60 s flush of the B3 profiling runs
 (`bench/perf_out/b3-10b/worker-poller-stages.log`, `b3-50b/…`, py-spy attached); the
