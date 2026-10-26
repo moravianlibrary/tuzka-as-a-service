@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `make restart` (down, then up) and `make logs-<service>` (e.g. `logs-api`) for the
+  compose stack.
 - **Generic Helm engine pools.** The chart now takes an `engines` map keyed by engine
   name. Every enabled entry becomes a StatefulSet, headless Service, autoscaler and
   per-ordinal backend registration, so TuzkaOCR, TuzkaM and any additional image or
@@ -156,6 +158,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `make clean` now deletes local caches only. Deleting the compose volumes (the DB,
+  MinIO and OCR data) is `make clean-volumes`; `clean-images` deletes the built images,
+  and `clean-all` does all three.
 - `taas-admin config set` refuses a key taas doesn't read (e.g. a typo, or the unused
   `jobs.retention_days`) and a value of the wrong type (`"5"` or `true` for a number,
   an unknown field in a `rate_limit.*` object), exiting 2 with the reason. Before, it

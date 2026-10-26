@@ -28,7 +28,7 @@ GIT_TAG := v$(shell cat VERSION 2>/dev/null)
 # ─── Help ────────────────────────────────────────────────────────────────────────────
 .PHONY: help
 help: ## Show this help
-	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_%-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 
 # ─── Env ─────────────────────────────────────────────────────────────────────────────
@@ -77,9 +77,8 @@ infra: env ## Start only infra (postgres, redis, minio) for local uvicorn dev
 down: ## Stop the stack (keep volumes)
 	$(COMPOSE) down
 
-.PHONY: clean
-clean: ## Stop the stack and delete volumes (DB, MinIO, OCR data)
-	$(COMPOSE) down -v --remove-orphans
+.PHONY: restart
+restart: down up ## Stop the stack, then build and start it again
 
 .PHONY: ps
 ps: ## Show service status
@@ -88,6 +87,25 @@ ps: ## Show service status
 .PHONY: logs
 logs: ## Tail logs from all services
 	$(COMPOSE) logs -f
+
+logs-%: ## Tail one service's logs (e.g. logs-api, logs-worker-poller)
+	$(COMPOSE) logs -f $*
+
+.PHONY: clean
+clean: ## Delete local caches (pytest, mypy, ruff, __pycache__)
+	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage .benchmarks
+	find . -name __pycache__ -type d -not -path './.venv/*' -prune -exec rm -rf {} +
+
+.PHONY: clean-volumes
+clean-volumes: ## Stop the stack and DELETE its volumes (destroys the DB, MinIO and OCR data)
+	$(COMPOSE) down -v --remove-orphans
+
+.PHONY: clean-images
+clean-images: ## Stop the stack and delete the images it built
+	$(COMPOSE) down --rmi local --remove-orphans
+
+.PHONY: clean-all
+clean-all: clean clean-volumes clean-images ## All of the above (destroys data)
 
 .PHONY: seed
 seed: ## Register the OCR backend + create a test user
