@@ -59,8 +59,9 @@ from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 from app.workers.submit.steps import (
     allocate_scored,
     classify_dispatch_error,
-    dispatch_attempt,
+    failed_dispatch_attempt,
     pending_job,
+    retried_dispatch_attempt,
     serves,
     unstored_capacity,
 )
@@ -243,7 +244,7 @@ class SubmitWorker:
         except Exception as e:
             logger.exception("Failed to read image for job %s", job_id)
             msg = f"Failed to read image: {describe_exception(e)}"
-            attempt = dispatch_attempt(backend.id, None, msg, retry=False)
+            attempt = failed_dispatch_attempt(backend.id, None, msg)
             await self._fail_job(
                 job_id, state, backend, attempt, failure(FailureStage.DISPATCH, None)
             )
@@ -358,7 +359,7 @@ class SubmitWorker:
             logger.exception("Failed to dispatch job %s", job_id)
         if perf.counts_against_backend(failed.http_status):
             await perf.record_failure(self.r, backend.id, state.domain)
-        attempt = dispatch_attempt(backend.id, failed.http_status, msg, retry=False)
+        attempt = failed_dispatch_attempt(backend.id, failed.http_status, msg)
         await self._fail_job(job_id, state, backend, attempt, failed.event_fields)
 
     async def _retry_later(
@@ -387,7 +388,7 @@ class SubmitWorker:
         await count_requeue(self.r, job_id)
         await schedule_retry(self.r, job_id, original_score, delay, avoid_backend_id=backend.id)
         await perf.record_failure(self.r, backend.id, state.domain)
-        attempt = dispatch_attempt(backend.id, failed.http_status, failed.error, retry=True)
+        attempt = retried_dispatch_attempt(backend.id, failed.http_status, failed.error)
         async with self.session_factory() as db:
             await db.execute(
                 update(Job)

@@ -168,15 +168,21 @@ def classify_dispatch_error(error: Exception) -> DispatchFailure:
     )
 
 
-def dispatch_attempt(
-    backend_id: int, http_status: int | None, error: str, *, retry: bool
-) -> Attempt:
-    """The ``jobs.attempts`` entry for a failed dispatch. Pure apart from the clock."""
+def failed_dispatch_attempt(backend_id: int, http_status: int | None, error: str) -> Attempt:
+    """The ``jobs.attempts`` entry for a dispatch that fails the job. Pure apart from the
+    clock."""
     return Attempt(
         at=utcnow(),
         stage=FailureStage.DISPATCH,
         backend_id=backend_id,
         http_status=http_status,
         error=error,
-        retry=retry,
+        retry=False,
+    )
+
+
+def retried_dispatch_attempt(backend_id: int, http_status: int | None, error: str) -> Attempt:
+    """The ``jobs.attempts`` entry for a dispatch that's retried on another backend."""
+    return failed_dispatch_attempt(backend_id, http_status, error).model_copy(
+        update={"retry": True}
     )
