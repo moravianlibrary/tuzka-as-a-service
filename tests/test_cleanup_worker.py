@@ -125,5 +125,17 @@ async def test_a_failing_step_does_not_stop_the_tick(session_factory, redis_clie
     await worker.run_tick()
 
     assert [e.job_id for e in await peek_pending(redis_client, 10)] == [job_id]
-    assert incoming.objects == {}  # purged before the results bucket failed
+    assert incoming.objects == {}  # purged although the results bucket failed
     assert int(await redis_client.get("backend:7:inflight") or 0) == 0  # rebuilt after it
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_that_cannot_be_listed_does_not_stop_the_other(
+    session_factory, redis_client
+) -> None:
+    results = FakeBucket({"alice/old.xml.zst": _expired()})
+    worker = _worker(session_factory, redis_client, BrokenBucket({}), results)
+
+    await worker.run_tick()
+
+    assert results.objects == {}  # purged although the uploads bucket failed first

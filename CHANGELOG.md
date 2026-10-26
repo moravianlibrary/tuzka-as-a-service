@@ -293,6 +293,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The cleanup worker purges each bucket's expired objects on its own: a bucket it
+  can't list no longer stops the purge of the next one.
 - A job the engine accepted is no longer failed when the submit worker can't then
   update its database row: it's already running in Redis, so the poller harvests it and
   the harvest marks the row done. If even recording it as running fails, the log names

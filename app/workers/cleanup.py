@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
+from functools import partial
 
 import redis.asyncio as aioredis
 from miniopy_async.api import Minio
@@ -117,7 +118,9 @@ class CleanupWorker:
         if not is_heavy:
             return
 
-        await _guard("Purging expired objects failed", self._purge_expired_objects)
+        for bucket in self.bucket_clients:
+            # A guard each: a bucket that can't be listed mustn't keep the others full.
+            await _guard(f"Purging {bucket} failed", partial(self._purge_expired, bucket))
         await _guard("Load counter rebuild failed", lambda: rebuild_load_counters(self.r))
         await _guard("Backend counter rebuild failed", self._rebuild_backend_counters)
 
@@ -140,17 +143,17 @@ class CleanupWorker:
             if stalled := await batch_store.finish_stalled(db):
                 logger.warning(f"Finished {stalled} stalled batch(es)")
 
-    async def _purge_expired_objects(self) -> None:
-        """Delete each bucket's objects older than its ``storage.<bucket>_ttl_minutes``."""
+    async def _purge_expired(self, bucket: str) -> None:
+        """Delete the bucket's objects older than its ``storage.<bucket>_ttl_minutes``."""
         async with self.session_factory() as db:
             config = await get_runtime_config(db)
-        for bucket, client in self.bucket_clients.items():
-            cutoff = utcnow() - timedelta(minutes=config.storage_ttl_minutes(bucket))
-            expired = await list_expired_objects(client, bucket, cutoff)
-            for i in range(0, len(expired), DELETE_BATCH_SIZE):
-                batch = expired[i : i + DELETE_BATCH_SIZE]
-                await delete_objects(client, bucket, batch)
-                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
+        client = self.bucket_clients[bucket]
+        cutoff = utcnow() - timedelta(minutes=config.storage_ttl_minutes(bucket))
+        expired = await list_expired_objects(client, bucket, cutoff)
+        for i in range(0, len(expired), DELETE_BATCH_SIZE):
+            batch = expired[i : i + DELETE_BATCH_SIZE]
+            await delete_objects(client, bucket, batch)
+            logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
 
     async def _rebuild_backend_counters(self) -> None:
         if fixed := await rebuild_backend_counters(self.r):
