@@ -77,7 +77,7 @@ three. `app/core/` goes away: its schemas move to `schemas/api/`, `admin_ops.py`
 - [x] B1 rest: `BatchCounts` from the batch hash; `harvest_times` as `EngineRun`; the
       poller's `next_poll_at`/`last_poll` HSET and both workers' `requeues` HINCRBY move
       into `redis_jobs`, which is now the only writer of a job's hash
-- [ ] Follow-up: a pending entry whose state is gone is offered as a default job and
+- [x] Follow-up: a pending entry whose state is gone is offered as a default job and
       dropped only once a backend claims it; drop it from its queue outright instead
 - [x] D2: one rate-limit model instead of `UserLimitOverrides`/`EffectiveLimits`/
       `ClassLimits` + `FALLBACK_LIMITS`/`USER_OVERRIDE_COLUMNS`
