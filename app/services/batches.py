@@ -2,8 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
+from uuid import UUID
+
+
+@dataclass(frozen=True)
+class UploadedPage:
+    """A batch page already in the incoming bucket, waiting to be queued."""
+
+    job_id: UUID
+    ext: str  # the member's extension, lowercased, with the dot
+    megapixels: float
+
+    def incoming_path(self, username: str) -> str:
+        return f"{username}/{self.job_id}{self.ext}"
 
 
 def plan_batch_member(name: str, allowed_extensions: list[str]) -> Literal["take", "skip"]:

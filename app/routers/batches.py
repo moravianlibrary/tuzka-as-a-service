@@ -49,7 +49,7 @@ from app.services import batch_store, redis_jobs, storage
 from app.services import config as config_service
 from app.services.archive import HEAD_BYTES, MemberTooLarge, detect_archive, iter_members
 from app.services.batch_archive import PageRow, batch_archive_path, build_results_archive
-from app.services.batches import page_score, plan_batch_member
+from app.services.batches import UploadedPage, page_score, plan_batch_member
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent
 from app.services.imageinfo import image_megapixels
@@ -153,7 +153,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
     incoming = request.app.state.incoming_client
     bucket = settings.minio_incoming_bucket
     job_fmt = fmt_label(spec.outputs)
-    pages: list[tuple[UUID, str, float]] = []  # (job id, extension, MP), archive order
+    pages: list[UploadedPage] = []  # in archive order
     skipped: list[str] = []
     members = iter_members(upload, kind, settings.max_upload_bytes)
     try:
@@ -170,16 +170,18 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
                 continue
             if len(pages) >= settings.batch_max_pages:
                 raise PayloadTooLarge(f"More than {settings.batch_max_pages} pages")
-            job_id = uuid4()
-            ext = PurePosixPath(member.name).suffix.lower()
-            megapixels = image_megapixels(member.data)
+            page = UploadedPage(
+                job_id=uuid4(),
+                ext=PurePosixPath(member.name).suffix.lower(),
+                megapixels=image_megapixels(member.data),
+            )
             content_type = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
             await storage.put_object(
-                incoming, bucket, f"{username}/{job_id}{ext}", member.data, content_type
+                incoming, bucket, page.incoming_path(username), member.data, content_type
             )
             db.add(
                 Job(
-                    id=job_id,
+                    id=page.job_id,
                     username=username,
                     batch_id=batch_id,
                     source_name=member.name,
@@ -189,10 +191,10 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
                     outputs=sorted(spec.outputs),
                     options=spec.options,
                     file_size_bytes=member.size,
-                    megapixels=megapixels,
+                    megapixels=page.megapixels,
                 )
             )
-            pages.append((job_id, ext, megapixels))
+            pages.append(page)
             if len(pages) % COMMIT_EVERY == 0:
                 await db.commit()
         if not pages:
@@ -215,7 +217,7 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
     await redis_jobs.init_batch(r, BatchCounts(batch_id=str(batch_id), total=len(pages)), state_ttl)
     trace = inject_trace_context()
     emitter = get_emitter()
-    for index, (job_id, ext, megapixels) in enumerate(pages):
+    for index, page in enumerate(pages):
         state = JobState(
             username=username,
             batch_id=str(batch_id),
@@ -223,14 +225,15 @@ async def submit_batch(  # noqa: C901, PLR0912, PLR0915 - split up on refactor/c
             domain=spec.domain,
             outputs=spec.outputs,
             options=spec.options,
-            ext=ext,
-            megapixels=megapixels,
+            ext=page.ext,
+            megapixels=page.megapixels,
             submitted_at=page_score(submitted, index),
             priority=priority,
             trace=trace,
         )
-        await redis_jobs.enqueue_job(r, str(job_id), state, state_ttl)
-        emitter.emit(JobEvent.from_state(utcnow(), JobEventName.SUBMITTED, str(job_id), state))
+        job_id = str(page.job_id)
+        await redis_jobs.enqueue_job(r, job_id, state, state_ttl)
+        emitter.emit(JobEvent.from_state(utcnow(), JobEventName.SUBMITTED, job_id, state))
     return BatchSubmitResponse(
         batch_id=batch_id, external_id=label, total=len(pages), skipped=skipped
     )
@@ -247,13 +250,13 @@ async def _abandon(
     bucket: str,
     username: str,
     batch_id: UUID,
-    pages: list[tuple[UUID, str, float]],
+    pages: list[UploadedPage],
 ) -> None:
     """Undo a batch that failed while being read: its uploaded pages and its rows (the
     jobs go with the batch row)."""
     await db.rollback()
     if pages:
-        paths = [f"{username}/{job_id}{ext}" for job_id, ext, _ in pages]
+        paths = [page.incoming_path(username) for page in pages]
         await storage.delete_objects(incoming, bucket, paths)
     await db.execute(delete(Batch).where(Batch.id == batch_id))
     await db.commit()
@@ -417,18 +420,20 @@ async def retry_batch(
     megapixels = {job_id: mp for job_id, mp in rows.tuples()}
     incoming = request.app.state.incoming_client
     bucket = settings.minio_incoming_bucket
-    retried: list[tuple[UUID, str, float | None]] = []  # (new job id, extension, MP)
+    retried: list[UploadedPage] = []
     expired: list[str] = []
     for old_id, name in failed:
-        ext = PurePosixPath(name).suffix.lower()
-        new_id = uuid4()
-        src, dst = f"{username}/{old_id}{ext}", f"{username}/{new_id}{ext}"
-        if not await storage.copy_object(incoming, bucket, src, dst):
+        # A row from before megapixels were recorded counts as 1 MP, like a fresh job.
+        page = UploadedPage(
+            uuid4(), PurePosixPath(name).suffix.lower(), megapixels.get(old_id) or 1.0
+        )
+        src = f"{username}/{old_id}{page.ext}"  # the failed job's upload
+        if not await storage.copy_object(incoming, bucket, src, page.incoming_path(username)):
             expired.append(name)
             continue
         db.add(
             Job(
-                id=new_id,
+                id=page.job_id,
                 username=username,
                 batch_id=batch_id,
                 source_name=name,
@@ -440,7 +445,7 @@ async def retry_batch(
                 megapixels=megapixels.get(old_id),
             )
         )
-        retried.append((new_id, ext, megapixels.get(old_id)))
+        retried.append(page)
     if not retried:
         return BatchRetryResponse(batch_id=batch_id, retried=0, expired=expired)
 
@@ -461,10 +466,10 @@ async def retry_batch(
     )
     await redis_jobs.init_batch(r, restarted, state_ttl)
     submitted = time.time()
-    for index, (job_id, ext, page_megapixels) in enumerate(retried):
+    for index, page in enumerate(retried):
         await redis_jobs.enqueue_job(
             r,
-            str(job_id),
+            str(page.job_id),
             JobState(
                 username=username,
                 batch_id=str(batch_id),
@@ -472,8 +477,8 @@ async def retry_batch(
                 domain=batch.domain,
                 outputs=frozenset(batch.outputs),
                 options=batch.options,
-                ext=ext,
-                megapixels=page_megapixels or 1.0,
+                ext=page.ext,
+                megapixels=page.megapixels,
                 submitted_at=page_score(submitted, index),
                 priority=priority,
             ),
