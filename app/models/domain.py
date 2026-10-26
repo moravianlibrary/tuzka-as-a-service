@@ -3,7 +3,7 @@
 # and backend_domains; rows are kept forever so historical analytics resolve names.
 from typing import Any
 
-from sqlalchemy import BigInteger
+from sqlalchemy import BigInteger, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,9 +14,9 @@ class Domain(Base):
     __tablename__ = "domains"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(unique=True, nullable=False)
-    label: Mapped[str | None] = mapped_column(default=None)
-    description: Mapped[str | None] = mapped_column(default=None)
+    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(Text, default=None)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
     # Engine id the legacy compat shim exposes for this domain (get_engines).
     legacy_engine_id: Mapped[int | None] = mapped_column(unique=True, default=None)
     # Per-job options JSON Schema, derived from the engine's OpenAPI; newest wins.

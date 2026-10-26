@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, func
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,10 +18,10 @@ class Batch(Base):
     __tablename__ = "batches"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=False)
+    username: Mapped[str] = mapped_column(Text, ForeignKey("users.username"), nullable=False)
     # The caller's own label for the batch; its pages have none (they have source_name).
-    external_id: Mapped[str | None] = mapped_column(default=None)
-    domain: Mapped[str] = mapped_column(nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, default=None)
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
     outputs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     options: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[BatchStatus] = mapped_column(
@@ -31,7 +31,7 @@ class Batch(Base):
     submitted_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
     archive_built_at: Mapped[datetime | None] = mapped_column(default=None)
-    archive_size_bytes: Mapped[int | None] = mapped_column(default=None)
+    archive_size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
 
     __table_args__ = (
         CheckConstraint(check_values("status", BatchStatus), name="ck_batches_status"),

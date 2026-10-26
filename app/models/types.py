@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
-from sqlalchemy import String
+from sqlalchemy import Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
@@ -16,7 +16,7 @@ class StrEnumType[E: StrEnum](TypeDecorator[E]):
     ``sqlalchemy.Enum`` would emit VARCHAR(n) and its own CHECK; the columns already are
     text with a CHECK listing the values (built with ``check_values``)."""
 
-    impl = String
+    impl = Text
     cache_ok = True
 
     def __init__(self, enum: type[E]) -> None:
