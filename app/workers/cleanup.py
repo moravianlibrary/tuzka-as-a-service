@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 import redis.asyncio as aioredis
@@ -105,64 +106,65 @@ class CleanupWorker:
             await self.run_tick()
             await sleep_unless_stopped(self.stop, REAP_TICK_SECONDS)
 
-    async def run_tick(self) -> None:  # noqa: C901, PLR0912 - split up on refactor/complexity
-        settings = self.settings
-        session_factory = self.session_factory
-        r = self.r
-        results_client = self.results_client
-        tick = self.ticks
-        try:
-            async with session_factory() as db:
-                await requeue_lost_jobs(db, r)
-        except Exception:
-            logger.exception("Requeue of lost jobs failed")
-
-        try:
-            async with session_factory() as db:
-                await reap_stale_jobs(db, r)
-        except Exception:
-            logger.exception("Reaper failed")
-
-        # Retention every tick: job rows past their TTL, results past their age or
-        # over the storage cap (each bounded per tick).
-        try:
-            async with session_factory() as db:
-                bucket = settings.minio_results_bucket
-                await delete_finished_jobs(db, results_client, bucket)
-                await delete_expired_batches(db, results_client, bucket)
-                await evict_results(db, results_client, bucket)
-                if stalled := await batch_store.finish_stalled(db):
-                    logger.warning(f"Finished {stalled} stalled batch(es)")
-        except Exception:
-            logger.exception("Retention sweep failed")
-
-        if tick % HEAVY_EVERY == 0:
-            try:
-                async with session_factory() as db:
-                    config = await get_runtime_config(db)
-                    for bucket, client in self.bucket_clients.items():
-                        ttl_minutes = config.storage_ttl_minutes(bucket)
-                        cutoff = utcnow() - timedelta(minutes=ttl_minutes)
-                        expired = await list_expired_objects(client, bucket, cutoff)
-                        if expired:
-                            for i in range(0, len(expired), DELETE_BATCH_SIZE):
-                                batch = expired[i : i + DELETE_BATCH_SIZE]
-                                await delete_objects(client, bucket, batch)
-                                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
-
-            except Exception:
-                logger.exception("Cleanup worker failed")
-            try:
-                await rebuild_load_counters(r)
-            except Exception:
-                logger.exception("Load counter rebuild failed")
-            try:
-                if fixed := await rebuild_backend_counters(r):
-                    logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
-            except Exception:
-                logger.exception("Backend counter rebuild failed")
-
+    async def run_tick(self) -> None:
+        """Every tick: requeue lost jobs, reap stale ones, apply retention. Every
+        ``HEAVY_EVERY``-th: also purge expired objects and rebuild the counters. A step
+        that fails is logged and the rest still run."""
+        is_heavy = self.ticks % HEAVY_EVERY == 0
         self.ticks += 1
+        await _guard("Requeue of lost jobs failed", self._requeue_lost_jobs)
+        await _guard("Reaper failed", self._reap)
+        await _guard("Retention sweep failed", self._apply_retention)
+        if not is_heavy:
+            return
+
+        await _guard("Purging expired objects failed", self._purge_expired_objects)
+        await _guard("Load counter rebuild failed", lambda: rebuild_load_counters(self.r))
+        await _guard("Backend counter rebuild failed", self._rebuild_backend_counters)
+
+    async def _requeue_lost_jobs(self) -> None:
+        async with self.session_factory() as db:
+            await requeue_lost_jobs(db, self.r)
+
+    async def _reap(self) -> None:
+        async with self.session_factory() as db:
+            await reap_stale_jobs(db, self.r)
+
+    async def _apply_retention(self) -> None:
+        """Job rows past their TTL, results past their age or over the storage cap (each
+        bounded per tick), and batches whose last page's finish was missed."""
+        bucket = self.settings.minio_results_bucket
+        async with self.session_factory() as db:
+            await delete_finished_jobs(db, self.results_client, bucket)
+            await delete_expired_batches(db, self.results_client, bucket)
+            await evict_results(db, self.results_client, bucket)
+            if stalled := await batch_store.finish_stalled(db):
+                logger.warning(f"Finished {stalled} stalled batch(es)")
+
+    async def _purge_expired_objects(self) -> None:
+        """Delete each bucket's objects older than its ``storage.<bucket>_ttl_minutes``."""
+        async with self.session_factory() as db:
+            config = await get_runtime_config(db)
+        for bucket, client in self.bucket_clients.items():
+            cutoff = utcnow() - timedelta(minutes=config.storage_ttl_minutes(bucket))
+            expired = await list_expired_objects(client, bucket, cutoff)
+            for i in range(0, len(expired), DELETE_BATCH_SIZE):
+                batch = expired[i : i + DELETE_BATCH_SIZE]
+                await delete_objects(client, bucket, batch)
+                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
+
+    async def _rebuild_backend_counters(self) -> None:
+        if fixed := await rebuild_backend_counters(self.r):
+            logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
+
+
+async def _guard(failure: str, step: Callable[[], Awaitable[object]]) -> None:
+    """Run one cleanup step; a failure is logged, so it can't stop the steps after it
+    or end the worker."""
+    try:
+        await step()
+    except Exception:
+        logger.exception(failure)
 
 
 async def main() -> None:
