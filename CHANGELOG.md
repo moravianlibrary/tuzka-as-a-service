@@ -166,6 +166,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- `taas-admin` prints readable tables: columns sized to the terminal, `yes`/`no` for
+  flags, numbers right-aligned, `key=value` for objects, and a column no row has a
+  value in left out (`--json` still has every field). Piped, the output is plain text
+  without trailing spaces. `job show` and the user update commands print field by field
+  (a job's attempts as a table) instead of raw JSON; `job show --json` gives the JSON.
 - `make db-migrate MSG=` autogenerates the next numbered migration from the models,
   written with plain column types (no app imports) and formatted by ruff. Read it before
   committing.

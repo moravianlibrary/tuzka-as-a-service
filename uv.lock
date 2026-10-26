@@ -2630,6 +2630,7 @@ api = [
     { name = "opentelemetry-instrumentation-fastapi" },
     { name = "pillow" },
     { name = "python-multipart" },
+    { name = "rich" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2647,6 +2648,7 @@ dev = [
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
     { name = "python-multipart" },
+    { name = "rich" },
     { name = "ruff" },
     { name = "schemathesis" },
     { name = "typer" },
@@ -2681,6 +2683,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "redis", specifier = ">=5.0" },
+    { name = "rich", marker = "extra == 'api'", specifier = ">=13" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "schemathesis", marker = "extra == 'dev'" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },

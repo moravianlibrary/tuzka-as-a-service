@@ -2,7 +2,7 @@
 
 import typer
 
-from app.cli.common import JsonOption, build, output, run, secret_from_env
+from app.cli.common import JsonOption, build, output, run, secret_from_env, show
 from app.schemas.api.user import LIMIT_FIELD_NAMES, UserCreate, UserList, UserUpdate, limit_fields
 from app.services import admin_ops
 from app.vocabulary import LimitClass
@@ -57,7 +57,7 @@ def set_key(
 def _update(username: str, **fields: object) -> None:
     body = build(UserUpdate, **fields)
     result = run(lambda db: admin_ops.update_user(db, username, body))
-    typer.echo(result.model_dump_json(indent=2))
+    show(result, as_json=False)
 
 
 @app.command()
