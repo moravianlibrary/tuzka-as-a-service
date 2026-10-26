@@ -1,6 +1,6 @@
 """Tests for is_transient_harvest_error — the retry/terminal classifier for harvest.
 
-Pure (no I/O). Pins which harvest failures leave the job inflight for re-harvest (a
+Pure (no I/O). Pins which harvest failures keep the job on the harvest queue for a retry (a
 dropped pooled DB connection, a transient storage/transport error) versus fail the job
 (a bad result, an unexpected bug). The engine has already produced the OCR output by the
 time we harvest, so infrastructure errors must not be recorded as the job's failure.
@@ -8,6 +8,7 @@ time we harvest, so infrastructure errors must not be recorded as the job's fail
 
 import httpx
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from app.engines.base import OutputUnavailable
 from app.workers.poller.steps import is_transient_harvest_error
@@ -37,8 +38,16 @@ def test_transport_errors_are_transient() -> None:
     assert is_transient_harvest_error(httpx.PoolTimeout("no connection"))
 
 
+def test_a_connection_that_cannot_be_opened_is_transient() -> None:
+    # The database (or storage) is down: the backend lookup or the store can't connect.
+    assert is_transient_harvest_error(ConnectionRefusedError("refused"))
+    assert is_transient_harvest_error(OSError("name does not resolve"))
+    assert is_transient_harvest_error(PoolTimeout("pool exhausted"))
+
+
 def test_other_exceptions_are_terminal() -> None:
     assert not is_transient_harvest_error(KeyError("job_id"))
+    assert not is_transient_harvest_error(LookupError("no engine_job_id"))
     assert not is_transient_harvest_error(ValueError("boom"))
 
 

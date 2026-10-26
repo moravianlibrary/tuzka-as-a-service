@@ -293,6 +293,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The poller no longer loops without pause while its database is unreachable and
+  harvests are due: a harvest that can't look up its backend, connect, or get a pooled
+  connection backs off like any other transient harvest error, instead of staying due.
 - A `presigned.ttl_minutes` of 0, a negative one or one over 7 days no longer fails
   every harvested job: it's refused on set, and falls back to the default on read.
 - The submit worker drops a queued job whose Redis state has expired or been deleted

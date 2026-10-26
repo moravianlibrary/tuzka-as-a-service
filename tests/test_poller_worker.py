@@ -448,6 +448,39 @@ async def test_a_transient_harvest_error_retries_the_harvest_later(
 
 
 @pytest.mark.asyncio
+async def test_a_backend_lookup_that_cannot_reach_the_db_retries_the_harvest_later(
+    worker, session_factory, redis_client, emitter
+) -> None:
+    job_id, state = await _done_job(session_factory, redis_client)
+
+    async def adapter_for(state: JobState) -> FakeEngine:
+        raise ConnectionRefusedError("database down")
+
+    worker.adapter_for = adapter_for
+    before = await redis_client.zscore(PENDING_HARVEST_KEY, job_id)
+
+    await worker.harvest(job_id, state, None)
+
+    after = await redis_client.zscore(PENDING_HARVEST_KEY, job_id)
+    assert after is not None and before is not None and after > before  # not due again now
+    assert (await _row(session_factory, job_id)).status == JobStatus.STORING
+    assert emitter.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_harvest_without_an_engine_job_id_fails_the_job(
+    worker, session_factory, redis_client, emitter
+) -> None:
+    job_id, state = await _done_job(session_factory, redis_client)
+    worker.adapter_for = _engine({"alto": ALTO, "txt": b"x"})
+
+    await worker.harvest(job_id, state.model_copy(update={"engine_job_id": None}), None)
+
+    assert (await _row(session_factory, job_id)).status == JobStatus.FAILED
+    assert await redis_client.zscore(PENDING_HARVEST_KEY, job_id) is None  # not retried
+
+
+@pytest.mark.asyncio
 async def test_an_unexpected_harvest_error_fails_the_job(
     worker, session_factory, redis_client, emitter
 ) -> None:

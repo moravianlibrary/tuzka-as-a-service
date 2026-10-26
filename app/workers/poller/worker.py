@@ -234,10 +234,8 @@ class PollerWorker:
         # run's timestamps even though the poll outcome is long gone.
         if run is None:
             run = state.harvest_times or EngineRun()
-        engine_job_id = require_engine_job_id(state)
-        adapter = await self.adapter_for(state)
         try:
-            await self._harvest(job_id, state, run, adapter, engine_job_id)
+            await self._harvest(job_id, state, run)
         except OutputUnavailable as e:
             # The engine can't produce an output this job asked for (TuzkaM: georeferencing
             # failed). Retrying gives the same answer, so the job fails for good.
@@ -277,10 +275,10 @@ class PollerWorker:
         job_id: str,
         state: JobState,
         run: EngineRun,
-        adapter: EngineAdapter,
-        engine_job_id: str,
     ) -> None:
         """Fetch, store and record the job's outputs, then report it done (once)."""
+        engine_job_id = require_engine_job_id(state)
+        adapter = await self.adapter_for(state)
         with self.timer.stage("fetch_outputs"):
             fetched = await fetch_outputs(adapter, engine_job_id, state.outputs)
         stats = self._output_stats(fetched, run)

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from app.engines.base import EngineAdapter, EngineStatus
 from app.schemas.attempt import Attempt
@@ -33,14 +34,16 @@ def is_transient_harvest_error(exc: Exception) -> bool:
 
     The engine has already produced the OCR output by the time we harvest, so a dropped
     DB connection or a transient storage/transport error must NOT permanently fail the
-    job: we leave it inflight and let the next poll re-harvest it (the reaper is the
+    job: it stays on the harvest queue and is retried after a backoff (the reaper is the
     backstop if it truly stays stuck). A pooled connection closed under us surfaces as a
     DBAPIError with ``connection_invalidated`` set (e.g. asyncpg's
-    ConnectionDoesNotExistError). Pure (no I/O) so it is unit-testable.
+    ConnectionDoesNotExistError); a new connection that can't be opened (database down,
+    refused, unresolvable) as an ``OSError``, and an exhausted pool as SQLAlchemy's
+    ``TimeoutError``. Pure (no I/O) so it is unit-testable.
     """
     if isinstance(exc, DBAPIError) and exc.connection_invalidated:
         return True
-    return isinstance(exc, httpx.TransportError)
+    return isinstance(exc, httpx.TransportError | OSError | PoolTimeout)
 
 
 async def fetch_outputs(
