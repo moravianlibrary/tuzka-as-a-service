@@ -109,12 +109,16 @@ async def get_domain_limits(db: AsyncSession) -> dict[str, DomainLimits]:
     if ok:
         limits: dict[str, DomainLimits] = cached
         return limits
-    rows = await db.execute(
-        select(Domain.name, Domain.max_upload_bytes, Domain.running_timeout_seconds).where(
+    domains = await db.scalars(
+        select(Domain).where(
             (Domain.max_upload_bytes.is_not(None)) | (Domain.running_timeout_seconds.is_not(None))
         )
     )
-    limits = {name: DomainLimits(upload, timeout) for name, upload, timeout in rows.all()}
+    # Plain values, not the entities: the cache outlives this session.
+    limits = {
+        domain.name: DomainLimits(domain.max_upload_bytes, domain.running_timeout_seconds)
+        for domain in domains
+    }
     _cache_put("domain_limits", limits)
     return limits
 
