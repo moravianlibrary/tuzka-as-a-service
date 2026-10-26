@@ -304,8 +304,13 @@ async def get_batch(
     listed = None
     if pages:
         listed = [
-            BatchPage(source_name=name or "", job_id=job_id, status=status, error=error)
-            for job_id, name, status, error in await batch_store.pages(db, batch_id)
+            BatchPage(
+                source_name=page.source_name or "",
+                job_id=page.id,
+                status=page.status,
+                error=page.error,
+            )
+            for page in await batch_store.pages(db, batch_id)
         ]
     return BatchStatusResponse(
         batch_id=batch.id,
@@ -364,8 +369,10 @@ async def get_batch_results(
     if not (final and batch.archive_built_at is not None):
         stored = await batch_store.stored_results(db, batch_id)
         rows = [
-            PageRow(job_id, name or "", status, error, stored.get(job_id, []))
-            for job_id, name, status, error in await batch_store.pages(db, batch_id)
+            PageRow(
+                page.id, page.source_name or "", page.status, page.error, stored.get(page.id, [])
+            )
+            for page in await batch_store.pages(db, batch_id)
         ]
         size = await build_results_archive(rows, username, results, bucket, path)
         if final:
@@ -408,9 +415,9 @@ async def retry_batch(
         raise Conflict("Only a finished batch can be retried")
 
     failed = [
-        (job_id, name or "")
-        for job_id, name, status, _ in await batch_store.pages(db, batch_id)
-        if status == JobStatus.FAILED
+        (page.id, page.source_name or "")
+        for page in await batch_store.pages(db, batch_id)
+        if page.status == JobStatus.FAILED
     ]
     # A retried page is the same image: dispatch scoring and the per-backend speed
     # divide by its megapixels.

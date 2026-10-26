@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Subquery, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.backend import Backend
 from app.models.backend_domain import BackendDomain
@@ -23,7 +23,7 @@ def estimate_eta(remaining_pages: int, seconds_per_page: float | None, slots: in
     return remaining_pages * seconds_per_page / max(1, slots)
 
 
-def _latest_pages(batch_id: uuid.UUID) -> Any:
+def _latest_pages(batch_id: uuid.UUID) -> Subquery:
     """The batch's current job per page: a retried page has several jobs, the newest
     one counts (step 7, D10)."""
     return (
@@ -53,15 +53,10 @@ async def domain_slots(db: AsyncSession, domain: str) -> int:
     return int(total or 0)
 
 
-async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[Any]:
+async def pages(db: AsyncSession, batch_id: uuid.UUID) -> list[Job]:
     """Every page (its current job), ordered by source name."""
-    latest = _latest_pages(batch_id)
-    rows = await db.execute(
-        select(latest.c.id, latest.c.source_name, latest.c.status, latest.c.error).order_by(
-            latest.c.source_name
-        )
-    )
-    return list(rows.all())
+    latest = aliased(Job, _latest_pages(batch_id))
+    return list(await db.scalars(select(latest).order_by(latest.source_name)))
 
 
 async def stored_results(db: AsyncSession, batch_id: uuid.UUID) -> dict[uuid.UUID, list[str]]:

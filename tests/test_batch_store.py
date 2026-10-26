@@ -120,7 +120,7 @@ async def test_a_retried_page_counts_once_with_its_newest_job(session) -> None:
     await session.commit()
 
     assert await batch_store.page_counts(session, batch_id) == {"done": 1, "queued": 1}
-    listed = {name: status for _, name, status, _ in await batch_store.pages(session, batch_id)}
+    listed = {page.source_name: page.status for page in await batch_store.pages(session, batch_id)}
     assert listed == {"p0.jpg": "done", "retry.jpg": "queued"}
 
 
