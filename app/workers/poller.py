@@ -173,6 +173,24 @@ class PollOutcome:
     stage: FailureStage = FailureStage.POLL
 
 
+@dataclass(frozen=True, slots=True)
+class FailedPoll:
+    """A polled job that fails for good: its error text and the attempt it records."""
+
+    outcome: PollOutcome
+    error: str
+    attempt: Attempt
+
+
+@dataclass(frozen=True, slots=True)
+class RequeuedPoll:
+    """A polled job that goes back on the queue after ``delay_s``, away from its backend."""
+
+    outcome: PollOutcome
+    delay_s: float
+    attempt: Attempt
+
+
 def classify_poll_result(
     status: PollStatus, retryable: bool, requeues: int, max_requeues: int
 ) -> PollAction:
@@ -722,10 +740,10 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
     async def process_chunk(statuses: list[PollOutcome], max_requeues: int, state_ttl: int) -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
         nonlocal released_since_harvest
-        done_jobs: list[tuple[str, JobState, EngineRun]] = []
-        failed_jobs: list[tuple[str, JobState, str, Attempt, EngineRun]] = []
-        requeue_jobs: list[tuple[str, JobState, float, int | None, Attempt]] = []
-        running_jobs: list[tuple[str, JobState]] = []
+        done_jobs: list[PollOutcome] = []
+        failed_jobs: list[FailedPoll] = []
+        requeue_jobs: list[RequeuedPoll] = []
+        running_jobs: list[PollOutcome] = []
 
         for outcome in statuses:
             state = outcome.state
@@ -735,33 +753,33 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                     outcome.status, outcome.retryable, requeues, max_requeues
                 )
             if action == PollAction.HARVEST:
-                done_jobs.append((outcome.job_id, state, outcome.run))
+                done_jobs.append(outcome)
             elif action == PollAction.FAIL:
                 err = poll_failure_message(outcome, max_requeues)
-                attempt = poll_attempt(outcome, False, utcnow())
-                failed_jobs.append((outcome.job_id, state, err, attempt, outcome.run))
+                failed_jobs.append(FailedPoll(outcome, err, poll_attempt(outcome, False, utcnow())))
             elif action == PollAction.REQUEUE:
                 delay = backoff_seconds(requeues)
-                avoid: int | None = state.backend_id
                 attempt = poll_attempt(outcome, True, utcnow())
-                requeue_jobs.append((outcome.job_id, state, delay, avoid, attempt))
+                requeue_jobs.append(RequeuedPoll(outcome, delay, attempt))
             else:
-                running_jobs.append((outcome.job_id, state))
+                running_jobs.append(outcome)
 
         # The engine is done: free its slot now and queue the harvest, rather
         # than holding the slot through fetch/store/DB. The harvest drain
         # below picks these up in this same pass when it has capacity.
         if done_jobs:
             released = await asyncio.gather(
-                *[release_done(r, jid, state, run) for jid, state, run in done_jobs],
+                *[release_done(r, o.job_id, o.state, o.run) for o in done_jobs],
                 return_exceptions=True,
             )
             storing_ids: list[UUID] = []
-            for (jid, _state, _run), release_result in zip(done_jobs, released, strict=True):
+            for done, release_result in zip(done_jobs, released, strict=True):
                 if isinstance(release_result, Exception):
-                    logger.error("Releasing job %s for harvest failed: %s", jid, release_result)
+                    logger.error(
+                        "Releasing job %s for harvest failed: %s", done.job_id, release_result
+                    )
                 elif release_result:
-                    storing_ids.append(UUID(jid))
+                    storing_ids.append(UUID(done.job_id))
             if storing_ids:
                 # Redis owns durable harvest work before Postgres exposes `storing`.
                 async with session_factory() as db:
@@ -774,7 +792,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
 
         # Update next_poll_at with backoff for running jobs; remember each new
         # deadline so the wait below fires right when the soonest job is due.
-        for job_id, state in running_jobs:
+        for running in running_jobs:
+            state = running.state
             now = time.time()
             current_backoff = (state.next_poll_at or now) - (state.last_poll or now)
             next_backoff = min(
@@ -782,15 +801,18 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                 settings.poll_backoff_max,
             )
             new_deadline = time.time() + next_backoff
-            await schedule_next_poll(r, job_id, new_deadline, time.time())
+            await schedule_next_poll(r, running.job_id, new_deadline, time.time())
 
         # Mark failed jobs
-        for job_id, state, error, attempt, run in failed_jobs:
+        for failed in failed_jobs:
+            job_id, state = failed.outcome.job_id, failed.outcome.state
             with (
                 job_span("fail", job_id, state, backend_id=state.backend_id),
                 timer.stage("fail"),
             ):
-                await mark_failed(job_id, state, error, attempt=attempt, run=run)
+                await mark_failed(
+                    job_id, state, failed.error, attempt=failed.attempt, run=failed.outcome.run
+                )
 
         # Re-queue retryable failures (unreachable pod, engine 5xx, lost job) so
         # another backend picks them up after a jittered backoff. Redis is
@@ -798,7 +820,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # counter the budget reads); the DB mirrors it, with the attempt
         # recorded, in one batched session.
         if requeue_jobs:
-            for job_id, state, delay, avoid_id, _attempt in requeue_jobs:
+            for requeue in requeue_jobs:
+                job_id, state = requeue.outcome.job_id, requeue.outcome.state
+                delay, avoid_id = requeue.delay_s, state.backend_id
                 with timer.stage("requeue"):
                     await release_and_requeue(
                         r,
@@ -813,23 +837,30 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
                         await perf.record_failure(r, avoid_id, state.domain)
                 logger.info(f"Re-queued job {job_id} in {delay:.1f}s (avoiding backend {avoid_id})")
             async with session_factory() as db:
-                for job_id, _meta, _delay, _avoid, attempt in requeue_jobs:
+                for requeue in requeue_jobs:
                     await db.execute(
                         update(Job)
-                        .where(Job.id == job_id)
+                        .where(Job.id == requeue.outcome.job_id)
                         .values(
                             status=JobStatus.QUEUED,
                             engine_job_id=None,
                             backend_id=None,
                             dispatched_at=None,
                             requeues=Job.requeues + 1,
-                            **append_attempt(attempt),
+                            **append_attempt(requeue.attempt),
                         )
                     )
                 await db.commit()
-            for job_id, state, _delay, _avoid, attempt in requeue_jobs:
+            for requeue in requeue_jobs:
+                outcome = requeue.outcome
                 emitter.emit(
-                    job_event(JobEventName.RETRIED, job_id, state, None, **attempt_failure(attempt))
+                    job_event(
+                        JobEventName.RETRIED,
+                        outcome.job_id,
+                        outcome.state,
+                        None,
+                        **attempt_failure(requeue.attempt),
+                    )
                 )
         if done_jobs:
             released_since_harvest += len(done_jobs)
