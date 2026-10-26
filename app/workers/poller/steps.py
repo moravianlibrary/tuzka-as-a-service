@@ -12,11 +12,18 @@ from sqlalchemy.exc import DBAPIError
 from app.engines.base import EngineAdapter, EngineStatus
 from app.schemas.attempt import Attempt
 from app.schemas.redis import EngineRun, JobState
+from app.services.retry_policy import backoff_seconds
 from app.vocabulary import (
     PollAction,
     PollStatus,
 )
-from app.workers.poller.types import OutputStats, PollOutcome
+from app.workers.poller.types import (
+    FailedPoll,
+    OutputStats,
+    PollOutcome,
+    PollPlan,
+    RequeuedPoll,
+)
 
 logger = logging.getLogger("poller-worker")
 
@@ -125,6 +132,32 @@ def poll_attempt(outcome: PollOutcome, retry: bool, at: datetime) -> Attempt:
         retry=retry,
         at=at,
     )
+
+
+def plan_polls(statuses: list[PollOutcome], max_requeues: int, now: datetime) -> PollPlan:
+    """Sort a chunk of poll outcomes by what the poller does with each. Pure."""
+    plan = PollPlan()
+    for outcome in statuses:
+        requeues = outcome.state.requeues
+        action = classify_poll_result(outcome.status, outcome.retryable, requeues, max_requeues)
+        if action == PollAction.HARVEST:
+            plan.done.append(outcome)
+        elif action == PollAction.FAIL:
+            error = poll_failure_message(outcome, max_requeues)
+            plan.failed.append(FailedPoll(outcome, error, poll_attempt(outcome, False, now)))
+        elif action == PollAction.REQUEUE:
+            attempt = poll_attempt(outcome, True, now)
+            plan.requeued.append(RequeuedPoll(outcome, backoff_seconds(requeues), attempt))
+        else:
+            plan.running.append(outcome)
+    return plan
+
+
+def next_poll_delay(state: JobState, now: float, initial: float, cap: float) -> float:
+    """How long until a still-running job's next status check: double the last gap,
+    within ``[initial, cap]``. Pure."""
+    current = (state.next_poll_at or now) - (state.last_poll or now)
+    return min(max(current * 2, initial), cap)
 
 
 def next_poll_timeout(deadlines: list[float], now: float, cap: float) -> float:

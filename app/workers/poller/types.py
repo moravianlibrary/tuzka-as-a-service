@@ -1,6 +1,6 @@
 """What a poll of an in-flight job found, and what the poller does with a failed one."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.models.job import Job
@@ -77,3 +77,13 @@ class StoredHarvest:
         if self.started_at is None or self.engine_finished_at is None:
             return None
         return (self.engine_finished_at - self.started_at).total_seconds()
+
+
+@dataclass(frozen=True, slots=True)
+class PollPlan:
+    """What a chunk of poll outcomes comes to: harvest, fail, requeue or keep polling."""
+
+    done: list[PollOutcome] = field(default_factory=list)
+    failed: list[FailedPoll] = field(default_factory=list)
+    requeued: list[RequeuedPoll] = field(default_factory=list)
+    running: list[PollOutcome] = field(default_factory=list)
