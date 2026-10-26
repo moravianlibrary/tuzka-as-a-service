@@ -8,8 +8,9 @@ import time
 from datetime import timedelta
 
 import redis.asyncio as aioredis
+from miniopy_async.api import Minio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
@@ -69,22 +70,118 @@ async def requeue_lost_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
     return len(requeued)
 
 
-async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor/complexity
+# How often the cleanup runs, and how often of those the heavy object/retention sweep
+# does (every 10th tick, ~10 min).
+REAP_TICK_SECONDS = 60
+HEAVY_EVERY = 10
+
+
+class CleanupWorker:
+    """The cleanup worker's clients, and the steps of a tick."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        r: aioredis.Redis,
+        session_factory: async_sessionmaker[AsyncSession],
+        incoming_client: Minio,
+        results_client: Minio,
+        stop: asyncio.Event,
+    ) -> None:
+        self.settings = settings
+        self.r = r
+        self.session_factory = session_factory
+        self.results_client = results_client
+        self.bucket_clients = {
+            settings.minio_incoming_bucket: incoming_client,
+            settings.minio_results_bucket: results_client,
+        }
+        self.stop = stop
+        self.ticks = 0
+
+    async def run(self) -> None:
+        logger.info("Cleanup worker started")
+        while not self.stop.is_set():
+            await self.run_tick()
+            await sleep_unless_stopped(self.stop, REAP_TICK_SECONDS)
+
+    async def run_tick(self) -> None:  # noqa: C901, PLR0912 - split up on refactor/complexity
+        settings = self.settings
+        session_factory = self.session_factory
+        r = self.r
+        results_client = self.results_client
+        tick = self.ticks
+        try:
+            async with session_factory() as db:
+                await requeue_lost_jobs(db, r)
+        except Exception:
+            logger.exception("Requeue of lost jobs failed")
+
+        try:
+            async with session_factory() as db:
+                await reap_stale_jobs(db, r)
+        except Exception:
+            logger.exception("Reaper failed")
+
+        # Retention every tick: job rows past their TTL, results past their age or
+        # over the storage cap (each bounded per tick).
+        try:
+            async with session_factory() as db:
+                bucket = settings.minio_results_bucket
+                await delete_finished_jobs(db, results_client, bucket)
+                await delete_expired_batches(db, results_client, bucket)
+                await evict_results(db, results_client, bucket)
+                if stalled := await batch_store.finish_stalled(db):
+                    logger.warning(f"Finished {stalled} stalled batch(es)")
+        except Exception:
+            logger.exception("Retention sweep failed")
+
+        if tick % HEAVY_EVERY == 0:
+            try:
+                async with session_factory() as db:
+                    config = await get_runtime_config(db)
+                    for bucket, client in self.bucket_clients.items():
+                        ttl_minutes = config.storage_ttl_minutes(bucket)
+                        cutoff = utcnow() - timedelta(minutes=ttl_minutes)
+                        expired = await list_expired_objects(client, bucket, cutoff)
+                        if expired:
+                            for i in range(0, len(expired), DELETE_BATCH_SIZE):
+                                batch = expired[i : i + DELETE_BATCH_SIZE]
+                                await delete_objects(client, bucket, batch)
+                                logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
+
+            except Exception:
+                logger.exception("Cleanup worker failed")
+            try:
+                await rebuild_load_counters(r)
+            except Exception:
+                logger.exception("Load counter rebuild failed")
+            try:
+                if fixed := await rebuild_backend_counters(r):
+                    logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
+            except Exception:
+                logger.exception("Backend counter rebuild failed")
+
+        self.ticks += 1
+
+
+async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     db_engine = make_engine(settings)
     setup_telemetry(settings, "taas-cleanup", db_engine=db_engine)
     session_factory = make_session_factory(db_engine)
-    incoming_client = get_incoming_client(settings)
-    results_client = get_results_client(settings)
     r = make_redis(settings)
     emitter = get_emitter(settings)  # the reaper's failed events
     await emitter.start()
-
-    bucket_clients = {
-        settings.minio_incoming_bucket: incoming_client,
-        settings.minio_results_bucket: results_client,
-    }
+    worker = CleanupWorker(
+        settings,
+        r,
+        session_factory,
+        get_incoming_client(settings),
+        get_results_client(settings),
+        install_stop(),
+    )
 
     # Queue depth and backend use for HyperDX, every 15 s (step 5, D6).
     live = (
@@ -92,69 +189,8 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         if settings.clickhouse_url
         else None
     )
-
-    stop = install_stop()
-    logger.info("Cleanup worker started")
-    REAP_TICK_SECONDS = 60
-    HEAVY_EVERY = 10  # heavy object/retention sweep every 10th tick (~10 min)
-    tick = 0
     try:
-        while not stop.is_set():
-            try:
-                async with session_factory() as db:
-                    await requeue_lost_jobs(db, r)
-            except Exception:
-                logger.exception("Requeue of lost jobs failed")
-
-            try:
-                async with session_factory() as db:
-                    await reap_stale_jobs(db, r)
-            except Exception:
-                logger.exception("Reaper failed")
-
-            # Retention every tick: job rows past their TTL, results past their age or
-            # over the storage cap (each bounded per tick).
-            try:
-                async with session_factory() as db:
-                    bucket = settings.minio_results_bucket
-                    await delete_finished_jobs(db, results_client, bucket)
-                    await delete_expired_batches(db, results_client, bucket)
-                    await evict_results(db, results_client, bucket)
-                    if stalled := await batch_store.finish_stalled(db):
-                        logger.warning(f"Finished {stalled} stalled batch(es)")
-            except Exception:
-                logger.exception("Retention sweep failed")
-
-            if tick % HEAVY_EVERY == 0:
-                try:
-                    async with session_factory() as db:
-                        config = await get_runtime_config(db)
-                        for bucket, client in bucket_clients.items():
-                            ttl_minutes = config.storage_ttl_minutes(bucket)
-                            cutoff = utcnow() - timedelta(minutes=ttl_minutes)
-                            expired = await list_expired_objects(client, bucket, cutoff)
-                            if expired:
-                                for i in range(0, len(expired), DELETE_BATCH_SIZE):
-                                    batch = expired[i : i + DELETE_BATCH_SIZE]
-                                    await delete_objects(client, bucket, batch)
-                                    logger.info(
-                                        f"Deleted {len(batch)} expired objects from {bucket}"
-                                    )
-
-                except Exception:
-                    logger.exception("Cleanup worker failed")
-                try:
-                    await rebuild_load_counters(r)
-                except Exception:
-                    logger.exception("Load counter rebuild failed")
-                try:
-                    if fixed := await rebuild_backend_counters(r):
-                        logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
-                except Exception:
-                    logger.exception("Backend counter rebuild failed")
-
-            tick += 1
-            await sleep_unless_stopped(stop, REAP_TICK_SECONDS)
+        await worker.run()
     finally:
         if live is not None:
             live.cancel()
