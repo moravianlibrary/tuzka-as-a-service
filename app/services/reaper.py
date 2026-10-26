@@ -177,5 +177,5 @@ async def reap_stale_jobs(db: AsyncSession, r: aioredis.Redis) -> int:
                     ),
                 )
             )
-        logger.info(f"Reaped {len(stale)} stale job(s)")
+        logger.info("Reaped %d stale job(s)", len(stale))
     return len(stale)

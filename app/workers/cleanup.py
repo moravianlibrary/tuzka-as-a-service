@@ -141,7 +141,7 @@ class CleanupWorker:
             await delete_expired_batches(db, self.results_client, bucket)
             await evict_results(db, self.results_client, bucket)
             if stalled := await batch_store.finish_stalled(db):
-                logger.warning(f"Finished {stalled} stalled batch(es)")
+                logger.warning("Finished %d stalled batch(es)", stalled)
 
     async def _purge_expired(self, bucket: str) -> None:
         """Delete the bucket's objects older than its ``storage.<bucket>_ttl_minutes``."""
@@ -153,11 +153,11 @@ class CleanupWorker:
         for i in range(0, len(expired), DELETE_BATCH_SIZE):
             batch = expired[i : i + DELETE_BATCH_SIZE]
             await delete_objects(client, bucket, batch)
-            logger.info(f"Deleted {len(batch)} expired objects from {bucket}")
+            logger.info("Deleted %d expired objects from %s", len(batch), bucket)
 
     async def _rebuild_backend_counters(self) -> None:
         if fixed := await rebuild_backend_counters(self.r):
-            logger.warning(f"Corrected the in-flight count of {fixed} backend(s)")
+            logger.warning("Corrected the in-flight count of %d backend(s)", fixed)
 
 
 async def _guard(failure: str, step: Callable[[], Awaitable[object]]) -> None:

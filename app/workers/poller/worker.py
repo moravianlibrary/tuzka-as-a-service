@@ -190,7 +190,7 @@ class PollerWorker:
             engine_job_id = require_engine_job_id(state)
             status_resp = await adapter.status(engine_job_id)
         except httpx.TransportError as e:
-            logger.warning(f"Engine unreachable for job {job_id}: {e}")
+            logger.warning("Engine unreachable for job %s: %s", job_id, e)
             return PollOutcome(
                 job_id,
                 PollStatus.UNREACHABLE,
@@ -201,7 +201,7 @@ class PollerWorker:
                 error=describe_exception(e),
             )
         except Exception as e:
-            logger.error(f"Failed to check status for job {job_id}: {e}")
+            logger.error("Failed to check status for job %s: %s", job_id, e)
             return PollOutcome(
                 job_id,
                 PollStatus.ERROR,
@@ -305,7 +305,7 @@ class PollerWorker:
         await self._record_run_time(state, stored)
         with self.timer.stage("events"):
             await self._report_done(job_id, state, run, stats, stored, batch)
-        logger.info(f"Published done event for {state.username}")
+        logger.info("Published done event for %s", state.username)
 
     async def _output_stats(self, fetched: dict[str, bytes], run: EngineRun) -> OutputStats:
         parsed_alto = None
@@ -422,7 +422,7 @@ class PollerWorker:
                 compressed,
                 "application/octet-stream",
             )
-        logger.info(f"Stored {obj_path} ({len(compressed)} bytes)")
+        logger.info("Stored %s (%d bytes)", obj_path, len(compressed))
 
         with self.timer.stage("presign"):
             presigned_url = await presign_get(
@@ -701,7 +701,7 @@ class PollerWorker:
             if avoid_id is not None:  # retryable: the backend's fault
                 await perf.record_failure(self.r, avoid_id, state.domain)
         logger.info(
-            f"Re-queued job {job_id} in {requeue.delay_s:.1f}s (avoiding backend {avoid_id})"
+            "Re-queued job %s in %.1fs (avoiding backend %s)", job_id, requeue.delay_s, avoid_id
         )
 
     async def drain_due(self, due: list[str], states: dict[str, JobState]) -> None:

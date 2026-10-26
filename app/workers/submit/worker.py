@@ -134,7 +134,7 @@ class SubmitWorker:
             for b in self.backends:
                 db.expunge(b)
         self.backends_refreshed_at = time.time()
-        logger.info(f"Loaded {len(self.backends)} backend(s)")
+        logger.info("Loaded %d backend(s)", len(self.backends))
 
     async def sync_domains(self, backend: Backend) -> None:
         """Fetch the engine's domains, outputs and options schema; rebuild backend_domains."""
@@ -202,11 +202,11 @@ class SubmitWorker:
         healthy = await self.adapters.for_backend(backend, backend.url).healthy()
         self.health_cache[backend.id] = (healthy, now)
         if healthy:
-            logger.info(f"Backend {backend.label or backend.url} healthy")
+            logger.info("Backend %s healthy", backend.label or backend.url)
             # Refresh the backend's served domains in the background (best-effort).
             self.spawn_domain_sync(backend)
         else:
-            logger.warning(f"Backend {backend.label or backend.url} unhealthy")
+            logger.warning("Backend %s unhealthy", backend.label or backend.url)
         return healthy
 
     async def dispatch(
@@ -255,7 +255,7 @@ class SubmitWorker:
         try:
             await self._submit(job_id, state, backend, image_bytes)
         except EngineFullError:
-            logger.info(f"Engine {backend.url} full, requeuing job {job_id}")
+            logger.info("Engine %s full, requeuing job %s", backend.url, job_id)
             await requeue_job(self.r, job_id, original_score)
         except Exception as e:
             await self._dispatch_failed(job_id, original_score, state, backend, e)
@@ -271,7 +271,7 @@ class SubmitWorker:
             engine_job_id = await adapter.submit(
                 image_bytes, filename, state.domain, state.outputs, state.options
             )
-        logger.info(f"Job {job_id} running, engine_job_id={engine_job_id}")
+        logger.info("Job %s running, engine_job_id=%s", job_id, engine_job_id)
         with self.timer.stage("engine_version"):
             engine_version = await adapter.version()
 
@@ -516,7 +516,7 @@ class SubmitWorker:
         with self.timer.stage("promote"):
             promoted = await promote_due_retries(self.r, time.time())
         if promoted:
-            logger.info(f"Promoted {promoted} delayed retry/requeue(s)")
+            logger.info("Promoted %d delayed retry/requeue(s)", promoted)
 
     async def _eligible_slots(self) -> list[BackendSlot]:
         """This tick's eligible backends: healthy, with their free capacity + served
@@ -590,8 +590,10 @@ class SubmitWorker:
             return 0
 
         logger.info(
-            f"Dispatching {len(assignments)} job(s) across {len(tier)} backend(s) "
-            f"at priority {priority}"
+            "Dispatching %d job(s) across %d backend(s) at priority %d",
+            len(assignments),
+            len(tier),
+            priority,
         )
         with self.timer.stage("dispatch"):
             results = await asyncio.gather(

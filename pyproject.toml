@@ -54,7 +54,9 @@ extend-exclude = ["TuzkaOCR", "bench", "alembic/versions"]
 
 [tool.ruff.lint]
 # C901/PLR0912/PLR0915 cap function size; TD keeps TODOs attributed (TODO(author): …).
-select = ["E", "F", "I", "W", "UP", "B", "SIM", "C901", "PLR0912", "PLR0915", "TD"]
+# G004: log calls pass their values as arguments (lazy %-formatting), not an f-string,
+# so a message's template stays the same from one record to the next.
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "C901", "PLR0912", "PLR0915", "TD", "G004"]
 # TD003: a TODO needs no issue link.
 ignore = ["E501", "TD003"]
 
