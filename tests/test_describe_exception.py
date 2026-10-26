@@ -2,12 +2,12 @@
 
 Pure (no I/O), so runs without redis/DB. Pins the one behavior that matters: a
 message-less exception (e.g. an httpx transport error) still yields a non-empty
-string, so the stored ``error`` and the dashboard are never blank.
+string, so the stored ``error`` is never blank.
 """
 
 import httpx
 
-from app.workers.submit import describe_exception
+from app.services.retry_policy import describe_exception
 
 
 def test_message_bearing_exception_uses_str() -> None:

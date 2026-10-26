@@ -1,0 +1,158 @@
+{{- if .Values.clickstack.enabled }}
+{{- $c := .Values.clickstack.clickhouse }}
+{{- $t := $c.threads | default dict }}
+{{- $name := printf "%s-clickhouse" (include "taas.fullname" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  listen.xml: |
+    <clickhouse>
+      <listen_host>0.0.0.0</listen_host>
+      <listen_host>::</listen_host>
+    </clickhouse>
+  # ClickHouse's own system logs grow without bound by default; keep a few days.
+  system-logs.xml: |
+    <clickhouse>
+      <text_log remove="1"/>
+      <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
+      <metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></metric_log>
+      <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></asynchronous_metric_log>
+      <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
+      <part_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></part_log>
+    </clickhouse>
+  # Keep ClickHouse's thread pools proportional to this small single-node deployment.
+  # These are startup-only settings; the StatefulSet checksum below rolls the pod when
+  # they change. See clickstack.clickhouse.threads in values.yaml.
+  threads.xml: |
+    <clickhouse>
+      <background_pool_size>16</background_pool_size>
+      <background_schedule_pool_size>{{ int ($t.backgroundSchedulePoolSize | default 32) }}</background_schedule_pool_size>
+      <background_common_pool_size>2</background_common_pool_size>
+      <background_fetches_pool_size>2</background_fetches_pool_size>
+      <background_move_pool_size>2</background_move_pool_size>
+      <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+      <background_message_broker_schedule_pool_size>2</background_message_broker_schedule_pool_size>
+      <background_distributed_schedule_pool_size>2</background_distributed_schedule_pool_size>
+      <max_thread_pool_size>{{ int ($t.maxThreadPoolSize | default 256) }}</max_thread_pool_size>
+      <max_thread_pool_free_size>{{ int ($t.maxThreadPoolFreeSize | default 32) }}</max_thread_pool_free_size>
+      <max_parts_cleaning_thread_pool_size>16</max_parts_cleaning_thread_pool_size>
+      <max_active_parts_loading_thread_pool_size>8</max_active_parts_loading_thread_pool_size>
+      <max_outdated_parts_loading_thread_pool_size>4</max_outdated_parts_loading_thread_pool_size>
+      <max_unexpected_parts_loading_thread_pool_size>2</max_unexpected_parts_loading_thread_pool_size>
+      <max_concurrent_queries>{{ int ($t.maxConcurrentQueries | default 64) }}</max_concurrent_queries>
+      <max_io_thread_pool_size>32</max_io_thread_pool_size>
+      <max_backups_io_thread_pool_size>32</max_backups_io_thread_pool_size>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: clickhouse
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: clickhouse
+      annotations:
+        # The thread pools are startup-only; roll the pod when the config values change.
+        checksum/config: {{ toYaml $c | sha256sum }}
+    spec:
+      containers:
+        - name: clickhouse
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_USER
+              value: {{ $c.user | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "taas.fullname" . }}-secret
+                  key: CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/listen.xml
+              subPath: listen.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/system-logs.xml
+              subPath: system-logs.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/threads.xml
+              subPath: threads.xml
+              readOnly: true
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if $c.storage.storageClassName }}
+        storageClassName: {{ $c.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $c.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+{{- end }}

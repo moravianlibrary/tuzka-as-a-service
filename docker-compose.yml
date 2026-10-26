@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:16
+    # Per-query stats; `CREATE EXTENSION pg_stat_statements` to read them.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-taas}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taas}
@@ -116,6 +118,9 @@ services:
       - "8080:8000"
     env_file:
       - .env.app
+    environment:
+      # Set by `make up-clickstack`; unset (events off) for a plain `make up`.
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +145,9 @@ services:
     command: python -m app.workers.submit
     env_file:
       - .env.app
+    environment:
+      # Set by `make up-clickstack`; unset (events off) for a plain `make up`.
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
     depends_on:
       api:
         condition: service_healthy
@@ -153,6 +161,9 @@ services:
     command: python -m app.workers.poller
     env_file:
       - .env.app
+    environment:
+      # Set by `make up-clickstack`; unset (events off) for a plain `make up`.
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
     depends_on:
       api:
         condition: service_healthy
@@ -166,6 +177,9 @@ services:
     command: python -m app.workers.cleanup
     env_file:
       - .env.app
+    environment:
+      # Set by `make up-clickstack`; unset (events off) for a plain `make up`.
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
     depends_on:
       api:
         condition: service_healthy
@@ -182,7 +196,6 @@ services:
       TAAS_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379/0
       COMPAT_TTL_SECONDS: 3600
-      ENGINES: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
     depends_on:
       api:
         condition: service_healthy
@@ -225,6 +238,59 @@ services:
     networks:
       - backend
 
+  # Analytics store for job events (step 5), only with `--profile clickstack`
+  # (`make up-clickstack`). The schema is applied on first start.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    profiles: ["clickstack"]
+    ports:
+      - "127.0.0.1:8123:8123"
+    environment:
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./deploy/helm/taas/files/clickstack/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  # Map OCR (domain "maps"), only with `--profile maps`. Built from a local TuzkaM
+  # checkout, like ocr-engine from ./TuzkaOCR; `make seed` registers it when it runs.
+  tuzkam:
+    profiles: ["maps"]
+    build:
+      context: ${TUZKAM_DIR:-../../../gitlab.mzk.cz/osdd/tuzkam}
+      dockerfile: Dockerfile
+      args:
+        TUZKAM_COVERAGE: europe-med
+    image: tuzkam:europe-med
+    environment:
+      TUZKAM_DATA_DIR: /data
+      TUZKAM_BUILTIN_GAZETTEER_DIR: /app/builtin
+      TUZKAM_GAZETTEER_AUTO_INSTALL: "false"
+      TUZKAM_API_KEY: ${TUZKAM_API_KEY:-test-tuzkam-key}
+    user: "10001:10001"
+    volumes:
+      - tuzkam-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 120s
+    networks:
+      - backend
+
 volumes:
   postgres-data:
   redis-data:
@@ -233,6 +299,8 @@ volumes:
   minio-results-store:
   ocr-results:
   ocr-spool:
+  clickhouse-data:
+  tuzkam-data:
 
 networks:
   backend:

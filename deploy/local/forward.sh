@@ -2,7 +2,7 @@
 # Manage background port-forwards for the local taas stack.
 #   forward.sh up     start forwards (detached) + open the UIs
 #   forward.sh down   stop the forwards started by `up`
-# Driven by the Makefile: make local-deploy-forward-up / local-deploy-forward-down.
+# Driven by the Makefile: make k3d-forward / k3d-forward-stop.
 set -euo pipefail
 
 RELEASE="${RELEASE:-taas}"
@@ -27,7 +27,7 @@ down() {
 
 up() {
   if [ -f "$PIDFILE" ] && kill -0 "$(head -1 "$PIDFILE")" 2>/dev/null; then
-    echo "Forwards already running (PID file $PIDFILE). Run 'make local-deploy-forward-down' first."
+    echo "Forwards already running (PID file $PIDFILE). Run 'make k3d-forward-stop' first."
     exit 1
   fi
   : > "$PIDFILE"
@@ -68,15 +68,14 @@ up() {
 
   cat <<EOF
 
-Forwards running in the background. Master key: test-master-key
-  Dashboard UI   http://localhost:${API_PORT}/
+Forwards running in the background.
   Swagger docs   http://localhost:${API_PORT}/docs
   Job API        http://localhost:${API_PORT}/api/v1
-  Admin API      http://localhost:${API_PORT}/admin       (header X-Master-Key: test-master-key)
+  Admin          kubectl -n taas exec deploy/taas-api -- taas-admin --help
   Legacy compat  http://localhost:${COMPAT_PORT}
   MinIO results  http://localhost:${RESULTS_PORT}         (presigned result downloads)
 
-Stop them with: make local-deploy-forward-down
+Stop them with: make k3d-forward-stop
 EOF
 }
 

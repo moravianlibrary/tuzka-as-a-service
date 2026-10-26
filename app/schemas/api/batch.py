@@ -1,0 +1,58 @@
+"""Pydantic schemas for the batch endpoints (step 7)."""
+
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from app.clock import UtcDatetime
+from app.vocabulary import BatchStatus, JobStatus
+
+
+class BatchSubmitResponse(BaseModel):
+    batch_id: UUID
+    # Your label from the submit; None if you sent none.
+    external_id: str | None = None
+    total: int
+    # Archive members that weren't images (wrong extension), left out of the batch.
+    skipped: list[str] = []
+
+
+class BatchPage(BaseModel):
+    source_name: str  # the page's path in the archive you sent
+    job_id: UUID
+    status: JobStatus
+    error: str | None = None
+
+
+class BatchStatusResponse(BaseModel):
+    batch_id: UUID
+    external_id: str | None = None
+    status: BatchStatus = Field(description="open (still reading the archive), queued or finished")
+    domain: str
+    outputs: list[str]
+    total: int
+    queued: int
+    running: int
+    done: int
+    failed: int
+    submitted_at: UtcDatetime
+    finished_at: UtcDatetime | None = None
+    eta_s: float | None = Field(
+        default=None,
+        description="A rough estimate of the seconds left, from the queue and recent "
+        "engine speed; None when unknown.",
+    )
+    pages: list[BatchPage] | None = None
+
+
+class BatchResults(BaseModel):
+    status: BatchStatus = BatchStatus.FINISHED
+    url: str
+    expires_at: UtcDatetime
+
+
+class BatchRetryResponse(BaseModel):
+    batch_id: UUID
+    retried: int  # failed pages resubmitted as new jobs
+    # Failed pages that couldn't be retried: their uploaded image has expired.
+    expired: list[str] = []

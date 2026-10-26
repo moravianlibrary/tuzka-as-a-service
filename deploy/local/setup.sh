@@ -9,6 +9,23 @@ NODEPORT="${NODEPORT:-32700}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VALUES="$ROOT/deploy/local/values.local.yaml"
 
+# Match the chart's taas.fullname: a release name that contains "taas" is used as is,
+# otherwise the chart appends "-taas".
+FULLNAME="$RELEASE"
+case "$RELEASE" in
+  *taas*) ;;
+  *) FULLNAME="${RELEASE}-taas" ;;
+esac
+
+# The host engine and the register hook must share this key. Prefer the same .env
+# that deploy/local/engine-proxy/compose.yaml reads; fall back to test-engine-key.
+ENGINE_ENV="$ROOT/deploy/local/engine-proxy/.env"
+TUNNEL_ENGINE_KEY="${OCR_API_KEY:-}"
+if [ -z "$TUNNEL_ENGINE_KEY" ] && [ -f "$ENGINE_ENV" ]; then
+  TUNNEL_ENGINE_KEY="$(sed -n 's/^[[:space:]]*OCR_API_KEY=//p' "$ENGINE_ENV" | tail -n 1 | tr -d '\r\"')"
+fi
+TUNNEL_ENGINE_KEY="${TUNNEL_ENGINE_KEY:-test-engine-key}"
+
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 say "1/6  Ensuring k3d is installed"
@@ -42,13 +59,16 @@ docker build -t taas-worker:latest -f "$ROOT/worker.Containerfile" "$ROOT"
 docker build -t taas-compat:latest -f "$ROOT/compat/Containerfile" "$ROOT/compat"
 k3d image import taas-api:latest taas-worker:latest taas-compat:latest -c "$CLUSTER"
 
-say "5/6  Installing the taas chart"
+say "5/6  Creating the tunnel engine Secret and installing the taas chart"
+kubectl create secret generic "${FULLNAME}-tunnel-engine-key" \
+  --from-literal=api-key="$TUNNEL_ENGINE_KEY" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 helm upgrade --install "$RELEASE" "$ROOT/deploy/helm/taas" \
   -f "$VALUES" --wait --timeout 5m
 
 say "6/6  Waiting for the backend-register hook job to finish"
 kubectl wait --for=condition=complete --timeout=180s \
-  "job/${RELEASE}-backend-register" || \
+  "job/${FULLNAME}-backend-register" || \
   echo "(register job not complete yet — it retries until the API + engine are up)"
 
 cat <<EOF
@@ -56,8 +76,8 @@ cat <<EOF
 Done (cluster + chart). Next:
   1) Start the host engine + tunnel (uses the tuzkaocr:local-* image you built):
        docker compose -f deploy/local/engine-proxy/compose.yaml up -d
-     (Tip: 'make local-deploy-up' runs this whole step + the above for you.)
+     (Tip: 'make k3d-up' runs this whole step + the above for you.)
   2) Port-forward the services + open the UIs:
-       make local-deploy-forward-up
+       make k3d-forward
   3) Verify the tunnel + run a job — see deploy/local/README.md "Verify".
 EOF

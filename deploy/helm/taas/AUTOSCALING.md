@@ -1,19 +1,20 @@
-# OCR engine autoscaling (HPA / KEDA) — and the GitOps `replicas` gotcha
+# Engine autoscaling (HPA / KEDA) — and the GitOps `replicas` gotcha
 
-The in-cluster OCR engine (`ocrEngine` in `values.yaml`) is a **StatefulSet** behind a
-headless Service. It can scale three ways via `ocrEngine.autoscaling.mode`:
+Every enabled entry in `engines` (TuzkaOCR, TuzkaM, or any additional engine) is a
+**StatefulSet** behind a headless Service. Each one can scale three ways via
+`engines.<name>.autoscaling.mode`:
 
 | mode   | scales by | owns `replicas` |
 |--------|-----------|-----------------|
-| `none` | nothing — static `ocrEngine.replicas` (default 1) | the manifest |
+| `none` | nothing — static `engines.<name>.autoscaling.replicas` (default 1) | the manifest |
 | `hpa`  | CPU utilisation (`autoscaling/v2` HorizontalPodAutoscaler) | the **HPA** |
-| `keda` | Redis queue length (KEDA `ScaledObject`) | **KEDA** |
+| `keda` | queued work in seconds from the API's `GET /load` (KEDA `metrics-api` `ScaledObject`) | **KEDA** |
 
 `minReplicas` / `maxReplicas` bound the autoscaler; `maxReplicas` also caps how many
 backend rows taas pre-registers for the engine.
 
-Templates: `templates/ocr-engine.yaml` (StatefulSet + Service),
-`templates/ocr-engine-hpa.yaml` (HPA or KEDA ScaledObject).
+Templates: `templates/engine.yaml` (StatefulSet + Service for every enabled engine),
+`templates/engine-autoscaler.yaml` (HPA or KEDA ScaledObject per engine).
 
 ## The rule: under hpa/keda the chart must NOT declare `spec.replicas`
 
@@ -23,7 +24,7 @@ autoscaler's `minReplicas` is the real floor.
 
 ### Symptom if this rule is broken
 
-> HPA-spawned pods (`<release>-ocr-engine-1`, `-2`, …) shut down (gracefully drain and
+> HPA-spawned pods (`<release>-<engine>-1`, `-2`, …) shut down (gracefully drain and
 > exit) **right after starting**, and the engine never scales past `minReplicas`.
 
 ### Why
@@ -55,7 +56,7 @@ spec:
   ignoreDifferences:
     - group: apps
       kind: StatefulSet
-      name: <release>-ocr-engine        # e.g. taas-ocr-engine
+      name: <release>-<engine>          # e.g. taas-ocr-engine or taas-tuzkam
       jsonPointers:
         - /spec/replicas
 ```
@@ -73,29 +74,62 @@ spec:
 
 ```sh
 # StatefulSet name + that the HPA/ScaledObject targets it
-kubectl get statefulset,hpa -l app.kubernetes.io/component=ocr-engine -n <ns>
+kubectl get statefulset,hpa -l taas.io/engine=ocr-engine -n <ns>
 
 # Rendered manifest must have NO `replicas:` under the ocr-engine StatefulSet (hpa/keda)
-helm template <release> deploy/helm/taas --set ocrEngine.enabled=true \
+helm template <release> deploy/helm/taas --set engines.ocr-engine.enabled=true \
   | awk '/kind: StatefulSet/,/^---/' | grep -E 'name:|replicas:'
 
 # After applying: scaled-up pods should stay Running, not terminate seconds after start
-kubectl get pods -l app.kubernetes.io/component=ocr-engine -n <ns> -w
+kubectl get pods -l taas.io/engine=ocr-engine -n <ns> -w
 ```
 
 ## KEDA setup & when to use it
 
-KEDA (queue-depth) is the **recommended production mode** for the OCR engine: a
+KEDA (queued work) is the **recommended production mode** for the OCR engine: a
 1-core / `PAGE_WORKERS=1` pod is binary on CPU (idle or pegged on one page), so
-CPU-utilisation HPA is a poor signal. Scaling on the Redis `ocr-jobs` queue length
-tracks demand directly and scales to zero.
+CPU-utilisation HPA is a poor signal. KEDA scales on what's actually waiting, and can
+scale to zero.
+
+The signal is the API's `GET /load`, read by KEDA's `metrics-api` scaler:
+
+```
+GET /load?adapter=tuzkaocr        Authorization: Bearer <secrets.loadToken>
+{"queued": 120, "inflight": 8, "backlog_s": 1280.0}
+```
+
+`backlog_s` is the queued **and in-flight** pages that **this engine could serve** (its
+domains, with every output the job asked for) times the measured seconds per page of
+each domain
+(an average of recent engine run times; `load.default_seconds_per_page`, 10 s, until a
+domain has any). KEDA aims for `backlog_s / replicas ≈ keda.targetBacklogSeconds`.
+In-flight pages count so that KEDA doesn't scale engines down while they're still
+working just because the queue has emptied. It still can when the remaining work
+drops, and Kubernetes removes the highest-numbered pod whether or not it's busy;
+taas then requeues that pod's pages on another engine (the work is redone, the job
+isn't lost).
 
 - Requires the **KEDA operator** installed cluster-wide (`hpa` is the default because
   it needs no extra operator).
-- `keda.redisAddress` empty => the chart's own Redis (`<release>-redis:<redis.port>`).
-  Set it only for an external Redis.
-- For a password-protected external Redis, set `keda.redisPasswordSecret` (+ optional
-  `keda.redisPasswordKey`) to an existing Secret; the chart renders a
-  `TriggerAuthentication` automatically.
-- Tune `keda.listLength` (≈1 replica per N queued jobs), `keda.pollingInterval`,
-  `keda.cooldownPeriod`.
+- Requires `secrets.loadToken`: the chart puts it in its Secret as `LOAD_TOKEN` and
+  renders a `TriggerAuthentication` for it. Rendering fails without it. Without a token,
+  `/load` answers 404, so the metric isn't public even though the ingress exposes the
+  API.
+- `keda.loadFilter` picks the work that counts (`adapter=<engine adapter>` by default;
+  `domain=a,b` narrows it to domains).
+- Tune `keda.targetBacklogSeconds` (≈1 replica per this many seconds of queued pages),
+  `keda.activationBacklogSeconds`, `keda.pollingInterval`, `keda.cooldownPeriod`.
+- `group_by=domain|adapter` on `/load` shows the breakdown, for people rather than
+  for KEDA.
+
+### Scaling from zero
+
+A pod that isn't running can't tell taas what it serves, so taas remembers: a backend
+keeps its last reported domains while it's down, and the register hook **declares**
+`engines.<name>.declaredDomains` for each engine before it has ever run (the engine's own
+report replaces them on its first sync). That's what makes its queued jobs count in
+`/load`, and what lets the API accept them while nothing is running.
+
+**Set `jobs.queued_timeout_seconds` above the engine's cold start** (image pull + model
+load). Jobs submitted while the engine is at zero wait in the queue for the first pod;
+if the timeout is shorter, they fail before it's ready.

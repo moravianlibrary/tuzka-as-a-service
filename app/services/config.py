@@ -8,7 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.config import ConfigEntry
+from app.models.domain import Domain
 from app.models.user import User
+from app.schemas.api.user import UserLimitOverrides
+from app.schemas.runtime_config import RateLimit, RuntimeConfig
+from app.vocabulary import LimitClass
 
 # Short in-process cache: hot path must not hit Postgres per request,
 # admin changes still take effect within seconds on every replica.
@@ -18,57 +22,10 @@ from app.models.user import User
 CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[Any, float]] = {}
 
-STORAGE_TTL_DEFAULT_MINUTES = 60
-JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS = 900
-JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS = 300
-JOB_MAX_REQUEUES_DEFAULT = 5
-PRESIGNED_TTL_DEFAULT_MINUTES = 60
 STATE_TTL_MARGIN_SECONDS = 60
 
 
-@dataclass(frozen=True)
-class ClassLimits:
-    per_minute: int
-    burst: int
-
-
-FALLBACK_LIMITS: dict[str, ClassLimits] = {
-    "submit": ClassLimits(per_minute=60, burst=10),
-    "query": ClassLimits(per_minute=120, burst=20),
-    "ws_connect": ClassLimits(per_minute=5, burst=2),
-}
-
-# limit class -> (users.<per-minute column>, users.<burst column>)
-USER_OVERRIDE_COLUMNS: dict[str, tuple[str, str]] = {
-    "submit": ("rate_submit_per_minute", "burst_submit"),
-    "query": ("rate_query_per_minute", "burst_query"),
-    "ws_connect": ("rate_ws_per_minute", "burst_ws"),
-}
-
-
-def resolve(
-    per_minute_override: int | None,
-    burst_override: int | None,
-    default: ClassLimits,
-) -> ClassLimits:
-    return ClassLimits(
-        per_minute=per_minute_override if per_minute_override is not None else default.per_minute,
-        burst=burst_override if burst_override is not None else default.burst,
-    )
-
-
-def parse_default_limits(value: Any, fallback: ClassLimits) -> ClassLimits:
-    if not isinstance(value, dict):
-        return fallback
-    return ClassLimits(
-        per_minute=int(value.get("per_minute", fallback.per_minute)),
-        burst=int(value.get("burst", fallback.burst)),
-    )
-
-
 def _cache_get(key: str) -> tuple[Any, bool]:
-    # ok=True with value=None means a cached negative lookup (e.g. key not in DB),
-    # which is distinct from a cache miss (ok=False).
     hit = _cache.get(key)
     if hit is not None and time.monotonic() - hit[1] < CACHE_TTL_SECONDS:
         return hit[0], True
@@ -79,15 +36,15 @@ def _cache_put(key: str, value: Any) -> None:
     _cache[key] = (value, time.monotonic())
 
 
-async def get_value(db: AsyncSession, key: str) -> Any | None:
-    value, ok = _cache_get(f"cfg:{key}")
+async def get_runtime_config(db: AsyncSession) -> RuntimeConfig:
+    """The whole config table, parsed; one small query per cache period."""
+    cached, ok = _cache_get("runtime_config")
     if ok:
-        return value
-    result = await db.execute(select(ConfigEntry).where(ConfigEntry.key == key))
-    entry = result.scalar_one_or_none()
-    value = entry.value if entry else None
-    _cache_put(f"cfg:{key}", value)
-    return value
+        config: RuntimeConfig = cached
+        return config
+    config = RuntimeConfig.from_rows(await get_all(db))
+    _cache_put("runtime_config", config)
+    return config
 
 
 async def get_all(db: AsyncSession) -> dict[str, Any]:
@@ -105,72 +62,71 @@ async def set_values(db: AsyncSession, values: dict[str, Any]) -> None:
         else:
             db.add(ConfigEntry(key=key, value=value))
     await db.commit()
-    for key in values:
-        _cache.pop(f"cfg:{key}", None)
+    _cache.pop("runtime_config", None)
+
+
+def clear_cache() -> None:
+    """Forget every cached value, for a caller that changed the tables some other way
+    (a test's TRUNCATE)."""
+    _cache.clear()
 
 
 def invalidate_user(username: str) -> None:
     _cache.pop(f"user:{username}", None)
 
 
-async def get_default_limits(db: AsyncSession, limit_class: str) -> ClassLimits:
-    value = await get_value(db, f"rate_limit.{limit_class}")
-    return parse_default_limits(value, FALLBACK_LIMITS[limit_class])
-
-
-async def _get_user_overrides(db: AsyncSession, username: str) -> dict[str, int | None]:
+async def _get_user_overrides(db: AsyncSession, username: str) -> UserLimitOverrides:
     cached, ok = _cache_get(f"user:{username}")
     if ok:
-        cached_overrides: dict[str, int | None] = cached
+        cached_overrides: UserLimitOverrides = cached
         return cached_overrides
-    columns = [c for pair in USER_OVERRIDE_COLUMNS.values() for c in pair]
-    result = await db.execute(
-        select(*(getattr(User, c) for c in columns)).where(User.username == username)
-    )
-    row = result.one_or_none()
-    overrides: dict[str, int | None] = (
-        dict(zip(columns, row, strict=True)) if row else {c: None for c in columns}
+    user = await db.scalar(select(User).where(User.username == username))
+    # Read back as stored, unvalidated: a value set by hand in SQL must not 500 the hot
+    # path (the limiter itself handles a non-positive rate).
+    overrides = (
+        UserLimitOverrides.model_construct(
+            **{field: getattr(user, field) for field in UserLimitOverrides.model_fields}
+        )
+        if user
+        else UserLimitOverrides()
     )
     _cache_put(f"user:{username}", overrides)
     return overrides
 
 
-async def effective_limits(db: AsyncSession, username: str, limit_class: str) -> ClassLimits:
-    default = await get_default_limits(db, limit_class)
+async def effective_limits(db: AsyncSession, username: str, limit_class: LimitClass) -> RateLimit:
+    config = await get_runtime_config(db)
     overrides = await _get_user_overrides(db, username)
-    per_col, burst_col = USER_OVERRIDE_COLUMNS[limit_class]
-    return resolve(overrides[per_col], overrides[burst_col], default)
+    return overrides.apply(limit_class, config.rate_limits[limit_class])
 
 
-async def get_storage_ttl_minutes(db: AsyncSession, buckets: list[str]) -> dict[str, int]:
-    keys = [f"storage.{bucket}_ttl_minutes" for bucket in buckets]
-    result = await db.execute(select(ConfigEntry).where(ConfigEntry.key.in_(keys)))
-    values = {entry.key: entry.value for entry in result.scalars().all()}
-    out: dict[str, int] = {}
-    for bucket in buckets:
-        value = values.get(f"storage.{bucket}_ttl_minutes")
-        out[bucket] = int(value) if value is not None else STORAGE_TTL_DEFAULT_MINUTES
-    return out
+@dataclass(frozen=True)
+class DomainLimits:
+    """A domain's own limits; None = the global value."""
+
+    max_upload_bytes: int | None = None
+    running_timeout_seconds: int | None = None
 
 
-async def get_job_queued_timeout_seconds(db: AsyncSession) -> int:
-    value = await get_value(db, "jobs.queued_timeout_seconds")
-    return int(value) if value is not None else JOB_QUEUED_TIMEOUT_DEFAULT_SECONDS
-
-
-async def get_job_running_timeout_seconds(db: AsyncSession) -> int:
-    value = await get_value(db, "jobs.running_timeout_seconds")
-    return int(value) if value is not None else JOB_RUNNING_TIMEOUT_DEFAULT_SECONDS
-
-
-async def get_presigned_ttl_minutes(db: AsyncSession) -> int:
-    value = await get_value(db, "presigned.ttl_minutes")
-    return int(value) if value is not None else PRESIGNED_TTL_DEFAULT_MINUTES
-
-
-async def get_max_requeues(db: AsyncSession) -> int:
-    value = await get_value(db, "jobs.max_requeues")
-    return int(value) if value is not None else JOB_MAX_REQUEUES_DEFAULT
+async def get_domain_limits(db: AsyncSession) -> dict[str, DomainLimits]:
+    """Every domain that overrides a limit, cached like the config values (the table is
+    small, and the submit path and the reaper both need it)."""
+    cached, ok = _cache_get("domain_limits")
+    if ok:
+        limits: dict[str, DomainLimits] = cached
+        return limits
+    domains = await db.scalars(
+        select(Domain).where(
+            (Domain.max_upload_bytes.is_not(None)) | (Domain.running_timeout_seconds.is_not(None))
+        )
+    )
+    # Plain values, not the entities: the cache outlives this session.
+    limits = {
+        domain.name: DomainLimits(domain.max_upload_bytes, domain.running_timeout_seconds)
+        for domain in domains
+    }
+    _cache_put("domain_limits", limits)
+    return limits
 
 
 async def get_state_ttl_seconds(db: AsyncSession) -> int:
@@ -179,6 +135,10 @@ async def get_state_ttl_seconds(db: AsyncSession) -> int:
     Computed (not configured) so it can never be set below the running timeout, which
     would let a running job's Redis state expire before it can be harvested or reaped.
     """
-    queued = await get_job_queued_timeout_seconds(db)
-    running = await get_job_running_timeout_seconds(db)
-    return queued + running + STATE_TTL_MARGIN_SECONDS
+    config = await get_runtime_config(db)
+    running = config.running_timeout_seconds
+    # A domain with a longer running timeout (maps) must not outlive its Redis state.
+    for limits in (await get_domain_limits(db)).values():
+        if limits.running_timeout_seconds is not None:
+            running = max(running, limits.running_timeout_seconds)
+    return config.queued_timeout_seconds + running + STATE_TTL_MARGIN_SECONDS

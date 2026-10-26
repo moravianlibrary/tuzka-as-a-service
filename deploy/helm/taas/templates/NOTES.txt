@@ -9,12 +9,22 @@ Components:
 {{- if .Values.compat.enabled }}
   - Compat:     {{ include "taas.fullname" . }}-compat  (port {{ .Values.compat.port }})
 {{- end }}
-{{- if .Values.ocrEngine.enabled }}
-  - OCR engine: {{ include "taas.fullname" . }}-ocr-engine (StatefulSet, autoscaling: {{ .Values.ocrEngine.autoscaling.mode }}, {{ .Values.ocrEngine.autoscaling.minReplicas }}-{{ .Values.ocrEngine.autoscaling.maxReplicas }} replicas; {{ .Values.ocrEngine.autoscaling.maxReplicas }} backends auto-registered)
+{{- $engines := include "taas.engines" . | fromYamlArray }}
+{{- range $e := $engines }}
+  - Engine {{ $e.name }}: {{ include "taas.fullname" $ }}-{{ $e.name }} (StatefulSet, {{ $e.adapter }}, autoscaling: {{ $e.autoscaling.mode }}, {{ if eq $e.autoscaling.mode "none" }}{{ $e.autoscaling.replicas }} static{{ else }}{{ $e.autoscaling.minReplicas }}-{{ $e.autoscaling.maxReplicas }}{{ end }} replicas; {{ if eq $e.autoscaling.mode "none" }}{{ $e.autoscaling.replicas }}{{ else }}{{ $e.autoscaling.maxReplicas }}{{ end }} backends auto-registered)
+{{- end }}
+{{- if not $engines }}
+{{- if .Values.tunnelBoxes }}
+
+NOTE: no in-cluster engine; off-cluster tunnel backends are registered from `tunnelBoxes`.
 {{- else }}
 
-NOTE: no in-cluster OCR engine. Register backends via the admin API:
-  POST /admin/backends  (header X-Master-Key)
+NOTE: no in-cluster engine. Register backends with the admin CLI. The key is read from
+an env var you provide (engine keys are not in <release>-secret):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "taas.fullname" . }}-api -- \
+    env ENGINE_KEY='<engine-key>' \
+    taas-admin backend upsert --url http://<engine>:8000 --api-key-env ENGINE_KEY
+{{- end }}
 {{- end }}
 
 Exposure (expose.<target>.kind = ingress | gateway | none):
@@ -22,11 +32,10 @@ Exposure (expose.<target>.kind = ingress | gateway | none):
 {{- if .Values.compat.enabled }}
   legacy          [{{ .Values.expose.legacy.kind }}]         -> compat  prefix: {{ .Values.expose.legacy.pathPrefix }} (stripped)
 {{- end }}
-  admin-dashboard [{{ .Values.expose.adminDashboard.kind }}] -> API   paths: {{ join ", " .Values.expose.adminDashboard.paths }}
   minio-results   [{{ .Values.expose.minioResults.kind }}] -> minio-results{{ with .Values.expose.minioResults.host }}  host: {{ . }}{{ end }} (presigned result downloads)
 
 {{- $exposed := false }}
-{{- range $name, $cfg := dict "api" .Values.expose.api "legacy" .Values.expose.legacy "adminDashboard" .Values.expose.adminDashboard "minioResults" .Values.expose.minioResults }}
+{{- range $name, $cfg := dict "api" .Values.expose.api "legacy" .Values.expose.legacy "minioResults" .Values.expose.minioResults }}
 {{- if ne $cfg.kind "none" }}{{ $exposed = true }}{{- end }}
 {{- end }}
 {{- if not $exposed }}
@@ -35,5 +44,5 @@ No target is exposed yet. Reach the API locally with:
   kubectl port-forward svc/{{ include "taas.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
 {{- end }}
 
-Remember to override the secrets (masterKey, keyEncryptionSecret, postgresPassword,
+Remember to override the secrets (keyEncryptionSecret, postgresPassword,
 minio*SecretKey) for any non-dev deployment.

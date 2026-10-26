@@ -1,0 +1,69 @@
+{{- if .Values.clickstack.enabled }}
+{{- $full := include "taas.fullname" . }}
+{{- $dashboards := .Files.Get "files/clickstack/dashboard.json" }}
+# Imports files/clickstack/dashboard.json into HyperDX (create by name, or update in
+# place). A hook runs on every install/upgrade; the import is idempotent, so that's
+# harmless. The checksum annotation makes a dashboard change visible in `helm diff`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-dashboards
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hyperdx
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  dashboard.json: |
+    {{- $dashboards | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-clickstack-dashboards
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hyperdx
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    checksum/dashboard: {{ $dashboards | sha256sum }}
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: clickstack-dashboards
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: import
+          image: {{ include "taas.image" (dict "image" .Values.api.image "global" .Values.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.ops.import_dashboard", "/dashboards/dashboard.json"]
+          env:
+            # The app proxies /api to its API server; the external API is under it.
+            - name: HYPERDX_URL
+              value: {{ printf "http://%s-hyperdx:8080/api" $full | quote }}
+            - name: HYPERDX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $full }}-secret
+                  key: HYPERDX_API_KEY
+          volumeMounts:
+            - name: dashboards
+              mountPath: /dashboards
+              readOnly: true
+      volumes:
+        - name: dashboards
+          configMap:
+            name: {{ $full }}-dashboards
+{{- end }}

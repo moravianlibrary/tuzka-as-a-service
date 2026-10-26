@@ -21,6 +21,7 @@ The harness does NOT restore docker-compose.yml — do that afterward with
 
 Usage: venv/bin/python bench/bench_page_workers.py [--n 60] [--rounds 3] [--pws 1,2,3]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,14 +36,15 @@ from pathlib import Path
 
 import httpx
 
+from api.common import UNTHROTTLED_PER_MINUTE, taas_admin
+
 PARENT = Path(__file__).resolve().parent.parent
 IMAGES_DIR = PARENT / "test-data"
 RESULTS_MD = PARENT / "bench" / "RESULTS_PAGE_WORKERS.md"
 RAW_TSV = PARENT / "bench" / "page_workers_raw.tsv"
 
 TAAS_URL = os.environ.get("TAAS_URL", "http://localhost:8080")
-MASTER_KEY = os.environ.get("MASTER_KEY", "test-master-key")
-FMT = "txt"                      # lightest downstream I/O; engine cost dominates
+FMT = "txt"  # lightest downstream I/O; engine cost dominates
 SUBMIT_CONCURRENCY = 8
 DRAIN_TIMEOUT_S = 900
 ENGINE_SVC = "ocr-engine"
@@ -61,8 +63,9 @@ def sh(cmd: list[str], env: dict | None = None, check: bool = True) -> str:
 
 
 def psql(sql: str) -> str:
-    return sh(["docker", "compose", "exec", "-T", PG_SVC,
-               "psql", "-U", "taas", "-d", "taas", "-tAc", sql])
+    return sh(
+        ["docker", "compose", "exec", "-T", PG_SVC, "psql", "-U", "taas", "-d", "taas", "-tAc", sql]
+    )
 
 
 def engine_cid() -> str:
@@ -72,17 +75,24 @@ def engine_cid() -> str:
 def recreate_engine(pw: int) -> None:
     """Recreate only the engine with PAGE_WORKERS=pw, then wait until it serves /healthz."""
     print(f"  recreating engine (PAGE_WORKERS={pw}) ...", flush=True)
-    sh(["docker", "compose", "up", "-d", "--no-deps", ENGINE_SVC],
-       env={"BENCH_PAGE_WORKERS": str(pw)})
+    sh(
+        ["docker", "compose", "up", "-d", "--no-deps", ENGINE_SVC],
+        env={"BENCH_PAGE_WORKERS": str(pw)},
+    )
     # The compose healthcheck has a slow cadence (60s start_period); poll directly.
     deadline = time.time() + 180
-    probe = ("import urllib.request,sys;"
-             "urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5);"
-             "print('ok')")
+    probe = (
+        "import urllib.request,sys;"
+        "urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5);"
+        "print('ok')"
+    )
     while time.time() < deadline:
         r = subprocess.run(
             ["docker", "compose", "exec", "-T", ENGINE_SVC, "python", "-c", probe],
-            cwd=str(PARENT), capture_output=True, text=True)
+            cwd=str(PARENT),
+            capture_output=True,
+            text=True,
+        )
         if r.returncode == 0 and "ok" in r.stdout:
             time.sleep(3)  # small settle so taas re-marks the backend reachable
             print("  engine healthy.", flush=True)
@@ -117,7 +127,10 @@ class RssSampler(threading.Thread):
             try:
                 out = subprocess.run(
                     ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", self._cid],
-                    capture_output=True, text=True, timeout=10)
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
                 used = out.stdout.split("/")[0]
                 if used.strip():
                     self.peak_mib = max(self.peak_mib, self._to_mib(used))
@@ -134,29 +147,36 @@ class RssSampler(threading.Thread):
 # --------------------------------------------------------------------------- #
 # taas user / submission
 # --------------------------------------------------------------------------- #
-def make_bench_user(http: httpx.Client) -> tuple[str, str]:
+def make_bench_user() -> tuple[str, str]:
     username = f"bench-{uuid.uuid4().hex[:8]}"
-    r = http.post(f"{TAAS_URL}/admin/users",
-                  headers={"X-Master-Key": MASTER_KEY},
-                  json={"username": username})
-    r.raise_for_status()
-    api_key = r.json()["api_key"]
+    api_key = taas_admin("user", "create", username).strip()
     # Lift rate limits so 60 rapid submits aren't throttled (default 60/min, burst 10).
-    http.patch(f"{TAAS_URL}/admin/users/{username}",
-               headers={"X-Master-Key": MASTER_KEY},
-               json={"rate_submit_per_minute": 1_000_000, "burst_submit": 100_000,
-                     "rate_query_per_minute": 1_000_000, "burst_query": 100_000}
-               ).raise_for_status()
+    limit = str(UNTHROTTLED_PER_MINUTE)
+    taas_admin(
+        "user",
+        "set-limits",
+        username,
+        "--submit-per-minute",
+        limit,
+        "--submit-burst",
+        limit,
+        "--query-per-minute",
+        limit,
+        "--query-burst",
+        limit,
+    )
     print(f"  bench user: {username}", flush=True)
     return username, api_key
 
 
 def submit_one(api_key: str, img: Path) -> int:
     with httpx.Client(timeout=60.0) as c:
-        r = c.post(f"{TAAS_URL}/api/v1/jobs",
-                   headers={"X-API-Key": api_key},
-                   files={"image": (img.name, img.read_bytes())},
-                   data={"uuid": str(uuid.uuid4()), "fmt": FMT})
+        r = c.post(
+            f"{TAAS_URL}/api/v1/jobs",
+            headers={"X-API-Key": api_key},
+            files={"image": (img.name, img.read_bytes())},
+            data={"uuid": str(uuid.uuid4()), "fmt": FMT},
+        )
         return r.status_code
 
 
@@ -174,9 +194,12 @@ def submit_batch(api_key: str, images: list[Path]) -> None:
 def drain(username: str, run_start: str, n: int) -> None:
     deadline = time.time() + DRAIN_TIMEOUT_S
     while time.time() < deadline:
-        done = int(psql(
-            f"SELECT count(*) FROM jobs WHERE username='{username}' "
-            f"AND submitted_at >= '{run_start}' AND status IN ('done','failed');"))
+        done = int(
+            psql(
+                f"SELECT count(*) FROM jobs WHERE username='{username}' "
+                f"AND submitted_at >= '{run_start}' AND status IN ('done','failed');"
+            )
+        )
         if done >= n:
             return
         time.sleep(2)
@@ -200,7 +223,8 @@ def run_once(username: str, api_key: str, images: list[Path], pw: int) -> dict:
         "EXTRACT(EPOCH FROM (finished_at - started_at)), "
         "EXTRACT(EPOCH FROM (started_at - submitted_at)), "
         "EXTRACT(EPOCH FROM started_at), EXTRACT(EPOCH FROM finished_at) "
-        f"FROM jobs WHERE username='{username}' AND submitted_at >= '{run_start}';")
+        f"FROM jobs WHERE username='{username}' AND submitted_at >= '{run_start}';"
+    )
 
     run_s, queue_s, starts, finishes = [], [], [], []
     failed = requeues = 0
@@ -225,9 +249,14 @@ def run_once(username: str, api_key: str, images: list[Path], pw: int) -> dict:
     wall = (max(finishes) - min(starts)) if (finishes and starts) else 0.0
     throughput = (len(run_s) / wall) if wall > 0 else 0.0
     return {
-        "pw": pw, "run_s": run_s, "queue_s": queue_s,
-        "throughput": throughput, "wall": wall,
-        "done": len(run_s), "failed": failed, "requeues": requeues,
+        "pw": pw,
+        "run_s": run_s,
+        "queue_s": queue_s,
+        "throughput": throughput,
+        "wall": wall,
+        "done": len(run_s),
+        "failed": failed,
+        "requeues": requeues,
         "peak_mib": peak_mib,
     }
 
@@ -249,7 +278,7 @@ def write_report(per_pw: dict[int, list[dict]], n: int, rounds: int) -> None:
     pws = sorted(per_pw)
     lines = [
         "# Bench — TUZKAOCR_PAGE_WORKERS sweep (live stack, 2-core engine)\n",
-        f"Engine pinned to 2 cores (`cpuset: \"0,1\"`), env aligned to `values.yaml` "
+        f'Engine pinned to 2 cores (`cpuset: "0,1"`), env aligned to `values.yaml` '
         f"(`OCR_THREADS=1 LINE_WORKERS=1 MAX_QUEUE=4 CPU_MEM_ARENA=false`). "
         f"Backend `max_inflight=4`. {n} pages/run · {rounds} interleaved rounds · "
         f"medians across rounds. `fmt={FMT}`.\n",
@@ -259,13 +288,17 @@ def write_report(per_pw: dict[int, list[dict]], n: int, rounds: int) -> None:
     ]
     for pw in pws:
         all_run = [x for r in per_pw[pw] for x in r["run_s"]]
-        lines.append(f"| {pw} | {statistics.median(all_run):.2f} | "
-                     f"{pct(all_run, 0.95):.2f} | {max(all_run):.2f} |")
+        lines.append(
+            f"| {pw} | {statistics.median(all_run):.2f} | "
+            f"{pct(all_run, 0.95):.2f} | {max(all_run):.2f} |"
+        )
 
-    lines += ["\n## Throughput (pages/sec, queue saturated)  +  health\n",
-              "| page_workers | throughput (median) | taas queue wait (median s) | "
-              "done | failed | requeues | engine peak RSS (MiB) |",
-              "|---|---|---|---|---|---|---|"]
+    lines += [
+        "\n## Throughput (pages/sec, queue saturated)  +  health\n",
+        "| page_workers | throughput (median) | taas queue wait (median s) | "
+        "done | failed | requeues | engine peak RSS (MiB) |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for pw in pws:
         runs = per_pw[pw]
         tps = statistics.median([r["throughput"] for r in runs])
@@ -274,8 +307,9 @@ def write_report(per_pw: dict[int, list[dict]], n: int, rounds: int) -> None:
         failed = sum(r["failed"] for r in runs)
         requeues = sum(r["requeues"] for r in runs)
         peak = max(r["peak_mib"] for r in runs)
-        lines.append(f"| {pw} | {tps:.3f} | {qwait:.2f} | {done} | {failed} | "
-                     f"{requeues} | {peak:.0f} |")
+        lines.append(
+            f"| {pw} | {tps:.3f} | {qwait:.2f} | {done} | {failed} | {requeues} | {peak:.0f} |"
+        )
 
     lines.append("\n## Per-round raw\n")
     lines.append("| round-pw | done | failed | wall (s) | throughput | median run s | peak MiB |")
@@ -285,10 +319,14 @@ def write_report(per_pw: dict[int, list[dict]], n: int, rounds: int) -> None:
         for pw in pws:
             for i, r in enumerate(per_pw[pw], 1):
                 med = statistics.median(r["run_s"]) if r["run_s"] else 0.0
-                lines.append(f"| r{i}-pw{pw} | {r['done']} | {r['failed']} | {r['wall']:.1f} | "
-                             f"{r['throughput']:.3f} | {med:.2f} | {r['peak_mib']:.0f} |")
-                tsv.write(f"{pw}\t{i}\t{r['done']}\t{r['failed']}\t{r['requeues']}\t"
-                          f"{r['wall']:.1f}\t{r['throughput']:.3f}\t{med:.2f}\t{r['peak_mib']:.0f}\n")
+                lines.append(
+                    f"| r{i}-pw{pw} | {r['done']} | {r['failed']} | {r['wall']:.1f} | "
+                    f"{r['throughput']:.3f} | {med:.2f} | {r['peak_mib']:.0f} |"
+                )
+                tsv.write(
+                    f"{pw}\t{i}\t{r['done']}\t{r['failed']}\t{r['requeues']}\t"
+                    f"{r['wall']:.1f}\t{r['throughput']:.3f}\t{med:.2f}\t{r['peak_mib']:.0f}\n"
+                )
 
     RESULTS_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\nwrote {RESULTS_MD}\nwrote {RAW_TSV}", flush=True)
@@ -307,23 +345,24 @@ def main() -> None:
         raise SystemExit(f"only {len(images)} images found, need {args.n}")
     print(f"corpus: {len(images)} pages · pws={pws} · rounds={args.rounds}", flush=True)
 
-    http = httpx.Client(timeout=60.0)
-    username, api_key = make_bench_user(http)
+    username, api_key = make_bench_user()
 
     per_pw: dict[int, list[dict]] = {pw: [] for pw in pws}
     for r in range(args.rounds):
-        order = pws[r % len(pws):] + pws[: r % len(pws)]   # rotate per round
+        order = pws[r % len(pws) :] + pws[: r % len(pws)]  # rotate per round
         print(f"\n=== round {r + 1}/{args.rounds}  order={order} ===", flush=True)
         for pw in order:
             res = run_once(username, api_key, images, pw)
             per_pw[pw].append(res)
-            print(f"  [pw={pw}] done={res['done']} failed={res['failed']} "
-                  f"requeues={res['requeues']} thr={res['throughput']:.3f} pg/s "
-                  f"median_run={statistics.median(res['run_s']) if res['run_s'] else 0:.2f}s "
-                  f"peak={res['peak_mib']:.0f}MiB", flush=True)
+            print(
+                f"  [pw={pw}] done={res['done']} failed={res['failed']} "
+                f"requeues={res['requeues']} thr={res['throughput']:.3f} pg/s "
+                f"median_run={statistics.median(res['run_s']) if res['run_s'] else 0:.2f}s "
+                f"peak={res['peak_mib']:.0f}MiB",
+                flush=True,
+            )
 
     write_report(per_pw, args.n, args.rounds)
-    http.close()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ spec:
       app.kubernetes.io/component: api
   template:
     metadata:
+      annotations:
+        {{- include "taas.configChecksums" . | nindent 8 }}
       labels:
         {{- include "taas.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api

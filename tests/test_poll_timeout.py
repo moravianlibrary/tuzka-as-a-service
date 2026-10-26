@@ -7,7 +7,7 @@ nothing in flight waits the full cap (a dispatch signal wakes it sooner).
 
 import pytest
 
-from app.workers.poller import next_poll_timeout
+from app.workers.poller.steps import next_poll_timeout
 
 
 def test_no_deadlines_waits_the_cap() -> None:

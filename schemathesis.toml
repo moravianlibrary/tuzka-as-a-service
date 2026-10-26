@@ -1,0 +1,18 @@
+# Schemathesis config for `make test-contract` (picked up from the working directory).
+#
+# The two upload endpoints, two adjustments; every other check still runs on them:
+# - positive_data_acceptance off: Schemathesis sometimes sends a multipart body whose
+#   boundary doesn't match its own Content-Type header, so the server sees no file and
+#   rightly answers 422, reported as a "schema-compliant" request rejected.
+# - 413 and 415 count as rejections: a body that isn't an image / archive at all is
+#   refused with 415, an oversized one with 413.
+
+[[operations]]
+include-name = "POST /api/v1/jobs"
+checks.positive_data_acceptance.enabled = false
+checks.negative_data_rejection.expected-statuses = [400, 401, 403, 404, 405, 406, 409, 413, 415, 422, 428]
+
+[[operations]]
+include-name = "POST /api/v1/batches"
+checks.positive_data_acceptance.enabled = false
+checks.negative_data_rejection.expected-statuses = [400, 401, 403, 404, 405, 406, 409, 413, 415, 422, 428]

@@ -62,10 +62,10 @@ peak_mem ≈ 0.1 GiB  +  PAGE_WORKERS × ~1.3 GiB  +  MAX_QUEUE × ~8 MiB  +  tm
 1. **Engine (TuzkaOCR ≥ v1.2.0):** set **`TUZKAOCR_CPU_MEM_ARENA=false`** (now a built-in config knob,
    wired to `enable_cpu_mem_arena` on both ONNX sessions). ~45% less memory, releases to OS; perf
    cost is within noise on v1.2.0 (older builds showed ~6% batch / +35% single-page latency).
-   Wired into `ocrEnginesDefaults.env` (Helm) and the compose `ocr-engine` env.
+   Wired into `engines.ocr-engine.env` (Helm) and the compose `ocr-engine` env.
 2. **Don't keep scratch on tmpfs:** `spool`/`results` as `emptyDir` (disk), not `Medium: Memory` —
    tmpfs counts against the pod memory limit.
-3. **Chart defaults (`ocrEnginesDefaults`):** with arena-off, `PAGE_WORKERS=2` fits a **~2 GiB** limit
+3. **Chart defaults (`engines.ocr-engine.env`):** with arena-off, `PAGE_WORKERS=2` fits a **~2 GiB** limit
    (or `PAGE_WORKERS=1` in ~1.2 GiB). Keep `maxInflight == MAX_QUEUE` small (≈3–4); the buffer is cheap.
 4. **Scale by engine count**, not by threads/page-workers per engine (1-CPU scale-out model).
 5. **Stop-gap on the running cluster:** `PAGE_WORKERS=1` via `kubectl set env` halts the OOM until the

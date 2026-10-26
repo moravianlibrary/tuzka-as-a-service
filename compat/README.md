@@ -35,7 +35,7 @@ flowchart LR
 ## Authentication
 
 Clients send the legacy `api-key` header. compat forwards it to taas as `X-API-Key`, so
-**the legacy api-key is just a taas user key** (created via `POST /admin/users`).
+**the legacy api-key is just a taas user key** (created with `taas-admin user create`).
 
 ## Endpoints
 
@@ -45,7 +45,7 @@ and <http://localhost:8001/openapi.json> (raw schema).
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/get_engines` | list configured engines → `{label: {id, description}}` |
+| `GET` | `/get_engines` | list engines → `{label: {id, description}}`, from taas `GET /api/v1/domains` |
 | `POST` | `/post_processing_request` | start a request — body `{engine, images:{filename:…}}` → `{request_id}` |
 | `GET` | `/get_status?request_id=` | request exists check |
 | `POST` | `/upload_image/{request_id}/{filename}` | multipart `file` → forwarded to taas |
@@ -62,7 +62,10 @@ container is configured via the `environment:` block in `docker-compose.yml`).
 | `TAAS_BASE_URL` | `http://api:8000` | base URL of the taas API |
 | `REDIS_URL` | `redis://redis:6379/0` | request/job-id tracking |
 | `COMPAT_TTL_SECONDS` | `3600` | how long request state lives |
-| `ENGINES` | `{1: Default, 2: kramarky}` | JSON map `id → {domain, label, description}`; `domain` is passed through to taas |
+
+Legacy engine ids aren't configured here: each taas domain with a `legacy_engine_id`
+is one engine (seeded: `1` = `default`, `2` = `kramarky`). The shim reads them from
+`GET /api/v1/domains` with the caller's key and caches them for 60 s per key.
 
 ## Layout
 
@@ -71,14 +74,15 @@ container is configured via the `environment:` block in `docker-compose.yml`).
 | `app/main.py` | app factory + lifespan (httpx client to taas, Redis) |
 | `app/routers/legacy.py` | the legacy endpoints above |
 | `app/state.py` | `CompatState` — Redis-backed request/job-id tracking |
-| `app/config.py` | `Settings` (incl. `ENGINES`) |
+| `app/config.py` | `Settings` |
+| `app/engines.py` | legacy engine ids from taas `/api/v1/domains`, cached per key |
 
 ## Running & testing
 
 Part of the stack via `make up`. End-to-end test:
 
 ```bash
-make test-compat        # post_processing_request → upload → status → download ALTO
+make e2e-compat         # post_processing_request → upload → status → download ALTO
 ```
 
 > `upload_image` requests `fmt=multi` from taas (both ALTO + text), which depends on

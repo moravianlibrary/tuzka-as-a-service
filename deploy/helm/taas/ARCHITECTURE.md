@@ -11,7 +11,6 @@ flowchart TB
     subgraph edge["Exposure (per-target: ingress | gateway | none)"]
         api_r["/api, /ws"]
         legacy_r["/legacy (strip)"]
-        admin_r["/admin, /dashboard"]
     end
 
     subgraph svc["Services"]
@@ -34,10 +33,9 @@ flowchart TB
         minOut[("MinIO results\nStatefulSet")]
     end
 
-    engine["TuzkaOCR engine\n(StatefulSet, optional)"]
+    engine["engine pools\n(StatefulSets, optional)"]
 
     api_r --> apiSvc
-    admin_r --> apiSvc
     legacy_r --> compatSvc
     apiSvc --> apiDep
     compatSvc --> compatDep
@@ -56,13 +54,22 @@ flowchart TB
 - **`<release>-config`** ConfigMap — non-secret app settings (`REDIS_URL`, `MINIO_*_URL`,
   bucket names, rate limits, worker ticks, …). Mounted into api + workers via `envFrom`.
 - **`<release>-secret`** Secret — `DATABASE_URL` (assembled from `cnpg.*` + the Postgres
-  password), `MASTER_KEY`, `KEY_ENCRYPTION_SECRET`, MinIO access/secret keys, and the OCR
-  engine key. Also `envFrom` into api + workers; MinIO and the engine consume their keys
-  via `secretKeyRef`.
+  password), `KEY_ENCRYPTION_SECRET` and the MinIO access/secret keys. Also `envFrom`
+  into api + workers; MinIO consumes its keys via `secretKeyRef`. It does **not** hold
+  engine API keys, so app pods never receive them.
+- **Engine key Secrets** — each engine's `auth` points at an existing Secret
+  (`auth.existingSecret`) or, for dev, a chart-generated `<release>-<engine>-api-key`
+  (`auth.generate`). The engine pod and the backend-register hook read the key through
+  explicit `secretKeyRef` env vars; the hook encrypts it into the backend row and the
+  workers decrypt it with `KEY_ENCRYPTION_SECRET`, so no app pod needs the raw key.
+  Tunnel engines use the shared `<release>-tunnel-engine-key` by default
+  (`tunnelBoxesDefaults.auth`), because the off-cluster box must use the same value.
+  With cluster lookup available, the chart validates existing keys before apply and
+  fails on a missing Secret, missing key, or empty key.
 - **`<release>-cnpg-auth`** Secret — Postgres owner credentials for CloudNativePG.
 - Compat has its own `<release>-compat-config` (`TAAS_BASE_URL`, `REDIS_URL`,
-  `COMPAT_TTL_SECONDS`, `ENGINES`); it never sees the app secret — it forwards the caller's
-  `api-key`.
+  `COMPAT_TTL_SECONDS`); it never sees the app secret — it forwards the caller's
+  `api-key`. Legacy engine ids come from taas `GET /api/v1/domains`.
 
 ## Install / upgrade hooks
 
@@ -70,7 +77,7 @@ Run in weight order on `post-install` / `post-upgrade`:
 
 ```mermaid
 flowchart LR
-    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\nPOST /admin/backends\n(one per engine ordinal + each tunnelBoxes engine)"]
+    A["minio-init\n(weight -10)\ncreate buckets"] --> B["migrate\n(weight -5)\nalembic upgrade head"] --> C["backend-register\n(weight 10)\ntaas-admin backend upsert\n(one per engine ordinal + each tunnelBoxes engine)"]
 ```
 
 Jobs use `backoffLimit` + readiness retries so they tolerate the DB / MinIO / API not being
@@ -145,7 +152,7 @@ the box needs is its outbound reach to the frps NodePort (or a LoadBalancer).
 | Queue / pub-sub | single Redis StatefulSet (1 replica) with a PVC |
 | Database | CloudNativePG `Cluster` (`cnpg.instances` for HA) |
 | Object storage | two single-node MinIO StatefulSets (incoming / results) |
-| OCR engine | optional StatefulSet; off-cluster GPU boxes via FRP reverse tunnel (`tunnel` + `tunnelBoxes`); or register external backends via the admin API |
+| Engines | optional named StatefulSets (`engines.*`; TuzkaOCR, TuzkaM, or any additional image), each with its own autoscaler; off-cluster GPU boxes via FRP reverse tunnel (`tunnel` + `tunnelBoxes`); or register external backends with `taas-admin backend upsert` |
 
 > The bundled Redis / MinIO are single-replica. For production-grade HA, point the app at a
 > managed Redis and S3-compatible storage (set `config`/`secrets` accordingly) and treat the

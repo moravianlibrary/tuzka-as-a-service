@@ -210,8 +210,8 @@ The two deployments constrain ports differently, so each target profile in
 presigned URLs signed for `localhost:9100` keep working with no chart change:
 
 ```sh
-make local-deploy-forward-down
-make local-deploy-forward-bench     # real services -> :18080 / :18081 / :19100
+make k3d-forward-stop
+make k3d-forward-bench     # real services -> :18080 / :18081 / :19100
 make bench TARGET=k3d
 ```
 

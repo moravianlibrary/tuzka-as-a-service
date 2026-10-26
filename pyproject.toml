@@ -1,6 +1,6 @@
 [project]
 name = "taas"
-version = "0.8.1"
+version = "0.9.0"
 requires-python = ">=3.13"
 # Base = what the workers need (no web framework). The API/dashboard web stack is
 # the `api` extra, so the worker image stays lean: `pip install .` for workers,
@@ -14,7 +14,16 @@ dependencies = [
   "cryptography>=42",
   "pydantic-settings>=2.2",
   "zstandard>=0.22",
+  # OpenTelemetry: off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (app/telemetry.py)
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+  "opentelemetry-instrumentation-httpx>=0.48b0",
+  "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+  "opentelemetry-instrumentation-redis>=0.48b0",
 ]
+
+[project.scripts]
+taas-admin = "app.cli.main:app"
 
 [project.optional-dependencies]
 # Web/HTTP stack + migrations — only the api image needs these.
@@ -24,8 +33,16 @@ api = [
   "alembic>=1.13",
   "python-multipart>=0.0.9",
   "jinja2>=3.1",
+  "jsonschema>=4.18",
+  "opentelemetry-instrumentation-fastapi>=0.48b0",
+  # taas-admin, the admin CLI: the api image is the admin image
+  "typer>=0.12",
+  # taas-admin's tables (typer brings it already; the CLI imports it directly)
+  "rich>=13",
+  # Image size at submit (header only), for dispatch scoring
+  "pillow>=10.0",
 ]
-dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "xmlschema"]
+dev = ["taas[api]", "pytest", "pytest-asyncio", "pytest-cov", "schemathesis", "locust", "ruff", "mypy", "types-jsonschema", "xmlschema", "pytest-benchmark"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
@@ -38,12 +55,23 @@ line-length = 100
 extend-exclude = ["TuzkaOCR", "bench", "alembic/versions"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "B", "SIM"]
-ignore = ["E501"]
+# C901/PLR0912/PLR0915 cap function size; TD keeps TODOs attributed (TODO(author): …).
+# G004: log calls pass their values as arguments (lazy %-formatting), not an f-string,
+# so a message's template stays the same from one record to the next.
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "C901", "PLR0912", "PLR0915", "TD", "G004"]
+# TD003: a TODO needs no issue link.
+ignore = ["E501", "TD003"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-branches = 12
+max-statements = 50
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI's DI markers are call-in-default by design and are effectively immutable
-# singletons; B008 would otherwise fire on every dependency parameter.
+# FastAPI's DI markers and Typer's options are call-in-default by design and are
+# effectively immutable singletons; B008 would otherwise fire on every parameter.
 extend-immutable-calls = [
   "fastapi.Depends",
   "fastapi.Query",
@@ -54,6 +82,8 @@ extend-immutable-calls = [
   "fastapi.Cookie",
   "fastapi.Body",
   "fastapi.Path",
+  "typer.Argument",
+  "typer.Option",
 ]
 
 [tool.ruff.format]
@@ -74,3 +104,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# tests/perf holds the micro-benchmarks (`make bench-micro`): slow and noisy, so a plain
+# `pytest` / `make check` never recurses into them. Naming the directory still runs them.
+norecursedirs = [".*", "__pycache__", "perf"]

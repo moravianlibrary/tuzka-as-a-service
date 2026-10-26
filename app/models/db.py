@@ -31,8 +31,14 @@ def make_engine(settings: Settings) -> AsyncEngine:
     )
 
 
+def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Sessions on ``engine``. Loaded rows stay readable after a commit: the workers and
+    the CLI keep using them, and an async session can't lazily refresh them."""
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
 engine = make_engine(settings)
-async_session = async_sessionmaker(engine, expire_on_commit=False)
+async_session = make_session_factory(engine)
 
 
 class Base(DeclarativeBase):

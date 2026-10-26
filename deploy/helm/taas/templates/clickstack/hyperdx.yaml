@@ -1,0 +1,149 @@
+{{- if .Values.clickstack.enabled }}
+{{- $h := .Values.clickstack.hyperdx }}
+{{- $m := .Values.clickstack.mongodb }}
+{{- $full := include "taas.fullname" . }}
+{{- $hyperdx := printf "%s-hyperdx" $full }}
+{{- $mongo := printf "%s-mongodb" $full }}
+{{- $frontendUrl := "" }}
+{{- with .Values.expose.hyperdx.host }}
+{{- $frontendUrl = printf "%s://%s" (ternary "https" "http" (not (empty $.Values.expose.hyperdx.tls))) . }}
+{{- end }}
+# HyperDX keeps its own state (users, sources, dashboards) in MongoDB.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $mongo }}-data
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if $m.storage.storageClassName }}
+  storageClassName: {{ $m.storage.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $m.storage.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $mongo }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # one RWO volume
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: "{{ $m.image.repository }}:{{ $m.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: mongo
+              containerPort: 27017
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $mongo }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $mongo }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $hyperdx }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hyperdx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hyperdx
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hyperdx
+    spec:
+      containers:
+        - name: hyperdx
+          image: "{{ $h.image.repository }}:{{ $h.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MONGO_URI
+              value: {{ printf "mongodb://%s:27017/hyperdx" $mongo | quote }}
+            # The ClickHouse connection and the sources (files/clickstack/sources.json:
+            # job events, live metrics, OTel logs and traces) HyperDX gives the team it
+            # creates at the first sign-up. They're defaults: edits in the UI stick.
+            - name: DEFAULT_CONNECTIONS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $full }}-secret
+                  key: HYPERDX_DEFAULT_CONNECTIONS
+            - name: DEFAULT_SOURCES
+              value: {{ .Files.Get "files/clickstack/sources.json" | fromJsonArray | toJson | quote }}
+            - name: FRONTEND_URL
+              value: {{ $frontendUrl | quote }}
+            - name: NEXT_PUBLIC_SERVER_URL
+              value: {{ $frontendUrl | quote }}
+            - name: SERVER_URL
+              value: "http://localhost:8000"
+            - name: AGGREGATOR_API_URL
+              value: "http://localhost:8001"
+          resources:
+            {{- toYaml $h.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $hyperdx }}
+  labels:
+    {{- include "taas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hyperdx
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "taas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hyperdx
+{{- end }}

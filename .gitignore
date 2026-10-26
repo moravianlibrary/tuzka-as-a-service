@@ -19,9 +19,11 @@ compat/.env.compat
 # OCR engine — cloned separately into ./TuzkaOCR (see README)
 /TuzkaOCR/
 
-# Test data — only a single public sample is tracked
+# Test data — only the public samples and their source notes are tracked
 test-data/*
 !test-data/sample.jpg
+!test-data/map-sample.jpg
+!test-data/README.md
 
 # Java build artifacts
 clients/java/target/
@@ -47,3 +49,4 @@ memory/
 
 # Local agent implementation plans (not project docs)
 docs/plans/
+bench/perf_out/

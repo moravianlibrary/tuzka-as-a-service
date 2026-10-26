@@ -24,11 +24,11 @@ async def main():
     ws_url = TAAS_URL.replace("http://", "ws://").replace("https://", "wss://")
     ws_url = f"{ws_url}/ws?api_key={API_KEY}"
 
-    ext_id = str(uuid4())
+    ext_id = f"test-ws-{uuid4()}"  # any string: our own label for the page
 
     # Connect WS first
     async with websockets.connect(ws_url) as ws:
-        print(f"WS connected. Submitting job with uuid={ext_id}...")
+        print(f"WS connected. Submitting job with external_id={ext_id}...")
 
         # Submit job via HTTP
         async with httpx.AsyncClient() as http:
@@ -37,7 +37,7 @@ async def main():
                     f"{TAAS_URL}/api/v1/jobs",
                     headers={"X-API-Key": API_KEY},
                     files={"image": (Path(IMAGE).name, f)},
-                    data={"uuid": ext_id, "fmt": os.environ.get("FMT", "multi")},
+                    data={"external_id": ext_id, "fmt": os.environ.get("FMT", "multi")},
                 )
                 resp.raise_for_status()
                 job = resp.json()
@@ -49,7 +49,8 @@ async def main():
             raw = await asyncio.wait_for(ws.recv(), timeout=120)
             event = json.loads(raw)
             print(f"Event: {json.dumps(event, indent=2)}")
-            if event.get("uuid") == ext_id:
+            if event.get("job_id") == job["job_id"]:
+                assert event.get("external_id") == ext_id
                 if event["status"] == "done":
                     print(f"\nSUCCESS: got result for {ext_id}")
                     print(f"  alto_url: {event.get('alto_url', 'N/A')}")

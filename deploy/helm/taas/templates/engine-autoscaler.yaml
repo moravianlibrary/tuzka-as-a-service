@@ -1,0 +1,77 @@
+{{- $engines := include "taas.engines" . | fromYamlArray -}}
+{{- $full := include "taas.fullname" . -}}
+{{- range $e := $engines }}
+{{- $name := printf "%s-%s" $full $e.name }}
+{{- if eq $e.autoscaling.mode "hpa" }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ $name }}
+  minReplicas: {{ $e.autoscaling.minReplicas }}
+  maxReplicas: {{ $e.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $e.autoscaling.hpa.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ $e.autoscaling.hpa.scaleDownStabilizationSeconds }}
+{{- else if eq $e.autoscaling.mode "keda" }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ $name }}
+  minReplicaCount: {{ $e.autoscaling.minReplicas }}
+  maxReplicaCount: {{ $e.autoscaling.maxReplicas }}
+  pollingInterval: {{ $e.autoscaling.keda.pollingInterval }}
+  cooldownPeriod: {{ $e.autoscaling.keda.cooldownPeriod }}
+  triggers:
+    # The API's /load: seconds of queued work this engine could serve (backlog_s).
+    - type: metrics-api
+      metadata:
+        url: {{ printf "http://%s-api.%s.svc:%v/load?%s" $full $.Release.Namespace $.Values.api.port $e.autoscaling.keda.loadFilter | quote }}
+        valueLocation: backlog_s
+        targetValue: {{ $e.autoscaling.keda.targetBacklogSeconds | quote }}
+        activationTargetValue: {{ $e.autoscaling.keda.activationBacklogSeconds | quote }}
+        authMode: bearer
+      authenticationRef:
+        name: {{ $name }}-keda-auth
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ $name }}-keda-auth
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+spec:
+  secretTargetRef:
+    - parameter: token
+      name: {{ $full }}-secret
+      key: LOAD_TOKEN
+{{- end }}
+{{- end }}

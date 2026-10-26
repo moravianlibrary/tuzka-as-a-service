@@ -42,29 +42,31 @@ page-workers per engine (1-CPU scale-out model)."
 ### Recommended Kubernetes config (throughput-optimal)
 
 ```yaml
-ocrEngine:
-  enabled: true
-  maxInflight: 2                 # small dispatch buffer over pw=1 (keeps the 1 worker fed)
-  env:
-    TUZKAOCR_PAGE_WORKERS: "1"
-    TUZKAOCR_OCR_THREADS:  "1"
-    TUZKAOCR_LINE_WORKERS: "1"
-    TUZKAOCR_MAX_QUEUE:    "2"
-    TUZKAOCR_CPU_MEM_ARENA: "false"
-    # REQUIRED in k8s: without these, numpy/opencv/BLAS auto-detect the NODE's full core
-    # count and spawn dozens of threads inside a 1-core pod → thrash. Pin them to the pod.
-    OMP_NUM_THREADS: "1"
-    OPENBLAS_NUM_THREADS: "1"
-    MKL_NUM_THREADS: "1"
-    NUMEXPR_NUM_THREADS: "1"
-    VECLIB_MAXIMUM_THREADS: "1"
-  resources:
-    requests: { cpu: "1", memory: 1500Mi }
-    limits:   { cpu: "1", memory: 2Gi }     # 1-core peak ~1.3 GiB (arena off) fits 2Gi
-  autoscaling:
-    mode: keda                   # scale replicas on Redis ocr-jobs queue depth
-    minReplicas: <baseline>
-    maxReplicas: <as many 1-core pods as the cluster CPU allows>
+engines:
+  ocr-engine:
+    enabled: true
+    adapter: tuzkaocr
+    maxInflight: 2                 # small dispatch buffer over pw=1 (keeps the 1 worker fed)
+    env:
+      TUZKAOCR_PAGE_WORKERS: "1"
+      TUZKAOCR_OCR_THREADS:  "1"
+      TUZKAOCR_LINE_WORKERS: "1"
+      TUZKAOCR_MAX_QUEUE:    "2"
+      TUZKAOCR_CPU_MEM_ARENA: "false"
+      # REQUIRED in k8s: without these, numpy/opencv/BLAS auto-detect the NODE's full core
+      # count and spawn dozens of threads inside a 1-core pod → thrash. Pin them to the pod.
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+    resources:
+      requests: { cpu: "1", memory: 1500Mi }
+      limits:   { cpu: "1", memory: 2Gi }     # 1-core peak ~1.3 GiB (arena off) fits 2Gi
+    autoscaling:
+      mode: keda                   # scale replicas on queued work from GET /load
+      minReplicas: <baseline>
+      maxReplicas: <as many 1-core pods as the cluster CPU allows>
 ```
 
 The throughput lever is then purely **replica count** — push `maxReplicas` to your CPU budget.

@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Literal
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-Stage = Literal["dispatch", "poll", "engine", "harvest"]
 
 # --- Constants (not config; see D6) ---
 _BACKOFF_BASE = 1.0  # seconds
@@ -26,7 +24,7 @@ def describe_exception(exc: Exception) -> str:
 
     Some transport errors (notably httpx connect/read errors) carry no message, so
     ``str(exc)`` is empty — which previously stored a blank ``error`` and left the
-    dashboard's error box (shown only for a truthy error) hidden. Fall back to
+    job's error (clients show it only when truthy) empty. Fall back to
     ``repr`` so the exception type always survives to the DB and the UI.
     """
     return str(exc) or repr(exc)
@@ -89,25 +87,3 @@ def backoff_seconds(attempt: int, rng: random.Random | None = None) -> float:
     r = rng or random.Random()
     delay = min(_BACKOFF_CAP, _BACKOFF_BASE * (2**attempt))
     return r.uniform(0, delay)
-
-
-def attempt_entry(
-    stage: Stage,
-    backend_id: int | None,
-    http_status: int | None,
-    error: str,
-    retry: bool,
-    at: str,
-) -> dict[str, Any]:
-    """Return a JSON-safe dict shaped per D8.
-
-    ``at`` is an ISO-8601 timestamp string from ``utcnow().isoformat()``.
-    """
-    return {
-        "at": at,
-        "backend_id": backend_id,
-        "error": error,
-        "http_status": http_status,
-        "retry": retry,
-        "stage": stage,
-    }

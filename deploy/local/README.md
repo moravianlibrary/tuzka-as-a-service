@@ -4,8 +4,8 @@ Runs the **whole app** (api, workers, compat, Redis, MinIO, Postgres) on a local
 **k3d** cluster, with **two real TuzkaOCR engines (GPU + CPU) running on your host**,
 surfaced inside the cluster through the in-cluster `frps` reverse-tunnel proxy — no app
 changes, the engines look like ordinary in-cluster backends. The two engines are
-registered as two backends with different priorities so you can test **heterogeneous
-dispatch + prioritization**.
+registered as two backends (the scenarios give them different priorities) so you can
+test **heterogeneous dispatch + prioritization**.
 
 ```
 host                                            k3d cluster (taas)
@@ -13,41 +13,45 @@ host                                            k3d cluster (taas)
    tuzkaocr-gpu :8000 ◄─ reverse tunnel ─┐
    tuzkaocr-cpu :8000 ◄─ reverse tunnel ─┤
    frpc ── dials localhost:32700 ────────┼──►  taas-frps  (NodePort 32700)
-                                  ├─► taas-tunnel-engine-gpu1:8000  (priority 10) ─┐
-                                  └─► taas-tunnel-engine-cpu1:8000  (priority 0) ──┴► workers
+                                  ├─► taas-tunnel-engine-gpu1:8000  (gpu) ─┐
+                                  └─► taas-tunnel-engine-cpu1:8000  (cpu) ──┴► workers
 ```
 
-Backends are registered by the Helm hook via an idempotent `PUT /admin/backends`
-(`managed=true`), so changing `priority`/`device`/`maxInflight` in `values.local.yaml`
-and re-deploying **updates** them in place. The dashboard shows a **`deploy`** badge on
-managed backends (manual edits to those are reverted on the next deploy).
+Backends are registered by the Helm hook with an idempotent `taas-admin backend upsert`
+(`--managed`), so changing `device`/`maxInflight` in `values.local.yaml` and
+re-deploying **updates** them in place. `taas-admin backend list` shows `managed=True`
+for those (manual edits to them are reverted on the next deploy).
 
 ## Prereqs
 
 `docker`, `kubectl`, `helm`, and `k3d` (the script prints an install hint if missing).
 The CloudNativePG operator is installed for you by the script.
 
-The whole lifecycle is driven from the **Makefile** — every target shares the
-`local-deploy-` prefix:
+The whole lifecycle is driven from the **Makefile**: the cluster targets share the
+`k3d-` prefix, the engine images `engine-build-`. Every k3d target that runs kubectl
+switches to the `k3d-taas` context first.
 
 | Target | Does |
 |---|---|
-| `make local-deploy-build-cpu` | Build the engine image `tuzkaocr:local-cpu` from `TuzkaOCR/Dockerfile` |
-| `make local-deploy-build-gpu` | Build the engine image `tuzkaocr:local-gpu` from `TuzkaOCR/Dockerfile.gpu` |
-| `make local-deploy-up` | `setup.sh` (k3d + chart) **+** start host engine + tunnel |
-| `make local-deploy-forward-up` | Start the port-forwards (background) + open the UIs |
-| `make local-deploy-forward-down` | Stop the background port-forwards |
-| `make local-deploy-down` | Stop engine + uninstall chart, **keep** the k3d cluster |
-| `make local-deploy-clean` | Stop engine + chart **and delete** the k3d cluster |
-| `make local-deploy-seed` | Seed 3 users (alice/bob/carol) with priorities 10/5/0 + fixed keys |
-| `make local-deploy-scenarios` | Run the prioritization test scenarios |
+| `make engine-build-cpu` | Build the engine image `tuzkaocr:local-cpu` from `TuzkaOCR/Dockerfile` |
+| `make engine-build-gpu` | Build the engine image `tuzkaocr:local-gpu` from `TuzkaOCR/Dockerfile.gpu` |
+| `make k3d-up` | `setup.sh` (k3d + chart) **+** start host engine + tunnel |
+| `make k3d-stop` | Stop the forwards, the host engines and the cluster; keep everything |
+| `make k3d-start` | Resume a stopped cluster and its host engines, and wait for the pods |
+| `make k3d-status` | The cluster, its pods, the host engines, the forwards and the kube context |
+| `make k3d-forward` | Start the port-forwards (background) + open the UIs |
+| `make k3d-forward-stop` | Stop the background port-forwards |
+| `make k3d-down` | Stop engine + uninstall chart, **keep** the k3d cluster |
+| `make k3d-clean` | Stop engine + chart **and delete** the k3d cluster |
+| `make k3d-seed` | Seed 3 users (alice/bob/carol) with priorities 10/5/0 + fixed keys |
+| `make k3d-scenarios` | Run the prioritization test scenarios |
 
-(`make local-deploy-build` builds both engine images at once.)
+(`make engine-build` builds both engine images at once.)
 
 ## 1. Build the engine image (once)
 
 ```sh
-make local-deploy-build-cpu      # or: make local-deploy-build-gpu
+make engine-build-cpu   # or: make engine-build-gpu
 ```
 
 Built from the local `TuzkaOCR/` checkout (never pulled), so the engine matches the
@@ -58,38 +62,37 @@ also set `OCR_IMAGE=tuzkaocr:local-gpu` and `OCR_DEVICE=cuda` in
 ## 2. Bring up the stack + engine
 
 ```sh
-make local-deploy-up
+make k3d-up
 ```
 
 This runs `setup.sh` — creates the `taas` k3d cluster (mapping host `:32700` → the frps
 NodePort), installs CloudNativePG, builds + imports the `taas-{api,worker,compat}`
-images, installs the chart, waits for the register hook — then starts the host engine +
-`frpc`. Within a few seconds the `taas-tunnel-engine-cpu1` Service answers.
+images, creates the tunnel engine Secret (`<chart-fullname>-tunnel-engine-key`) from
+`deploy/local/engine-proxy/.env`, installs the chart, waits for the register hook — then
+starts the host engine + `frpc`. Within a few seconds the
+`taas-tunnel-engine-cpu1` Service answers.
 
 ## 3. Port-forward the services + open the UIs
 
 ```sh
-make local-deploy-forward-up      # background; stop with: make local-deploy-forward-down
+make k3d-forward   # background; stop with: make k3d-forward-stop
 ```
 
 This starts all three port-forwards detached (PIDs tracked in
-`$TMPDIR/taas-local-forward.pids`), waits for the API, and opens the dashboard and
-Swagger docs via `xdg-open`. (Override ports with `API_PORT`/`COMPAT_PORT`/`RESULTS_PORT`
+`$TMPDIR/taas-local-forward.pids`), waits for the API, and opens the Swagger docs via
+`xdg-open`. (Override ports with `API_PORT`/`COMPAT_PORT`/`RESULTS_PORT`
 env vars.)
 
 | URL | What | Auth |
 |---|---|---|
-| `http://localhost:8080/` | Dashboard UI (redirects to `/dashboard`) | master key |
 | `http://localhost:8080/docs` | Swagger / OpenAPI explorer | none |
 | `http://localhost:8080/api/v1/...` | Job API (submit/status/results) | user API key |
-| `http://localhost:8080/admin/...` | Admin API (users, backends, config) | `X-Master-Key: test-master-key` |
-| `http://localhost:8080/dashboard/...` | Dashboard data endpoints | `X-Master-Key: test-master-key` |
 | `ws://localhost:8080/ws` | Job result push | user API key |
 | `http://localhost:8081` | Legacy PERO/ProArc compat API | per compat config |
 | `http://localhost:9100` | MinIO results bucket (presigned downloads) | presigned URL |
 
-The master key for this local stack is **`test-master-key`** (from `values.local.yaml`);
-the dashboard UI prompts for it. The results forward on **9100** matters: presigned
+Users, backends and config are managed with `taas-admin` in the api pod
+(`kubectl -n taas exec deploy/taas-api -- taas-admin --help`). The results forward on **9100** matters: presigned
 result URLs are SigV4-signed for `http://localhost:9100` (set via
 `minio.results.publicUrl`), so the host client can actually download them.
 
@@ -113,15 +116,13 @@ kubectl run curl --rm -it --image=curlimages/curl --restart=Never -- \
 **Backend registered** (auto-registered by the Helm hook):
 
 ```sh
-curl -s http://localhost:8080/admin/backends -H "X-Master-Key: test-master-key" | python -m json.tool
+kubectl -n taas exec deploy/taas-api -- taas-admin backend list
 ```
 
 **Create a test user** and grab its API key:
 
 ```sh
-curl -s -X POST http://localhost:8080/admin/users \
-  -H "X-Master-Key: test-master-key" -H "Content-Type: application/json" \
-  -d '{"username":"testuser"}' | python -m json.tool
+kubectl -n taas exec deploy/taas-api -- taas-admin user create testuser   # prints the key once
 ```
 
 **Submit a real job** through the public API (uses the bundled Python client +
@@ -138,30 +139,33 @@ and `docker compose -f deploy/local/engine-proxy/compose.yaml logs -f frpc tuzka
 ## Test users + prioritization scenarios
 
 ```sh
-make local-deploy-seed         # alice (prio 10), bob (5), carol (0) — fixed API keys
-make local-deploy-scenarios    # runs the two scenarios below (N=6 jobs/burst; override N=)
+make k3d-seed      # alice (prio 10), bob (5), carol (0) — fixed API keys
+make k3d-scenarios # runs the two scenarios below (N=6 jobs/burst; override N=)
 ```
 
-`seed` is idempotent — it sets deterministic keys (`test-key-alice`, …) via
-`PUT /admin/users/{name}/key` and priorities via `PATCH`, writing them to
+`seed` is idempotent — it sets deterministic keys (`test-key-alice`, …) with
+`taas-admin user set-key` and priorities with `set-priority`, writing them to
 `deploy/local/.users.env` (gitignored). The two prioritization axes:
 
 - **Backend priority** — the submit worker orders backends by `priority desc`, so jobs
   prefer `gpu1` (priority 10) until its `max_inflight`, then spill to `cpu1` (0).
+  Priority is admin-managed (the deploy registers backends at 0 and never changes it),
+  so the scenarios set it first with `taas-admin backend update <id> --priority N`.
   Scenario A submits a burst as one user and prints the per-backend job split.
 - **User priority** — a job is enqueued into `jobs:pending:{user.priority}`, and the
   queue drains higher-priority lists first. Scenario B queues a low-priority (carol)
   burst, then a high-priority (alice) burst, and shows alice's jobs start first.
 
-Both engines must be up + healthy for jobs to drain; watch the **Backends** and
-**Analytics** dashboard tabs while the scenarios run.
+Both engines must be up + healthy for jobs to drain; watch the job events in HyperDX
+(with `clickstack.enabled`) or `taas-admin backend list` while the scenarios run.
 
 ## Troubleshooting
 
 - **Job never dispatches / backend unreachable** — frps/frpc auth mismatch. Confirm
-  `FRP_TOKEN` (.env) == `secrets.frpToken` and `OCR_API_KEY` == `secrets.ocrEngineApiKey`
-  in `values.local.yaml`. Failures surface in `frpc` (host) and `taas-frps` (cluster)
-  logs, NOT in k8s endpoints — the tunnel-engine Service is just a port-alias.
+  `FRP_TOKEN` (.env) == `secrets.frpToken`, and that `OCR_API_KEY` in the host `.env`
+  equals `api-key` in the `<release>-tunnel-engine-key` Secret that `setup.sh` creates.
+  Failures surface in `frpc` (host) and `taas-frps` (cluster) logs, NOT in k8s
+  endpoints — the tunnel-engine Service is just a port-alias.
 - **frpc can't reach the server** — check host `:32700` maps to the cluster:
   `kubectl get svc taas-frps` and `k3d cluster list`. The mapping is created at
   cluster-create time; if you made the cluster by hand, recreate with
@@ -171,9 +175,9 @@ Both engines must be up + healthy for jobs to drain; watch the **Backends** and
 ## Teardown
 
 ```sh
-make local-deploy-down    # stop engine, uninstall chart, delete PVCs; KEEP cluster
-make local-deploy-clean   # also delete the k3d cluster (full removal)
+make k3d-down     # stop engine, uninstall chart, delete PVCs; KEEP cluster
+make k3d-clean    # also delete the k3d cluster (full removal)
 ```
 
-Keeping the cluster (`down`) lets you redeploy fast with `make local-deploy-up`, since
+Keeping the cluster (`down`) lets you redeploy fast with `make k3d-up`, since
 the k3d cluster and the CloudNativePG operator are already in place.

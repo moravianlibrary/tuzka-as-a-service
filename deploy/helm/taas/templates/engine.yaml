@@ -1,0 +1,165 @@
+{{- $engines := include "taas.engines" . | fromYamlArray -}}
+{{- $full := include "taas.fullname" . -}}
+{{- range $e := $engines }}
+{{- $name := printf "%s-%s" $full $e.name }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+spec:
+  serviceName: {{ $name }}
+  {{- if eq $e.autoscaling.mode "none" }}
+  replicas: {{ $e.autoscaling.replicas }}
+  {{- end }}
+  {{- /*
+    When autoscaling.mode is hpa/keda we deliberately omit spec.replicas so the
+    autoscaler is the sole owner. Declaring it (even as a "floor") makes a GitOps
+    sync or `helm upgrade` revert replicas to that value, terminating scaled-up
+    pods right after they start. The autoscaler's minReplicas is the real floor.
+  */}}
+  podManagementPolicy: {{ $e.podManagementPolicy }}
+  selector:
+    matchLabels:
+      {{- include "taas.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: engine
+      taas.io/engine: {{ $e.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "taas.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: engine
+        taas.io/engine: {{ $e.name }}
+      {{- $annotations := deepCopy ($e.podAnnotations | default dict) }}
+      {{- with $e.auth }}
+      {{- $secretObj := lookup "v1" "Secret" $.Release.Namespace .secretName }}
+      {{- if and $secretObj (not (hasKey $secretObj.data .secretKey)) }}
+      {{- fail (printf "engines.%s: Secret %q has no key %q" $e.name .secretName .secretKey) }}
+      {{- end }}
+      {{- $secretData := "" }}
+      {{- if $secretObj }}
+      {{- $secretData = index $secretObj.data .secretKey | default "" }}
+      {{- if not $secretData }}
+      {{- fail (printf "engines.%s: Secret %q key %q is empty" $e.name .secretName .secretKey) }}
+      {{- end }}
+      {{- end }}
+      {{- $_ := set $annotations "checksum/auth" (printf "%s-%s-%s" .secretName .secretKey $secretData | sha256sum) }}
+      {{- end }}
+      {{- with $annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ $e.terminationGracePeriodSeconds }}
+      {{- with $e.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $e.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $e.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $e.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $e.name }}
+          image: {{ $e.imageRef | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $e.port }}
+          {{- if or $e.env $e.auth }}
+          env:
+            {{- range $k, $v := $e.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with $e.auth }}
+            - name: {{ .env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          {{- end }}
+          {{- with $e.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if gt (int $e.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $e.preStopSleepSeconds }}"]
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ $e.healthPath }}
+              port: http
+            initialDelaySeconds: {{ $e.livenessInitialDelaySeconds }}
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: {{ $e.healthPath }}
+              port: http
+            initialDelaySeconds: {{ $e.readinessInitialDelaySeconds }}
+            periodSeconds: 10
+          {{- with $e.volumes }}
+          volumeMounts:
+            {{- range $volName, $vol := . }}
+            - name: {{ $volName }}
+              mountPath: {{ $vol.mountPath }}
+              {{- if $vol.readOnly }}
+              readOnly: true
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml $e.resources | nindent 12 }}
+      {{- with $e.volumes }}
+      volumes:
+        {{- range $volName, $vol := . }}
+        - name: {{ $volName }}
+          {{- if hasKey $vol "emptyDir" }}
+          emptyDir:
+            {{- toYaml ($vol.emptyDir | default dict) | nindent 12 }}
+          {{- else if hasKey $vol "persistentVolumeClaim" }}
+          persistentVolumeClaim:
+            {{- toYaml $vol.persistentVolumeClaim | nindent 12 }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "taas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ $e.port }}
+      targetPort: http
+      name: http
+  selector:
+    {{- include "taas.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: engine
+    taas.io/engine: {{ $e.name }}
+{{- end }}

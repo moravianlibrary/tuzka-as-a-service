@@ -6,18 +6,14 @@ streaming download returns 409. Handlers are called directly, so the failed bran
 throwaway migrated DB via TEST_DATABASE_URL and skips otherwise.
 """
 
-import os
 import uuid
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.routers.jobs import download_job_result, get_job_result
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 
 class _Request:
@@ -25,25 +21,10 @@ class _Request:
 
 
 @pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
-            text("TRUNCATE job_results, jobs, backends, users RESTART IDENTITY CASCADE")
-        )
-        await s.commit()
+async def session(database):
+    """A session on the emptied test database; the tests add their own users."""
+    async with database() as s:
         yield s
-    await engine.dispose()
 
 
 async def _failed_job(session, username: str = "alice", error: str = "engine boom") -> uuid.UUID:
@@ -56,7 +37,7 @@ async def _failed_job(session, username: str = "alice", error: str = "engine boo
             "INSERT INTO jobs (id, username, external_id, status, error, finished_at) "
             "VALUES (:id, :u, :ext, 'failed', :err, now())"
         ),
-        {"id": job_id, "u": username, "ext": uuid.uuid4(), "err": error},
+        {"id": job_id, "u": username, "ext": f"ext-{uuid.uuid4()}", "err": error},
     )
     await session.commit()
     return job_id

@@ -1,10 +1,11 @@
-{{- if or .Values.ocrEngine.enabled .Values.tunnelBoxes }}
-{{- $e := .Values.ocrEngine }}
-{{- $name := printf "%s-ocr-engine" (include "taas.fullname" .) }}
+{{- $engines := include "taas.engines" . | fromYamlArray -}}
+{{- $full := include "taas.fullname" . -}}
+{{- $tunnelDefaultSecret := printf "%s-tunnel-engine-key" $full -}}
+{{- if or $engines .Values.tunnelBoxes }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "taas.fullname" . }}-backend-register
+  name: {{ $full }}-backend-register
   labels:
     {{- include "taas.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend-register
@@ -23,42 +24,118 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: register
-          image: curlimages/curl:latest
+          # The api image carries taas-admin, which writes the backends straight to the DB.
+          image: {{ include "taas.image" (dict "image" .Values.api.image "global" .Values.image) }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- /*
+            Engine keys are explicit secretKeyRefs, never part of envFrom. That keeps
+            them out of every other app pod and lets the Secret key name be anything;
+            the env var below is just a register-job alias.
+          */}}
+          {{- /*
+            TAAS_NO_ENGINE_KEY is deliberately empty: passing its alias to
+            `taas-admin backend upsert` clears a key left on a managed backend from a
+            previous release. Omitting --api-key-env would keep that stale key.
+          */}}
+          {{- $keyEnvs := list (dict "name" "TAAS_NO_ENGINE_KEY" "value" "") }}
+          {{- range $i, $e := $engines }}
+          {{- with $e.auth }}
+          {{- $keyEnvs = append $keyEnvs (dict "name" (printf "TAAS_ENGINE_KEY_%d" $i) "secretName" .secretName "secretKey" .secretKey) }}
+          {{- end }}
+          {{- end }}
+          {{- range $bi, $box := .Values.tunnelBoxes }}
+          {{- range $ti, $te := ($box.engines | default list) }}
+          {{- $tcfg := mergeOverwrite (deepCopy $.Values.tunnelBoxesDefaults) (deepCopy $te) }}
+          {{- $tauth := include "taas.auth" (dict
+            "root" $
+            "name" (printf "%s-%s" $box.name $te.name)
+            "path" (printf "tunnelBoxes[%s].engines[%s]" $box.name $te.name)
+            "auth" ($tcfg.auth | default dict)
+            "requireEnv" false
+            "allowGenerate" false
+            "defaultSecretName" $tunnelDefaultSecret
+          ) | fromYaml }}
+          {{- with $tauth }}
+          {{- $keyEnvs = append $keyEnvs (dict "name" (printf "TAAS_TUNNEL_KEY_%d_%d" $bi $ti) "secretName" .secretName "secretKey" .secretKey) }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
           envFrom:
+            - configMapRef:
+                name: {{ $full }}-config
             - secretRef:
-                name: {{ include "taas.fullname" . }}-secret
+                name: {{ $full }}-secret
+          {{- with $keyEnvs }}
+          env:
+            {{- range . }}
+            - name: {{ .name }}
+              {{- if .secretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+              {{- else }}
+              value: ""
+              {{- end }}
+            {{- end }}
+          {{- end }}
           command:
             - /bin/sh
             - -c
             - |
               set -e
-              API={{ printf "http://%s-api:%v" (include "taas.fullname" .) .Values.api.port }}
-              echo "waiting for API..."
-              until curl -sf "$API/healthz" >/dev/null; do sleep 3; done
-              {{- if $.Values.ocrEngine.enabled }}
+              # Wait for the DB (and the migrations) rather than the API.
+              echo "waiting for the database..."
+              until taas-admin config list >/dev/null 2>&1; do sleep 3; done
+              {{- range $i, $e := $engines }}
               {{- $max := int $e.autoscaling.maxReplicas }}
+              {{- if eq $e.autoscaling.mode "none" }}
+              {{- $max = int $e.autoscaling.replicas }}
+              {{- end }}
+              {{- $apiKeyArg := "--api-key-env TAAS_NO_ENGINE_KEY" }}
+              {{- with $e.auth }}
+              {{- $apiKeyArg = printf "--api-key-env TAAS_ENGINE_KEY_%d" $i }}
+              {{- end }}
+              {{- $deviceArg := "" }}
+              {{- with $e.device }}
+              {{- $deviceArg = printf "--device %q" . }}
+              {{- end }}
+              {{- $declaredArg := "" }}
+              {{- if $e.declaredDomains }}
+              {{- $declaredArg = printf "--declared %s" ($e.declaredDomains | toJson | squote) }}
+              {{- end }}
               {{- range $i := until $max }}
-              URL="http://{{ $name }}-{{ $i }}.{{ $name }}:{{ $e.port }}"
-              echo "registering ocr-engine-{{ $i }} -> $URL"
-              curl -sf -X PUT "$API/admin/backends" \
-                -H "X-Master-Key: $MASTER_KEY" \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"$URL\",\"label\":\"ocr-engine-{{ $i }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $e.maxInflight }},\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
-                || echo "upsert ocr-engine-{{ $i }} failed"
+              URL="http://{{ $full }}-{{ $e.name }}-{{ $i }}.{{ $full }}-{{ $e.name }}:{{ $e.port }}"
+              echo "registering {{ $e.name }}-{{ $i }} -> $URL"
+              taas-admin backend upsert --url "$URL" --label "{{ $e.name }}-{{ $i }}" \
+                {{ $apiKeyArg }} --max-inflight {{ $e.maxInflight }} \
+                --adapter {{ $e.adapter }} --managed {{ $deviceArg }} {{ $declaredArg }} >/dev/null \
+                || echo "upsert {{ $e.name }}-{{ $i }} failed"
               {{- end }}
               {{- end }}
-              {{- range $box := $.Values.tunnelBoxes }}
-              {{- range $te := ($box.engines | default list) }}
+              {{- range $bi, $box := $.Values.tunnelBoxes }}
+              {{- range $ti, $te := ($box.engines | default list) }}
               {{- $tcfg := mergeOverwrite (deepCopy $.Values.tunnelBoxesDefaults) (deepCopy $te) }}
+              {{- $tauth := include "taas.auth" (dict
+                "root" $
+                "name" (printf "%s-%s" $box.name $te.name)
+                "path" (printf "tunnelBoxes[%s].engines[%s]" $box.name $te.name)
+                "auth" ($tcfg.auth | default dict)
+                "requireEnv" false
+                "allowGenerate" false
+                "defaultSecretName" $tunnelDefaultSecret
+              ) | fromYaml }}
               {{- $tname := printf "%s-%s" $box.name $te.name }}
               {{- $tsvc := include "taas.tunnelEngineService" (dict "root" $ "box" $box.name "engine" $te.name) }}
               {{- $turl := printf "http://%s:%v" $tsvc $tcfg.port }}
+              {{- $apiKeyArg := "--api-key-env TAAS_NO_ENGINE_KEY" }}
+              {{- with $tauth }}
+              {{- $apiKeyArg = printf "--api-key-env TAAS_TUNNEL_KEY_%d_%d" $bi $ti }}
+              {{- end }}
               echo "registering tunnel engine {{ $tname }} -> {{ $turl }}"
-              curl -sf -X PUT "$API/admin/backends" \
-                -H "X-Master-Key: $MASTER_KEY" \
-                -H "Content-Type: application/json" \
-                -d "{\"url\":\"{{ $turl }}\",\"label\":\"{{ $tname }}\",\"api_key\":\"$OCR_ENGINE_API_KEY\",\"max_inflight\":{{ $tcfg.maxInflight }},\"device\":\"{{ $tcfg.device }}\",\"managed\":true,\"adapter\":\"tuzkaocr\"}" \
+              taas-admin backend upsert --url "{{ $turl }}" --label "{{ $tname }}" \
+                {{ $apiKeyArg }} --max-inflight {{ $tcfg.maxInflight }} \
+                --device "{{ $tcfg.device }}" --adapter tuzkaocr --managed >/dev/null \
                 || echo "upsert {{ $tname }} failed"
               {{- end }}
               {{- end }}

@@ -36,19 +36,20 @@ from typing import Any
 
 import httpx
 
-from common import DEFAULT_MASTER_KEY
+from common import taas_admin
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 
-SCRIPTS = {"legacy": "legacy_proarc.py", "new": "new_client.py"}
+SCRIPTS = {"legacy": "legacy_proarc.py", "new": "new_client.py", "batch": "new_client.py"}
+# Fixed arguments a mode adds to its script (batch is new_client.py in batch pacing).
+MODE_ARGS = {"batch": ["--batch"]}
 
 # param name in scenarios.toml -> CLI option on the sub-script
 COMMON_OPTS = {
     "n": "--n",
     "images": "--images",
     "taas_url": "--taas-url",
-    "master_key": "--master-key",
     "api_key": "--api-key",
     "timeout": "--timeout",
     "out_dir": "--out-dir",
@@ -68,6 +69,7 @@ MODE_OPTS = {
         "domain": "--domain",
         "submit_concurrency": "--submit-concurrency",
     },
+    "batch": {"fmt": "--fmt", "domain": "--domain"},
 }
 # `serial` is a no-op for legacy — ProArc is serial by construction, so
 # concurrency=1 already is it. Setting it in a matrix therefore paces both sides
@@ -75,6 +77,7 @@ MODE_OPTS = {
 MODE_FLAGS = {
     "legacy": {"reuse_connections": "--reuse-connections"},
     "new": {"serial": "--serial"},
+    "batch": {},
 }
 
 # Consumed by this runner, never forwarded to a sub-script.
@@ -204,6 +207,7 @@ def build_argv(case: Case, urls: dict[str, Any], out_json: Path) -> list[str]:
     """Map the case's params onto the right sub-script's CLI."""
     mode = case.mode
     argv = [sys.executable, str(HERE / SCRIPTS[mode]), "--json", str(out_json)]
+    argv += MODE_ARGS.get(mode, [])
 
     opts = {**COMMON_OPTS, **MODE_OPTS[mode]}
     flags = {**COMMON_FLAGS, **MODE_FLAGS[mode]}
@@ -345,7 +349,7 @@ def check_upstream(latency_cfg: dict[str, Any]) -> None:
         )
 
 
-def pin_backends(taas_url: str, master_key: str, device: str) -> list[str]:
+def pin_backends(device: str) -> list[str]:
     """Enable only the backends of one device class, disabling the rest.
 
     A run that spreads over a ~1 s GPU engine and a ~5 s CPU engine has bimodal
@@ -359,38 +363,19 @@ def pin_backends(taas_url: str, master_key: str, device: str) -> list[str]:
 
     Returns a human-readable description of the resulting state.
     """
-    admin = {"X-Master-Key": master_key}
+    backends = json.loads(taas_admin("backend", "list", "--json"))
+    wanted = [b for b in backends if b.get("device") == device]
+    if not wanted:
+        devices = sorted({str(b.get("device")) for b in backends})
+        raise SystemExit(f"only_device={device!r} matches no backend (have: {', '.join(devices)})")
+
     described: list[str] = []
-
-    with httpx.Client(base_url=taas_url, timeout=30.0) as http:
-        resp = http.get("/admin/backends", headers=admin)
-        if resp.status_code != 200:
-            raise SystemExit(f"could not list backends: HTTP {resp.status_code} {resp.text}")
-
-        backends = resp.json()
-        wanted = [b for b in backends if b.get("device") == device]
-        if not wanted:
-            devices = sorted({str(b.get("device")) for b in backends})
-            raise SystemExit(
-                f"only_device={device!r} matches no backend (have: {', '.join(devices)})"
-            )
-
-        for backend in backends:
-            should_be = backend.get("device") == device
-            if backend.get("enabled") != should_be:
-                patch = http.patch(
-                    f"/admin/backends/{backend['id']}",
-                    headers=admin,
-                    json={"enabled": should_be},
-                )
-                if patch.status_code >= 400:
-                    raise SystemExit(
-                        f"could not set enabled={should_be} on {backend['label']}: "
-                        f"HTTP {patch.status_code} {patch.text}"
-                    )
-            state = "enabled" if should_be else "disabled"
-            described.append(f"{backend['label']} ({backend.get('device')}) {state}")
-
+    for backend in backends:
+        should_be = backend.get("device") == device
+        if backend.get("enabled") != should_be:
+            taas_admin("backend", "enable" if should_be else "disable", str(backend["id"]))
+        state = "enabled" if should_be else "disabled"
+        described.append(f"{backend['label']} ({backend.get('device')}) {state}")
     return described
 
 
@@ -454,12 +439,21 @@ def main() -> None:
     parser.add_argument("--images", type=Path, default=None, help="override the corpus dir")
     parser.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     parser.add_argument(
+        "--all-devices",
+        action="store_true",
+        help="don't pin dispatch to the target's only_device: measure mixed backends "
+        "(e.g. scored dispatch across a GPU and a CPU engine)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
         help="corpus sample seed; omit to draw a fresh one (printed, so runs reproduce)",
     )
     args = parser.parse_args()
+    # taas-admin (user provisioning, backend pinning) runs in this target's api container;
+    # the sub-scripts inherit it.
+    os.environ.setdefault("TAAS_ADMIN_MODE", args.target)
 
     config = load_scenarios(args.scenarios)
     only = {name.strip() for name in args.only.split(",") if name.strip()}
@@ -523,16 +517,12 @@ def main() -> None:
     # Per-target (the deployment decides what engines exist), defaults as fallback.
     target_cfg = config.get("targets", {}).get(args.target, {})
     only_device = target_cfg.get("only_device") or config.get("defaults", {}).get("only_device")
-    if only_device:
-        if needs_proxy:
-            admin_url = f"http://{target['latency']['upstream']['api']}"
-        else:
-            admin_url = str(resolve_target(config, args.target, proxied=False)["urls"]["taas_url"])
-
-        master_key = config.get("defaults", {}).get("master_key", DEFAULT_MASTER_KEY)
-        print(f"\nPinning dispatch to device={only_device} via {admin_url}")
+    if args.all_devices:
+        print("\nNot pinning dispatch (--all-devices): every enabled backend takes pages")
+    elif only_device:
+        print(f"\nPinning dispatch to device={only_device} with taas-admin")
         print("  (priority is moot with a single enabled backend)")
-        for line in pin_backends(admin_url, str(master_key), str(only_device)):
+        for line in pin_backends(str(only_device)):
             print(f"  {line}")
 
     args.out.mkdir(parents=True, exist_ok=True)

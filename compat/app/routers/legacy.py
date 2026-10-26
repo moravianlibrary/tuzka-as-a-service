@@ -10,6 +10,7 @@ import zstandard
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from starlette.responses import Response
 
+from ..engines import get_engine_map, resolve_engine
 from ..retry import request_with_retry
 
 router = APIRouter()
@@ -73,9 +74,7 @@ async def post_processing_request(request: Request) -> dict[str, Any]:
     engine = body.get("engine", 1)
     images = body.get("images", {})
 
-    settings = request.app.state.settings
-    if engine not in settings.engines:
-        raise HTTPException(400, f"Unknown engine: {engine}")
+    await resolve_engine(request.app.state.http, api_key, engine)
 
     request_id = str(uuid4())
     state = request.app.state.compat_state
@@ -130,7 +129,7 @@ async def upload_image(
     """Upload a single image for a request and start its OCR job on taas.
 
     Reads the upload, then forwards it as a ``POST /api/v1/jobs`` multipart call
-    (carrying the ``X-API-Key`` header and the engine's optional ``domain``),
+    (carrying the ``X-API-Key`` header and the engine's ``domain``),
     and records the returned ``job_id`` against the filename. Unlike the other
     endpoints this trusts the caller's earlier validation and does not re-probe
     the api-key; any non-2xx taas response is surfaced with its original status
@@ -138,25 +137,24 @@ async def upload_image(
     """
     api_key = get_api_key(request)
     state = request.app.state.compat_state
-    settings = request.app.state.settings
+    http = request.app.state.http
 
     req = await state.get_request(request_id)
     if not req:
         raise HTTPException(404, "Request not found")
-    if filename not in req["filenames"]:
+    if filename not in req.filenames:
         raise HTTPException(400, f"Filename {filename} not in request")
 
-    engine_cfg = settings.engines[req["engine"]]
+    engine_cfg = await resolve_engine(http, api_key, req.engine)
     file_bytes = await file.read()
-    external_id = str(uuid4())
 
     # Forward to taas
-    http = request.app.state.http
     upload_filename = file.filename or filename
     files_data = {
         "image": (upload_filename, file_bytes, file.content_type or "application/octet-stream")
     }
-    form_data = {"uuid": external_id, "fmt": "multi"}
+    # No external_id: the shim tracks its jobs by the job id taas returns.
+    form_data = {"fmt": "multi"}
     if engine_cfg.domain:
         form_data["domain"] = engine_cfg.domain
 
@@ -318,16 +316,16 @@ async def download_results(
 async def get_engines(request: Request) -> dict[str, Any]:
     """List the OCR engines exposed to legacy clients, keyed by display label.
 
-    Validates the ``api-key`` header against taas, then returns the statically
-    configured engines (their numeric id and description) from settings. These
-    ids are what callers pass as ``engine`` to ``post_processing_request``.
+    Reads taas's ``GET /api/v1/domains`` with the caller's key (which also validates
+    it) and returns each domain that has a legacy engine id, with that id and its
+    description. These ids are what callers pass as ``engine`` to
+    ``post_processing_request``.
     """
     api_key = get_api_key(request)
-    await validate_api_key(request, api_key)
-    settings = request.app.state.settings
+    engine_map = await get_engine_map(request.app.state.http, api_key)
 
     engines = {}
-    for engine_id, cfg in settings.engines.items():
+    for engine_id, cfg in engine_map.items():
         engines[cfg.label] = {
             "id": engine_id,
             "description": cfg.description,

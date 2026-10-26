@@ -16,6 +16,10 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
+    # Connections per process, and how long a caller waits for a free one before it
+    # errors. redis-py 8 otherwise caps a pool at 100 and raises at once past that.
+    redis_max_connections: int = 200
+    redis_pool_timeout_seconds: float = 20.0
 
     # MinIO incoming
     minio_incoming_url: str = "http://localhost:9000"
@@ -37,12 +41,18 @@ class Settings(BaseSettings):
     minio_region: str = "eu-central-1"
 
     # Auth
-    master_key: str = ""
+    # Domains a TuzkaM (map OCR) engine serves; it doesn't advertise any itself.
+    tuzkam_domains: list[str] = ["maps"]
+    # Bearer token for GET /load (the autoscaler's metric). Empty = /load answers 404.
+    load_token: str = ""
     key_encryption_secret: str = ""
 
     # Upload constraints
     allowed_extensions: list[str] = [".tif", ".tiff", ".jpg", ".jpeg", ".png"]
     max_upload_bytes: int = 100 * 1024 * 1024  # 100 MB
+    # Batches (POST /api/v1/batches): the archive, and the pages in it.
+    batch_max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+    batch_max_pages: int = 2000
 
     # Workers. Ticks tuned for sub-second-to-~1s OCR jobs: a 1s initial poll keeps
     # backend slots turning over near the job time. Backoff still adapts upward
@@ -53,6 +63,12 @@ class Settings(BaseSettings):
     submit_tick_seconds: float = 1.0
     poller_tick_seconds: float = 1.0
     poller_harvest_concurrency: int = 10
+    # Bound jobs whose results are not stored: both engines still running and the
+    # durable harvest queue. A limit of 100 allows engines to stay busy while keeping
+    # an overloaded poller from accumulating thousands of completed outputs.
+    unstored_job_max: int = 100
+    # Engine status checks use a sliding window of this size.
+    poller_poll_concurrency: int = 10
     poll_backoff_initial: float = 1.0
     poll_backoff_max: float = 5.0
     # Submit-worker caches: how often to reload the backend list, re-check a backend's
@@ -60,6 +76,14 @@ class Settings(BaseSettings):
     backend_refresh_seconds: float = 30.0
     health_cache_seconds: float = 10.0
     domain_sync_seconds: float = 300.0
+
+    # ClickHouse (ClickStack): job events for analytics. Empty URL = events are dropped
+    # at the source (the emitter is a no-op), e.g. local dev without the clickstack
+    # profile. HTTP interface, e.g. http://clickhouse:8123.
+    clickhouse_url: str = ""
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "taas"
 
     # Compression
     zstd_compression_level: int = 3
@@ -69,6 +93,19 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    # OpenTelemetry: off while the endpoint is empty. The other OTEL_* vars (headers,
+    # resource attributes) go to the SDK straight from the process env.
+    otel_exporter_otlp_endpoint: str = ""
+    # Overrides each process's own service name (taas-api, taas-poller, ...).
+    otel_service_name: str = ""
+
+    # HyperDX, for the dashboard import (app.ops.import_dashboard, a Helm hook Job).
+    hyperdx_url: str = ""
+    hyperdx_api_key: str = ""
+    # Relative to hyperdx_url; overridable, since the paths moved between releases.
+    hyperdx_dashboards_path: str = "/api/v2/dashboards"
+    hyperdx_sources_path: str = "/api/v2/sources"
 
     # extra=ignore: stale env entries must not crash startup
     model_config = {"env_file": ".env.local", "extra": "ignore"}

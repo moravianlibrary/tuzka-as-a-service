@@ -42,7 +42,7 @@ The Python package / CLI is named `taas`.
 
 | Service | Role |
 |---|---|
-| `api` | REST + WebSocket API (jobs, admin, dashboard) — published on `:8080` |
+| `api` | REST + WebSocket API (jobs); its image also carries the `taas-admin` CLI — published on `:8080` |
 | `worker-submit` | pulls queued jobs, dispatches to a healthy OCR backend |
 | `worker-poller` | polls engine job status, harvests + stores results |
 | `worker-cleanup` | TTL cleanup of buckets and old DB rows |
@@ -62,12 +62,13 @@ The Python package / CLI is named `taas`.
 ## Quickstart
 
 ```bash
-make env             # create .env + .env.app from templates (generates a Fernet key)
+make env             # create .env, .env.app and .env.local from templates (generates a Fernet key)
 make up              # build + start the whole stack (first run is slow: TuzkaOCR model load)
-make test-integration  # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
+make e2e-fast        # end-to-end: submit an image -> OCR -> fetch + preview the ALTO result
 ```
 
-Dashboard: <http://localhost:8080/dashboard> (master key from `.env.app`).
+Administration: `make admin ARGS="--help"` (users, backends, config).
+Job history and dashboards: ClickStack/HyperDX (`make up-clickstack`).
 
 ### Interactive API docs
 
@@ -78,8 +79,8 @@ Both services serve auto-generated OpenAPI docs (Swagger UI, ReDoc, raw schema):
 | taas API | <http://localhost:8080/docs> | <http://localhost:8080/redoc> | <http://localhost:8080/openapi.json> |
 | compat | <http://localhost:8001/docs> | <http://localhost:8001/redoc> | <http://localhost:8001/openapi.json> |
 
-> The shipped `MASTER_KEY` and generated `KEY_ENCRYPTION_SECRET` are for local
-> development. **Change them for any real deployment.**
+> The generated `KEY_ENCRYPTION_SECRET` is for local development. **Use your own for any
+> real deployment.**
 
 ## Configuration
 
@@ -97,13 +98,15 @@ Live env files are git-ignored; only the `*.example` templates are tracked.
 ## Testing
 
 ```bash
-make test                       # unit/component tests (pytest)
+make test                       # unit/component tests (pytest); the DB/Redis ones skip
+make test-integration           # all of them, against a throwaway Postgres + Redis (test-env)
 make coverage-report            # unit tests + coverage summary
 make test-contract              # Schemathesis contract tests vs a running instance (needs the stack)
-make test-integration           # full-stack end-to-end, default fmt=multi
-FMT=alto make test-integration  # single-format run
-make test-integration-fast      # against an already-running stack (no rebuild)
-make test-compat                # legacy-compat server end-to-end
+make e2e                        # full-stack end-to-end (brings the stack up), default fmt=multi
+FMT=alto make e2e               # single-format run
+make e2e-fast                   # against an already-running stack (no rebuild)
+make e2e-batch                  # a batch: archive in, results archive out
+make e2e-compat                 # legacy-compat server end-to-end
 make check-alto-schema          # ALTO output vs the ALTO 4.4 XSD (needs ./TuzkaOCR, or FILES=)
 ```
 
@@ -155,12 +158,13 @@ the latency-proxy setup, and which column to read for which question are in
 ## Local development (without containers)
 
 ```bash
-make infra                                  # postgres + redis + minio in Docker
-pip install -e ".[api]"                     # taas + web/api deps (workers need only `.`)
-alembic upgrade head
-cp .env.local.example .env.local            # adjust if needed
-uvicorn app.main:app --reload --port 8080
+make infra          # postgres + redis + minio in Docker (also writes .env.local)
+make db-upgrade     # migrate the infra DB
+make dev-api        # the API with auto-reload on :8080 (DEV_PORT= to move it)
+make dev-submit     # and/or dev-poller, dev-cleanup: one worker per terminal
 ```
+
+All of them run in the locked uv env with `.env.local`'s settings (localhost hostnames).
 
 ## Deployment (Kubernetes / Helm)
 
@@ -170,7 +174,6 @@ compat, Redis, PostgreSQL via CloudNativePG, MinIO, optional TuzkaOCR engine). R
 
 ```bash
 helm install taas ./deploy/helm/taas \
-  --set secrets.masterKey=$(openssl rand -hex 16) \
   --set secrets.keyEncryptionSecret=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \
   --set secrets.postgresPassword=$(openssl rand -hex 16) \
   --set secrets.minioIncomingSecretKey=$(openssl rand -hex 16) \
@@ -182,5 +185,6 @@ See the chart's [README](deploy/helm/taas/README.md) (install, exposure, values)
 
 ## Make targets
 
-Run `make help` for the full list (`up`, `down`, `clean`, `logs`, `ps`, `seed`,
-`test`, `test-compat`, `env`, `secret`, …).
+Run `make help` for the full list, grouped as compose stack (`up`, `down`, `logs-<svc>`,
+`clean-volumes`, …), host dev (`dev-api`, `dev-<worker>`), database (`db-*`), tests
+(`test`, `test-integration`, `e2e-*`), local k3d, bench, quality (`check`) and release.

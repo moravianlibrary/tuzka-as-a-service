@@ -6,7 +6,7 @@ image:
 
 imagePullSecrets: []
 
-# -- API (FastAPI: jobs, admin, dashboard, websocket)
+# -- API (FastAPI: jobs, websocket; the image also carries the taas-admin CLI)
 api:
   replicaCount: 1
   image:
@@ -21,7 +21,8 @@ api:
       memory: 1Gi
 
 # -- Background workers. Each key becomes a Deployment running
-#    `python -m app.workers.<key>`. All share the worker image below.
+#    `python -m app.workers.<key>`. All share the worker image below and default
+#    resources; each worker may override resources for its Deployment.
 worker:
   image:
     repository: taas-worker
@@ -37,6 +38,18 @@ workers:
     replicaCount: 1
   poller:
     replicaCount: 1
+    # The poller does the status fan-out, result fetch/compress and S3 writes for every
+    # in-flight job. It sustains ~0.8-0.9 CPU at 50 backends, so request 1 CPU (a
+    # guaranteed share just above the observed load) and allow bursts to 2 (a 500m
+    # request left it CPU-starved and cut completed throughput). Submit/cleanup keep the
+    # 250m/1 CPU defaults above; this override is poller-only.
+    resources:
+      requests:
+        cpu: "1"
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 512Mi
   cleanup:
     replicaCount: 1
 
@@ -48,7 +61,6 @@ compat:
     repository: taas-compat
   port: 8001
   ttlSeconds: "3600"
-  engines: '{"1": {"domain": "", "label": "Default", "description": "Default OCR engine"}, "2": {"domain": "kramarky", "label": "Kramarky", "description": "Engine for kramarky domain"}}'
   resources:
     requests:
       cpu: 100m
@@ -83,6 +95,8 @@ cnpg:
     storageClassName: ""
   database: taas
   owner: taas
+  # -- Collect per-query stats in pg_stat_statements (CNPG loads + creates the extension)
+  pgStatStatements: true
   resources:
     requests:
       cpu: 250m
@@ -132,71 +146,169 @@ minio:
       cpu: "1"
       memory: 1Gi
 
-# -- In-cluster TuzkaOCR engine. A StatefulSet of identical pods (stable per-ordinal
-#    DNS) auto-registered as taas backends; an autoscaler sets the replica count.
-ocrEngine:
-  enabled: false
-  # Static replica count, used ONLY when autoscaling.mode=none (ignored under hpa/keda,
-  # where minReplicas/maxReplicas govern). Uncomment to run a fixed pool.
-  # replicas: 1
-  image:
-    repository: registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr
-    tag: "1.3.0"
-  port: 8000
-  # taas concurrent dispatch cap PER POD. Keep TUZKAOCR_MAX_QUEUE >= this.
-  maxInflight: 2
-  env:
-    TUZKAOCR_DEVICE: "cpu"
-    TUZKAOCR_OCR_THREADS: "1"
-    TUZKAOCR_LINE_WORKERS: "1"
-    # 1-CPU scale-out model: one page worker per 1-core pod is the most throughput-
-    # efficient shape — the engine scales poorly across cores, so per-core throughput
-    # is highest at 1 core (bench/RESULTS_POD_SHAPES.md). Scale by replicas, not pw.
-    TUZKAOCR_PAGE_WORKERS: "1"
-    TUZKAOCR_MAX_QUEUE: "2"
-    # Release ORT memory between pages (see bench/ENGINE_MEMORY.md) — avoids OOM.
-    TUZKAOCR_CPU_MEM_ARENA: "false"
-    # Pin native BLAS/OMP thread pools to the pod's core budget. WITHOUT these,
-    # numpy/opencv/BLAS auto-detect the NODE's full core count and spawn dozens of
-    # threads inside the pod, oversubscribing its CPU limit (bench/RESULTS_POD_SHAPES.md).
-    OMP_NUM_THREADS: "1"
-    OPENBLAS_NUM_THREADS: "1"
-    MKL_NUM_THREADS: "1"
-    NUMEXPR_NUM_THREADS: "1"
-    VECLIB_MAXIMUM_THREADS: "1"
-  storage:
-    storageClassName: ""
-    results: { type: memory, size: 128Mi }
-    spool:   { type: memory, size: 256Mi }
-  # One core per pod (Guaranteed CPU). 1-core peak ≈ 1.3 GiB with arena off; fits 2Gi.
-  resources:
-    requests: { cpu: "1", memory: 1500Mi, ephemeral-storage: 256Mi }
-    limits:   { cpu: "1", memory: 2Gi,    ephemeral-storage: 1Gi }
-  # Long enough to drain in-flight jobs on scale-down before SIGKILL.
-  terminationGracePeriodSeconds: 120
-  autoscaling:
-    mode: hpa                # none | hpa | keda
-    minReplicas: 1
-    # Upper bound on replicas AND on the number of backend rows taas pre-registers.
-    # One core per replica — raise toward your cluster's OCR CPU budget for max
-    # throughput (throughput scales ~linearly with replica count).
-    maxReplicas: 16
-    hpa:
-      targetCPUUtilizationPercentage: 70
-      scaleDownStabilizationSeconds: 300
-    keda:                    # only used when mode=keda (requires the KEDA operator)
-      # Empty => the chart's in-cluster Redis (<release>-redis:<redis.port>). Set this
-      # only to point KEDA at an external Redis.
-      redisAddress: ""
-      listName: "ocr-jobs"
-      listLength: "5"        # ~1 replica per this many queued jobs
-      pollingInterval: 15    # seconds between queue checks
-      cooldownPeriod: 300    # seconds idle before scaling back toward minReplicas
-      # Set ONLY for an external password-protected Redis: the name of an existing
-      # Secret (and its key) holding the Redis password. Empty => no auth (the bundled
-      # in-cluster Redis has none).
-      redisPasswordSecret: ""
-      redisPasswordKey: "password"
+# -- In-cluster engine pools. Each key becomes a StatefulSet, a headless Service,
+#    an autoscaler (or static replicas) and a prefix for the backend rows the
+#    register hook creates. TuzkaOCR and TuzkaM are shipped as two entries; add
+#    more keys (e.g. ocr-gpu, tuzkam-eu) for other images or hardware classes.
+#    Set enabled: true on the ones this release should run.
+engines:
+  # TuzkaOCR: text OCR. StatefulSet with stable per-ordinal DNS; each pod is
+  # registered as its own backend. Defaults to HPA on CPU.
+  ocr-engine:
+    enabled: false
+    adapter: tuzkaocr
+    image:
+      repository: registry.gitlab.mzk.cz/osdd/image/tuzka-as-a-service/tuzkaocr
+      tag: "1.3.0"
+    port: 8000
+    # taas concurrent dispatch cap PER POD. Keep TUZKAOCR_MAX_QUEUE >= this.
+    maxInflight: 2
+    # Engine API key. `env` is the variable the engine image reads; the value comes
+    # from the Secret below. For production point at an External Secret / SealedSecret;
+    # `generate: true` creates <release>-ocr-engine-api-key for dev and preserves it
+    # across upgrades via lookup (not reproducible with `helm template`, so avoid it
+    # under Argo CD/Flux). Omit `auth` entirely to run the engine without a key.
+    auth:
+      env: TUZKAOCR_API_KEY
+      generate: true
+      # existingSecret:            # set generate: false when using this
+      #   name: taas-ocr-engine-key
+      #   key: api-key
+    env:
+      TUZKAOCR_DEVICE: "cpu"
+      TUZKAOCR_OCR_THREADS: "1"
+      TUZKAOCR_LINE_WORKERS: "1"
+      # 1-CPU scale-out model: one page worker per 1-core pod is the most throughput-
+      # efficient shape — the engine scales poorly across cores, so per-core throughput
+      # is highest at 1 core (bench/RESULTS_POD_SHAPES.md). Scale by replicas, not pw.
+      TUZKAOCR_PAGE_WORKERS: "1"
+      TUZKAOCR_MAX_QUEUE: "2"
+      # Release ORT memory between pages (see bench/ENGINE_MEMORY.md) — avoids OOM.
+      TUZKAOCR_CPU_MEM_ARENA: "false"
+      # Pin native BLAS/OMP thread pools to the pod's core budget. WITHOUT these,
+      # numpy/opencv/BLAS auto-detect the NODE's full core count and spawn dozens of
+      # threads inside the pod, oversubscribing its CPU limit (bench/RESULTS_POD_SHAPES.md).
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      TUZKAOCR_RESULTS_DIR: /app/results
+      TUZKAOCR_SPOOL_DIR: /app/spool
+    volumes:
+      results:
+        mountPath: /app/results
+        emptyDir: { medium: Memory, sizeLimit: 128Mi }
+      spool:
+        mountPath: /app/spool
+        emptyDir: { medium: Memory, sizeLimit: 256Mi }
+    # One core per pod (Guaranteed CPU). 1-core peak ≈ 1.3 GiB with arena off; fits 2Gi.
+    resources:
+      requests: { cpu: "1", memory: 1500Mi, ephemeral-storage: 256Mi }
+      limits:   { cpu: "1", memory: 2Gi,    ephemeral-storage: 1Gi }
+    # Long enough to drain in-flight jobs on scale-down before SIGKILL.
+    terminationGracePeriodSeconds: 120
+    readinessInitialDelaySeconds: 30
+    livenessInitialDelaySeconds: 60
+    autoscaling:
+      mode: hpa                # none | hpa | keda
+      # Static replica count, used ONLY when mode=none (ignored under hpa/keda,
+      # where minReplicas/maxReplicas govern).
+      replicas: 1
+      minReplicas: 1
+      # Upper bound on replicas AND on the number of backend rows taas pre-registers.
+      # One core per replica — raise toward your cluster's OCR CPU budget for max
+      # throughput (throughput scales ~linearly with replica count).
+      maxReplicas: 16
+      hpa:
+        targetCPUUtilizationPercentage: 70
+        scaleDownStabilizationSeconds: 300
+      keda:                    # only used when mode=keda (requires the KEDA operator)
+        # Scales on the API's GET /load (KEDA metrics-api, bearer secrets.loadToken).
+        # Which queued work counts: the jobs a tuzkaocr backend could serve.
+        loadFilter: "adapter=tuzkaocr"
+        targetBacklogSeconds: 600    # ~1 replica per this many seconds of queued pages
+        activationBacklogSeconds: 0  # scale up from zero as soon as anything is queued
+        pollingInterval: 15          # seconds between /load checks
+        # Seconds without backlog before scaling back toward minReplicas. With
+        # minReplicas=0, set jobs.queued_timeout_seconds above the engine's cold start,
+        # or queued jobs time out while the first pod starts.
+        cooldownPeriod: 300
+    # Capabilities registered for every in-cluster engine before it has run (so a
+    # StatefulSet at zero replicas is still known to serve these domains); the
+    # engine's own report replaces them on its first domain sync.
+    declaredDomains:
+      default: [alto, txt]
+      kramarky: [alto, txt]
+      handwritten: [alto, txt]
+      kurrent: [alto, txt]
+
+  # TuzkaM: OCR of historical map sheets (domain "maps": json, geojson, gcp,
+  # alto, txt). Scales from zero with KEDA, so it needs the KEDA operator and
+  # secrets.loadToken. Each pod is registered with the maps capabilities declared,
+  # so map jobs queue (and count in /load) while it is at zero. Set
+  # jobs.queued_timeout_seconds above the TuzkaM cold start (image pull + models).
+  tuzkam:
+    enabled: false
+    adapter: tuzkam
+    image:
+      # Built from the TuzkaM repo's Dockerfile (TUZKAM_COVERAGE=europe-med gazetteer).
+      repository: tuzkam
+      tag: "europe-med"
+    port: 8000
+    # One map sheet at a time per pod: a sheet keeps every core busy for minutes.
+    maxInflight: 1
+    auth:
+      env: TUZKAM_API_KEY
+      generate: true
+      # existingSecret:            # set generate: false when using this
+      #   name: taas-tuzkam-key
+      #   key: api-key
+    env:
+      TUZKAM_THREADS: "2"
+      TUZKAM_WORKERS: "1"
+      TUZKAM_MAX_JOBS: "2"
+      TUZKAM_GAZETTEER_AUTO_INSTALL: "false"
+      TUZKAM_BUILTIN_GAZETTEER_DIR: /app/builtin
+      TUZKAM_DATA_DIR: /data
+    volumes:
+      data:
+        mountPath: /data
+        # Uploads spooled during a job and its results until taas harvests them.
+        emptyDir: { sizeLimit: 2Gi }
+    # A 166-megapixel sheet peaked at ~3.9 GiB and was OOM-killed under a 4Gi limit;
+    # TuzkaM accepts up to 400 MP (TUZKAM_MAX_IMAGE_PIXELS), so the limit has headroom.
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 8Gi
+    terminationGracePeriodSeconds: 600
+    readinessInitialDelaySeconds: 20
+    livenessInitialDelaySeconds: 60
+    podSecurityContext:
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+    autoscaling:
+      mode: keda
+      replicas: 1
+      minReplicas: 0
+      # Upper bound on replicas AND on the number of backend rows taas pre-registers.
+      maxReplicas: 4
+      hpa:
+        targetCPUUtilizationPercentage: 70
+        scaleDownStabilizationSeconds: 300
+      keda:
+        loadFilter: "adapter=tuzkam"
+        targetBacklogSeconds: 600    # ~1 replica per this many seconds of queued sheets
+        activationBacklogSeconds: 0  # scale up from zero as soon as a sheet is queued
+        pollingInterval: 15
+        cooldownPeriod: 600          # seconds without backlog before going back to zero
+    declaredDomains:
+      maps: [json, geojson, gcp, alto, txt]
 
 # -- Reverse tunnel (FRP) for OCR engines that run OUTSIDE the cluster — e.g. a GPU
 #    box behind NAT that can dial out but accepts no inbound. The box runs a TuzkaOCR
@@ -228,12 +340,21 @@ tunnelBoxesDefaults:
   # Logical Service port taas registers + connects to in-cluster. Equals the engine's
   # HTTP port on the box (frpc's localPort). Usually leave at 8000.
   port: 8000
-  # taas concurrent dispatch cap for this backend (see ocrEngine.maxInflight).
+  # taas concurrent dispatch cap for this backend (see engines.<name>.maxInflight).
   maxInflight: 8
   # Engine hardware class registered for this backend: "cpu" or "gpu".
   device: cpu
-  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only (set it in
-  # the dashboard Backends tab / PATCH /admin/backends); the deploy never writes it, so an
+  # API key for every tunnel engine. There is no `generate`: the box runs the engine,
+  # so both sides must use the same value. With `name: ""` the chart reads
+  # <release>-tunnel-engine-key; create it (or point at an External Secret) before
+  # installing. Each engine may override auth in its tunnelBoxes entry. Omit `auth`
+  # to register the backend without a key (clearing any key from an earlier release).
+  # auth:
+  #   existingSecret:
+  #     name: ""          # empty => <release>-tunnel-engine-key
+  #     key: api-key
+  # NOTE: backend dispatch priority is NOT set here. It is admin-managed only
+  # (`taas-admin backend update <id> --priority N`); the deploy never writes it, so an
   # admin-set priority survives redeploys. Newly registered backends start at priority 0.
 
 # -- Off-cluster boxes reached via the tunnel above. Empty = none. One box can run N
@@ -261,7 +382,7 @@ tunnelBoxes: []
 #     engines:
 #       - name: gpu0
 #         remotePort: 8000
-#         device: gpu       # set priority afterwards in the dashboard Backends tab
+#         device: gpu       # set priority afterwards: taas-admin backend update
 #       - name: gpu1
 #         remotePort: 8001
 #         device: gpu
@@ -290,6 +411,87 @@ metrics:
     # { release: kube-prometheus-stack }).
     labels: {}
 
+# -- ClickStack: ClickHouse (job events, step 5) + HyperDX (dashboards, traces, logs) +
+#    MongoDB (HyperDX's own state). When enabled, the api and workers send every job
+#    state change to ClickHouse's taas.job_events. Needs secrets.clickhousePassword;
+#    secrets.hyperdxApiKey (a HyperDX user's API key) enables the dashboard import.
+clickstack:
+  enabled: false
+  clickhouse:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "24.8"
+    user: taas
+    storage:
+      size: 50Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    # ClickHouse's defaults are sized for big servers: 24.8 creates a 512-thread
+    # background-schedule pool and keeps up to 1000 idle query threads. In this
+    # 2-CPU pod that shows up as ~700 mostly-sleeping threads. Cap the pools to the
+    # pod's size (about 100 threads total). background_pool_size stays at ClickHouse's
+    # 16: lowering it below 13 trips the merge_tree sanity check
+    # (number_of_free_entries_in_pool_to_execute_optimize_entire_partition = 25).
+    threads:
+      backgroundSchedulePoolSize: 32
+      maxThreadPoolSize: 256
+      maxThreadPoolFreeSize: 32
+      maxConcurrentQueries: 64
+  hyperdx:
+    image:
+      repository: hyperdx/hyperdx
+      tag: "latest"   # pin to a release for production
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  # OTel collector: the api's and workers' traces and logs (app/telemetry.py) into
+  # ClickHouse for HyperDX. When on, the app pods get OTEL_EXPORTER_OTLP_ENDPOINT.
+  otel:
+    enabled: true
+    image:
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.104.0"
+    retentionDays: 30   # TTL of otel_traces / otel_logs
+    # Tail sampling in the collector. Keep every trace with an error span or a
+    # failed-job span; sample the rest. The app still sends 100%, so `decisionWait`
+    # must exceed the longest job trace (the collector holds those spans in memory).
+    traceSamplePercentage: 5
+    traceDecisionWait: "10m"
+    traceNumTraces: 30000
+    # Extra OTEL_RESOURCE_ATTRIBUTES for the app, e.g. "deployment.environment=prod".
+    resourceAttributes: ""
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+  mongodb:
+    image:
+      repository: mongo
+      tag: "7"
+    storage:
+      size: 1Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
 # -- Shared application config (non-secret). See app/config.Settings.
 config:
   allowedExtensions: '[".tif",".tiff",".jpg",".jpeg",".png"]'
@@ -300,17 +502,24 @@ config:
   submitTickSeconds: "1.0"
   pollerTickSeconds: "1.0"
   pollerHarvestConcurrency: "10"
+  # Bound work whose results are not stored yet (running engines plus durable harvest
+  # queue). Further jobs remain queued, so overload cannot grow the result backlog.
+  unstoredJobMax: "100"
   pollBackoffInitial: "1.0"
   pollBackoffMax: "5.0"
   zstdCompressionLevel: "3"
   wsCatchUpSeconds: "120"
   logLevel: "INFO"
   # NOTE: rate limits are runtime config in the DB `config` table (rate_limit.*),
-  # editable via the dashboard / PUT /admin/config — not env/Helm values.
+  # editable with `taas-admin config set` — not env/Helm values.
 
 # -- Secrets (override via --set or an external secret manager)
 secrets:
-  masterKey: "replaceMe"
+  # Bearer token for GET /load, the metric KEDA scales on. Required for any
+  # engines.<name>.autoscaling.mode=keda; empty => /load answers 404.
+  loadToken: ""
+  # Engine API keys are NOT here: each engine points at its own Secret via
+  # engines.<name>.auth.existingSecret, or generates one with auth.generate.
   # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   keyEncryptionSecret: "replace-with-a-fernet-key"
   postgresPassword: "replaceMe"
@@ -318,7 +527,11 @@ secrets:
   minioIncomingSecretKey: "replaceMe"
   minioResultsAccessKey: "minioresults"
   minioResultsSecretKey: "replaceMe"
-  ocrEngineApiKey: "replaceMe"
+  # ClickStack (clickstack.enabled): the ClickHouse user's password, and the API key of a
+  # HyperDX user (Team Settings, after the first sign-up) the dashboard importer uses;
+  # empty skips the import.
+  clickhousePassword: ""
+  hyperdxApiKey: ""
   # Shared secret authenticating frpc (GPU box) to the in-cluster frps. Must match
   # the box's frpc auth.token. Only used when tunnel.enabled.
   frpToken: "replaceMe"
@@ -327,7 +540,6 @@ secrets:
 #    or not at all  (kind: ingress | gateway | none):
 #      api            -> API service          (job API at /api/v1, WebSocket at /ws)
 #      legacy         -> compat service       (path prefix stripped before forwarding)
-#      adminDashboard -> API service          (/admin, /dashboard, /static)
 #      minioResults   -> minio-results service (so external clients can fetch presigned
 #                        result URLs; use a dedicated host served at root — the bucket is
 #                        in the path, so nothing is stripped)
@@ -352,17 +564,18 @@ expose:
     annotations: {}
     tls: []
     gateway: { name: "", namespace: "", sectionName: "" }
-  adminDashboard:
+  # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
+  # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
+  minioResults:
     kind: none
     host: ""
-    paths: ["/admin", "/dashboard", "/static"]
+    paths: ["/"]
     ingressClassName: ""
     annotations: {}
     tls: []
     gateway: { name: "", namespace: "", sectionName: "" }
-  # Serve at root on a dedicated host; presign host auto-derives from host + tls (see
-  # minio.results.publicUrl). Keep paths ["/"] so the S3 bucket path isn't rewritten.
-  minioResults:
+  # HyperDX UI (only with clickstack.enabled). Serve at root on its own host.
+  hyperdx:
     kind: none
     host: ""
     paths: ["/"]

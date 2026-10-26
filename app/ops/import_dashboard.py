@@ -1,0 +1,139 @@
+"""Import the chart's HyperDX dashboards: create each by name, or update it in place.
+
+Run by the Helm post-install/upgrade Job (``python -m app.ops.import_dashboard FILE``)
+with ``HYPERDX_URL`` and ``HYPERDX_API_KEY`` (``Settings``). The file is a HyperDX dashboard export (or
+a list of them). Tiles name their source (e.g. ``"Job Events"``); the import resolves
+those names to the ids the API expects, so the file stays portable between installs.
+Waits for HyperDX to come up, since the Job can start before it's Ready.
+
+HyperDX's API takes a *user's* API key, and a fresh install has no users: the first
+sign-up creates the team (with the chart's sources). Until a key from that team is
+set, the import says what to do and exits 0 — a missing key must not fail a deploy.
+
+``plan_import`` and ``resolve_sources`` are pure; ``main`` is the I/O around them.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Any, Literal
+
+import httpx
+
+from app.config import Settings
+
+logger = logging.getLogger("import-dashboard")
+
+NO_KEY_HELP = (
+    "skipping the dashboard import: HyperDX needs a user's API key. Sign up in HyperDX "
+    "(the first user creates the team and its sources), copy the API key from Team "
+    "Settings into secrets.hyperdxApiKey, and upgrade the release."
+)
+WAIT_SECONDS = 300.0
+
+Action = tuple[Literal["create", "update"], dict[str, Any], str | None]
+
+
+def load_dashboards(text: str) -> list[dict[str, Any]]:
+    """The dashboards in an export file: one object, or a list of them."""
+    data = json.loads(text)
+    dashboards = data if isinstance(data, list) else [data]
+    for d in dashboards:
+        if not isinstance(d, dict) or not d.get("name"):
+            raise ValueError("every dashboard needs a name")
+    return dashboards
+
+
+def resolve_sources(dashboard: dict[str, Any], source_ids: dict[str, str]) -> dict[str, Any]:
+    """A copy of ``dashboard`` with each tile's ``config.sourceId``, which the file gives
+    as a source *name*, replaced by that source's id. Raises ``ValueError`` naming every
+    source the HyperDX instance doesn't have."""
+    known = set(source_ids) | set(source_ids.values())  # a name, or already an id
+    sources = {tile.get("config", {}).get("sourceId") for tile in dashboard.get("tiles", [])}
+    missing = sorted(s for s in sources if s is not None and s not in known)
+    if missing:
+        raise ValueError(f"dashboard {dashboard['name']!r} uses unknown sources: {missing}")
+    resolved: dict[str, Any] = json.loads(json.dumps(dashboard))
+    for tile in resolved.get("tiles", []):
+        source = tile.get("config", {}).get("sourceId")
+        if source in source_ids:
+            tile["config"]["sourceId"] = source_ids[source]
+    return resolved
+
+
+def plan_import(wanted: list[dict[str, Any]], existing: list[dict[str, Any]]) -> list[Action]:
+    """For each wanted dashboard: update the existing one with that name (by its id), or
+    create it. Dashboards the file doesn't mention are left alone."""
+    ids = {d.get("name"): d.get("id") or d.get("_id") for d in existing}
+    actions: list[Action] = []
+    for dashboard in wanted:
+        existing_id = ids.get(dashboard["name"])
+        if existing_id:
+            actions.append(("update", dashboard, str(existing_id)))
+        else:
+            actions.append(("create", dashboard, None))
+    return actions
+
+
+def _items(body: Any) -> list[dict[str, Any]]:
+    # The API wraps lists as {"data": [...]}; accept a bare list too.
+    items = body.get("data", []) if isinstance(body, dict) else body
+    return [i for i in items if isinstance(i, dict)]
+
+
+def _wait_until_up(http: httpx.Client, probe_path: str) -> None:
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        try:
+            if http.get(probe_path).status_code < 500:
+                return
+        except httpx.TransportError:
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"HyperDX not reachable after {WAIT_SECONDS:.0f}s")
+        logger.info("waiting for HyperDX...")
+        time.sleep(5)
+
+
+def main(argv: list[str]) -> int:
+    logging.basicConfig(level=logging.INFO)
+    if len(argv) != 2:
+        print("usage: python -m app.ops.import_dashboard DASHBOARD.json", file=sys.stderr)
+        return 2
+    wanted = load_dashboards(Path(argv[1]).read_text())
+    settings = Settings()
+    if not settings.hyperdx_api_key:
+        logger.warning(NO_KEY_HELP)
+        return 0
+    if not settings.hyperdx_url:
+        logger.error("HYPERDX_URL is not set")
+        return 1
+    # HyperDX's external API, relative to HYPERDX_URL (the chart points it at the app's
+    # /api prefix), authenticated with a user's API key.
+    dashboards_path = settings.hyperdx_dashboards_path
+    headers = {"Authorization": f"Bearer {settings.hyperdx_api_key}"}
+    with httpx.Client(base_url=settings.hyperdx_url, headers=headers, timeout=30) as http:
+        _wait_until_up(http, dashboards_path)
+        resp = http.get(settings.hyperdx_sources_path)
+        if resp.status_code in (401, 403):
+            logger.warning("HyperDX rejected the API key; %s", NO_KEY_HELP)
+            return 0
+        sources = _items(resp.raise_for_status().json())
+        source_ids = {s["name"]: str(s.get("id") or s.get("_id")) for s in sources}
+        existing = _items(http.get(dashboards_path).raise_for_status().json())
+        for action, dashboard, dashboard_id in plan_import(wanted, existing):
+            body = resolve_sources(dashboard, source_ids)
+            if action == "update":
+                http.put(f"{dashboards_path}/{dashboard_id}", json=body).raise_for_status()
+            else:
+                http.post(dashboards_path, json=body).raise_for_status()
+            logger.info("%sd dashboard %r", action, dashboard["name"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

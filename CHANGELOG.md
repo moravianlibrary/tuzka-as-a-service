@@ -6,8 +6,108 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
 ### Added
 
+- `make admin ARGS="…"` runs `taas-admin` in the running stack's api container
+  (`TARGET=compose|k3d`), e.g. `make admin ARGS="user list"`.
+- `make db-upgrade` / `db-downgrade` (`REV=`), `db-history`, and `db-migrate MSG=`, which
+  starts the next numbered migration (`024_…`) from a template in the repo's style.
+  They use `DATABASE_URL` from the environment, else `.env.local`.
+- `make dev-api`, `dev-submit`, `dev-poller` and `dev-cleanup` run the API (with
+  auto-reload) or a worker on the host against `make infra`. `make env` also writes
+  `.env.local`, with the same `KEY_ENCRYPTION_SECRET` as `.env.app`.
+- `make restart` (down, then up) and `make logs-<service>` (e.g. `logs-api`) for the
+  compose stack.
+- **Generic Helm engine pools.** The chart now takes an `engines` map keyed by engine
+  name. Every enabled entry becomes a StatefulSet, headless Service, autoscaler and
+  per-ordinal backend registration, so TuzkaOCR, TuzkaM and any additional image or
+  hardware class can run together. Each engine independently supports `mode: none`,
+  `hpa` or `keda`. TuzkaOCR and TuzkaM ship as `engines.ocr-engine` and
+  `engines.tuzkam`; the old top-level `ocrEngine`/`tuzkam` values are replaced.
+  Engine API keys are now per engine through `auth` (see the credential change below).
+- Job events carry the backend's label (`backend`: `backends.label`, else the id), in
+  `taas.job_events` and the ClickStack backfill. The post-upgrade schema Job adds the
+  column to existing installs.
+- Jobs now show `storing` after the poller observes engine completion and before their
+  results are saved. Dispatch pauses when running plus storing jobs reach
+  `UNSTORED_JOB_MAX` (default 100), keeping unfinished results bounded under overload.
+- `make perf-profile TARGET=k3d` records API and worker flame graphs with an external
+  py-spy container alongside the existing stage timings and whole-service load metrics.
+- Submit and poller workers now log per-stage wall-time counts, totals, p95 and maximums
+  every 60 seconds, add child spans inside job traces, and send stage totals to
+  ClickHouse live metrics when configured.
+- **Batches.** `POST /api/v1/batches` takes one archive of pages (`.tar`, `.tar.gz`,
+  `.tar.zst` or `.zip`, read one page at a time) with one domain, set of outputs and
+  options; every image becomes a job, other files are skipped and listed. Watch it with
+  `GET /api/v1/batches/{id}` (counts, ETA, `?pages=1`) or the WebSocket's
+  `{"type": "batch", …}` progress events, and download every page's output plus a
+  `manifest.json` as one `.tar.zst` from `GET /api/v1/batches/{id}/results`
+  (`?partial=1` before it's finished). `POST /api/v1/batches/{id}/retry` reruns the
+  failed pages. Limits: `BATCH_MAX_UPLOAD_BYTES` (2 GiB) and `BATCH_MAX_PAGES` (2000).
+  A batch costs one submit from the rate limit. `make test-batch` runs it end to end.
+- `GET /api/v1/jobs?external_id=…` finds your jobs by their label.
+- **Clients 0.2.0** (Python `taas_client`, Java `cz.osdd.taas.client`), both doing both
+  modes. Per page: `submit` takes `domain`, `outputs` and `options` (with client-wide
+  defaults) and an optional `external_id` label, and `domains()` lists what you can
+  submit to. Batches: `submit_batch` / `submitBatch` take an archive, a directory or a
+  list of images (packed into a `.tar.zst` on the fly), then wait for it (woken by the
+  WebSocket progress events) and download one results archive with its parsed
+  `manifest.json`. The demos (`clients/python/examples/demo.py`,
+  `examples/Demo.java`) run the same images both ways. **Breaking:** results and events
+  are matched on the `job_id` that submit returns; the `uuid` parameter and fields are
+  gone.
+- **`taas-admin`**, the admin CLI, replaces the HTTP admin API and the dashboard. It ships
+  in the api image and writes to Postgres directly: `user` (create, rotate-key, set-key,
+  enable/disable, set-priority, set-limits, set-scopes), `backend` (upsert, update,
+  enable/disable, delete), `domain` (set-label, set-legacy-id), `config` (get/set) and
+  `job` (list-failed, show with attempts). Run it with
+  `docker compose exec -T api taas-admin …` or `kubectl exec deploy/<release>-api -- taas-admin …`;
+  `--json` for scripts; secrets come from a named env var, never argv. The Helm register
+  hook and every script use it (`scripts/lib/taas-admin.sh`).
+- **Scoped API keys**: `taas-admin user set-scopes <user> --domains a,b --outputs alto,txt`.
+  A submit outside the key's scope is a `403`. Existing keys keep full access.
+- **ClickStack analytics.** Every job state change (`submitted`, `dispatched`, `retried`,
+  `done`, `failed`) is sent to ClickHouse's `taas.job_events`, with durations, OCR
+  metrics and an error flag and class, but no error text (that stays in Postgres). The
+  emitter is fire-and-forget: a job never fails or waits because analytics did, and
+  with `CLICKHOUSE_URL` unset it's off. Every 15 s the cleanup worker also writes the
+  queue depth (`queued`, `inflight` per domain) and each backend's in-flight count to
+  `taas.live_metrics`. The Helm chart deploys ClickHouse, HyperDX and
+  MongoDB behind `clickstack.enabled` (needs `secrets.clickhousePassword`), applies the
+  schema on every install/upgrade, gives HyperDX its ClickHouse connection and sources
+  (`files/clickstack/sources.json`) when the first user signs up, and imports the
+  dashboards from `files/clickstack/dashboard.json` once a HyperDX user's API key is
+  set in `secrets.hyperdxApiKey`. docker-compose has a
+  `clickstack` profile (`make up-clickstack`). `python -m app.ops.backfill_clickstack`
+  copies the history in `job_analytics` into ClickHouse once.
+- **Traces and logs (OpenTelemetry).** With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the api
+  and workers export traces and logs over OTLP; each job is one trace from submit
+  through dispatch, engine polls and harvest, across processes. Workers trace nothing
+  outside a job; the API skips `/healthz` and `/load`. The chart runs an OTel collector
+  into ClickHouse for HyperDX (`clickstack.otel.*`) and sets the endpoint on the pods.
+- Map sheets: domain `maps`, served by the TuzkaM engine through a new `tuzkam` adapter,
+  with outputs `json`, `geojson`, `gcp`, `alto` and `txt` and options `georef`, `region`,
+  `alto_profile`, `source_identifier` and `physical_img_nr`. Asking for `geojson`/`gcp`
+  with `georef: false` is a `422` at submit. When georeferencing fails, a job that asked
+  for `gcp` fails (no partial results) and isn't retried; `geojson` comes back as an empty
+  FeatureCollection and the job is done. Domains can have their own
+  upload limit and running timeout (`maps`: 150 MiB, 1800 s). Locally with
+  `docker compose --profile maps`; in the chart with `engines.tuzkam.enabled`, scaled from zero
+  by KEDA. See `docs/maps.md`.
+- `GET /load` for autoscalers: `{queued, inflight, backlog_s}`, where `backlog_s` is the
+  queued and in-flight pages times the measured seconds per page of their domain (an average of recent
+  engine run times, `load.default_seconds_per_page` until there is one). Filter with
+  `domain=a,b` and `adapter=x` (only the jobs a backend of that adapter could serve);
+  `group_by=domain|adapter` shows the breakdown. It's internal: not in the OpenAPI
+  schema, behind a bearer token (`LOAD_TOKEN`, Helm `secrets.loadToken`), and 404 when no
+  token is configured. The counters behind it are repaired from the queues every ~10
+  minutes by the cleanup worker.
+- Scaling from zero: a backend keeps its last reported domains while its engine is down,
+  and `taas-admin backend upsert --declared` takes capabilities (`{domain: [outputs]}`) for an
+  engine that hasn't run yet; the Helm register hook declares `engines.<name>.declaredDomains`
+  for every in-cluster engine. The engine's own report replaces declared ones.
 - API benchmark comparing the legacy PERO protocol (driven as ProArc drives it: one page in
   flight, a new connection per page, 3 s polling) against the taas client (all pages
   submitted up front, results pushed over one WebSocket). Same corpus, same stack, so the
@@ -44,9 +144,150 @@ All notable changes to this project are documented here. The format is based on
   entry records the stage (`dispatch`, `poll`, `engine`, `harvest`), backend, HTTP status,
   error message, retry decision, and timestamp — providing a full audit trail of every
   failure and retry for a job.
+- Domains + capabilities. A job names a `domain` and the `outputs` it wants, and is routed
+  only to a backend whose capabilities for that domain cover those outputs. Engines
+  advertise them per domain (TuzkaOCR: an optional `capabilities` key in
+  `/api/v1/models`; without it every domain is assumed to produce `alto` and `txt`), and
+  domain sync stores them in `backend_domains.outputs`.
+- `POST /api/v1/jobs` takes `outputs` (comma-separated, e.g. `alto,txt`) and `options` (a
+  JSON object) form fields. `fmt` still works: without `outputs`, it decides them; with
+  both, `outputs` wins. Options are validated at submit against a per-domain JSON Schema
+  derived from the engine's own `/openapi.json` (the `POST /api/v1/process` form fields
+  other than `image`, `domain` and `fmt`, closed to unknown keys), so a bad option is a
+  `422` from taas instead of a failed engine job. When an engine upgrade changes that
+  schema, the newest one wins and a warning is logged. An unknown domain, or outputs no
+  backend for the domain can produce, are also a `422` at submit. Job status reports the
+  job's `outputs`.
+- `GET /api/v1/domains` lists the domains you can submit to: label, description, the
+  union of outputs over the enabled backends serving each, its `options_schema`, and the
+  legacy engine id the compat API uses for it.
+- `pg_stat_statements` is on: the Helm chart's CloudNativePG cluster enables it
+  (`cnpg.pgStatStatements`, default `true`; CNPG preloads the library and creates the
+  extension), and the compose Postgres preloads it (`CREATE EXTENSION pg_stat_statements`
+  to read it).
 
 ### Changed
 
+- `taas-admin` prints readable tables: columns sized to the terminal, `yes`/`no` for
+  flags, numbers right-aligned, `key=value` for objects, and a column no row has a
+  value in left out (`--json` still has every field). Piped, the output is plain text
+  without trailing spaces. `job show` and the user update commands print field by field
+  (a job's attempts as a table) instead of raw JSON; `job show --json` gives the JSON.
+- `make db-migrate MSG=` autogenerates the next numbered migration from the models,
+  written with plain column types (no app imports) and formatted by ruff. Read it before
+  committing.
+- `make build` builds the release images (taas-api, taas-worker, taas-compat, tagged
+  with the version and `latest`, under `REGISTRY/` when set) instead of running
+  `docker compose build` (`make up` builds the stack). `make push` pushes them,
+  `build-push` does both, and `make release` pushes and moves the `v<version>` and
+  `latest` git tags.
+- `make perf-taas` and `make perf-profile` are `bench-taas` and `bench-profile`, next to
+  the other `bench-*` targets.
+- The local k3d make targets are `k3d-*` (were `local-deploy-*`): `k3d-up`, `k3d-down`,
+  `k3d-clean`, `k3d-forward` / `k3d-forward-stop` / `k3d-forward-bench`, `k3d-seed`,
+  `k3d-scenarios`; the engine images are `engine-build`, `engine-build-cpu` and
+  `engine-build-gpu`. New: `k3d-stop` and `k3d-start` pause and resume the cluster and
+  its host engines without reinstalling anything, and `k3d-status` shows the cluster,
+  its pods, the engines, the forwards and the kube context. Each k3d target that runs
+  kubectl switches to the `k3d-taas` context first.
+- The end-to-end make targets are `e2e`, `e2e-fast`, `e2e-batch` and `e2e-compat` (were
+  `test-integration`, `test-integration-fast`, `test-batch` and `test-compat`).
+  `make test-integration` now runs the pytest suite with its Postgres and Redis tests
+  against `make test-env`: throwaway containers on :55432 and :56379, migrated, never
+  the dev stack's database (the tests truncate it). `test-env-clean` and
+  `test-env-reset` remove and recreate them.
+- `make check` also lints the Helm chart (`chart-lint`), audits the locked
+  dependencies for known vulnerabilities (`audit`, pip-audit; needs network) and scans
+  the git history for secrets (`secrets-scan`, gitleaks, from its container when not
+  installed). `make format` only formats now and `make lint` only lints; `format-check`
+  and `lint-fix` are the read-only and fixing halves.
+- `make clean` now deletes local caches only. Deleting the compose volumes (the DB,
+  MinIO and OCR data) is `make clean-volumes`; `clean-images` deletes the built images,
+  and `clean-all` does all three.
+- `taas-admin config set` refuses a key taas doesn't read (e.g. a typo, or the unused
+  `jobs.retention_days`) and a value of the wrong type (`"5"` or `true` for a number,
+  an unknown field in a `rate_limit.*` object), exiting 2 with the reason. Before, it
+  stored either, and readers silently fell back to the default.
+- `taas-admin config set` also refuses an out-of-range value: a timeout, TTL or bucket
+  TTL below one, a negative `jobs.max_requeues` or `dispatch.affinity_tolerance`, and a
+  `presigned.ttl_minutes` outside 1–10080 (S3 presigns 1 minute to 7 days). Such a value
+  already in the table is logged and falls back to its default, like a malformed one.
+- `taas-admin job show` prints its timestamps as ISO 8601 (`2026-10-25T23:58:40`, like
+  `--json` elsewhere) instead of with a space.
+- The OpenAPI schema lists the allowed values of every job and batch `status` field
+  (job: queued, running, storing, done, failed; batch: open, queued, finished). The
+  status response schemas are renamed `JobStatusResponse` and `BatchStatusResponse`;
+  the JSON is unchanged.
+- **Engine API keys are now least-privilege and per engine.** They no longer live in
+  the shared `<release>-secret` or reach every app pod through `envFrom`. Each
+  `engines.<name>` takes an `auth` block: `env` names the variable the engine image
+  reads, and the value comes from `auth.existingSecret.{name,key}` (recommended, e.g.
+  External Secrets) or `auth.generate: true`, which creates a dedicated
+  `<release>-<engine>-api-key` Secret and preserves its key across upgrades via
+  `lookup`. The engine pod and the backend-register hook get explicit `secretKeyRef`
+  env vars; omitting `auth` runs the engine without a key and clears a key stored on
+  that managed backend by an earlier release. Tunnel engines use
+  `tunnelBoxesDefaults.auth` (or a per-engine override), only `existingSecret`, with
+  `<release>-tunnel-engine-key` as the default name, because the off-cluster box must
+  share the value. When Helm can query the cluster, an `existingSecret` (including the
+  default tunnel Secret) is validated before apply: a missing Secret, missing key, or
+  empty key fails the install/upgrade instead of leaving the engine pod unable to
+  start. **Breaking:** the temporary `secrets.engineApiKeys` map and
+  `apiKeyEnv`/`apiKeySecretKey` engine fields are gone.
+- **ClickHouse thread pools are capped for the chart's 2-CPU pod.** ClickHouse 24.8
+  defaults to a 512-thread background-schedule pool and keeps up to 1000 idle threads,
+  which left ~700 mostly-sleeping threads in `taas-clickhouse-0` even with two queries
+  running. `clickstack.clickhouse.threads` now caps the schedule pool, the global pool,
+  its idle cache and concurrent queries (about 100 threads total); the StatefulSet gets
+  a config checksum so a change rolls the pod.
+- **ClickStack now tail-samples traces in the OTel collector.** It always keeps traces
+  with an error span or a failed job, samples the rest at
+  `clickstack.otel.traceSamplePercentage` (default 5%), and drops log records below WARN
+  before they reach `otel_logs`. Tail sampling waits `traceDecisionWait` (default 10m)
+  for a job's spans and holds them in memory, so the collector's memory limit and
+  `traceNumTraces` need to match the job rate. INFO logs remain on stdout.
+- **The engine slot is freed when the engine finishes, not after the harvest.** The
+  poller moves a done job to a durable `jobs:pending_harvest` queue in the same atomic
+  step that releases its slot and counters, keeping the engine's last status for the run
+  timestamps; results are fetched, stored and recorded from that queue separately. A
+  poller crash no longer loses a finished job, a transient harvest error is retried with
+  backoff, and the submit worker pauses dispatch when running plus storing jobs reach
+  `UNSTORED_JOB_MAX` (default 100), so a harvest bottleneck cannot grow Redis without
+  bound. At 10 fake backends a
+  two-minute A/B went from 14.0 to 18.5 jobs done/s and the queued backlog at collection
+  fell from 898 to 245 jobs. `bench/PERF_TAAS.md` has the A/B caveats and why
+  `max_inflight` 32 is now worse.
+- **Faster harvest.** The poller fetches a job's outputs concurrently, writes all result
+  rows in one multi-row upsert, and marks the job done in one pipelined Redis write
+  without re-reading the job hash it already has. At 10 fake backends a two-minute run
+  went from 13.2 to 15.3 jobs done/s and `store_s` p95 from 9.3 to 7.6 s; at 50 backends
+  from 10.0 to 11.8 done/s (with 5 % more offered load). `bench/PERF_TAAS.md` has the
+  stage-level numbers and the A/B caveats.
+- API timestamps are UTC with a `Z` (`2026-10-21T08:02:19.668317Z`), as the OpenAPI
+  `date-time` format requires: job status and lists, batches and the WebSocket
+  catch-up `ts`. They were the same UTC times without any offset before; a client
+  that parsed them as local time now gets the right instant.
+- **Dispatch by measured speed.** Each page goes to the backend that would finish it
+  first, from the backend's measured engine seconds per megapixel (the API now reads
+  each image's size at submit; Pillow joins the api image) and its pages in flight,
+  instead of round-robin. Backend priority tiers still come first. Failures that are a
+  backend's fault make it look slower until its pages succeed again. Pages of a batch
+  stick to a backend already running it when that's within `dispatch.affinity_tolerance`
+  (default 0.15) of the fastest.
+- **`external_id` is now an optional string** (≤ 255 characters, e.g. a PID like
+  `uuid:…`), your own label, no longer a required UUID. **Breaking:** the submit field
+  is `external_id` (`uuid` is gone), and WebSocket events carry `job_id` and
+  `external_id` instead of `uuid`: match them on the `job_id` that submit returns. The
+  engine upload is named by job id. The compat API is unaffected.
+- **Retention.** Postgres keeps live state only; job history is in ClickHouse.
+  Finished job rows (with their results) are deleted `jobs.done_ttl_seconds` (1 day) after
+  a `done` job finished and `jobs.failed_ttl_seconds` (7 days) after a `failed` one,
+  instead of after 30 days. Result objects go after `storage.results_max_age_seconds`
+  (1 day), or earlier, oldest first, when `storage.results_max_bytes` is set and
+  exceeded; their endpoints then answer **410 Gone**. A batch's results archive counts
+  toward the cap and ages out the same way; over the cap it goes first, and the next
+  download rebuilds it from the page results still stored. **First deploy:** the existing
+  rows past their TTL are deleted gradually, ~20 000 a minute, by the cleanup worker.
 - The retry policy is now uniform across dispatch, poll, and engine-reported failures:
   transport errors, HTTP 5xx, 408, and 429 are retried at all three stages; on poll,
   HTTP 404 (engine lost the job) is also retried. Engine-reported failures with
@@ -77,9 +318,91 @@ All notable changes to this project are documented here. The format is based on
   an undecodable or oversized image now fails the engine job (status `failed`, 422 on
   result) instead of rejecting the `POST /api/v1/process` — is already handled: the poller
   fails such jobs on the engine's reported status, as the dispatch path did before.
+- A job submitted without a `domain` is now stored and routed as `domain=default`, so it
+  only reaches backends that serve `default`; before, it could go to any backend. Engines
+  see the same request as before (the `default` domain is sent without a `domain` field).
+- The compat API's legacy engine ids now come from the database: each domain with a
+  `legacy_engine_id` is one engine (seeded `1` = `default`, `2` = `kramarky`, with the old
+  labels and descriptions, so `get_engines` returns the same JSON). The shim reads them
+  from `GET /api/v1/domains` with the caller's key, cached for 60 s per key. The
+  `ENGINES` setting (compose, `.env.compat`, Helm `compat.engines`) is gone. A legacy
+  engine is only listed while some enabled backend serves its domain.
+
+### Removed
+
+- **External URLs** (`users.external_url_template`, `external_url` in job status).
+- **The admin API** (`/admin/*`), **the dashboard** (`/dashboard`, `/static`), the
+  **master key** (`MASTER_KEY`, Helm `secrets.masterKey`, the `X-Master-Key` header) and
+  the `adminDashboard` expose target. Use `taas-admin` instead; job history and
+  dashboards are in ClickStack (HyperDX). `/` now redirects to `/docs`.
+- **`job_analytics`** and `engine_versions` (migration 018). **Run the ClickHouse
+  backfill (`python -m app.ops.backfill_clickstack`) before upgrading**: it reads the
+  table this release drops. `make local-deploy-bench-db` is gone with it.
 
 ### Fixed
 
+- The database enforces the NOT NULLs the models always declared (`backends.enabled`,
+  `max_inflight`, `created_at`; `config.updated_at`; `users.active`, `created_at`), and
+  `jobs.status` is TEXT like the other status columns (migration 024; a NULL left from
+  before gets the column's default).
+- Locked dependencies with known vulnerabilities (pip-audit) upgraded: aiohttp 3.14.5,
+  anyio 4.15.1, brotli 1.2.1, certifi 2026.10.23, cryptography 50.0.2, graphql-core
+  3.2.13, multidict 6.9.1, urllib3 2.8.0 and werkzeug 3.1.9; miniopy-async 1.23.6, whose
+  1.23.5 capped certifi below 2026.
+- The cleanup worker purges each bucket's expired objects on its own: a bucket it
+  can't list no longer stops the purge of the next one.
+- A job the engine accepted is no longer failed when the submit worker can't then
+  update its database row: it's already running in Redis, so the poller harvests it and
+  the harvest marks the row done. If even recording it as running fails, the log names
+  the engine's job id.
+- A job whose Redis state expired between the submit worker's peek and its claim no
+  longer leaves a `job:<id>` hash behind with no TTL; the claim drops it instead. The
+  jobs a tick dispatches are claimed in one round trip, not one per job.
+- The poller no longer loops without pause while its database is unreachable and
+  harvests are due: a harvest that can't look up its backend, connect, or get a pooled
+  connection backs off like any other transient harvest error, instead of staying due.
+- A `presigned.ttl_minutes` of 0, a negative one or one over 7 days no longer fails
+  every harvested job: it's refused on set, and falls back to the default on read.
+- The submit worker drops a queued job whose Redis state has expired or been deleted
+  from its queue as soon as it peeks it. Before, it offered the job as a `default`
+  domain job: until a backend serving `default` claimed it, it took a dispatch slot every
+  tick, and the claim left a `job:<id>` hash behind with no TTL. Its Postgres row is
+  still failed by the queued timeout.
+- A malformed value in the `config` table (e.g. a non-numeric timeout, TTL or rate
+  limit) is logged and falls back to its default, instead of failing every request or
+  worker tick that reads it.
+- A batch page's `dispatched`, `done` and `failed` job events carry its `batch_id`;
+  only `submitted` did, so per-batch charts saw no outcomes.
+- A retried batch page keeps its megapixels. Retry left them out of the job row and its
+  Redis state, so dispatch scored the page as 1 MP and the poller recorded the
+  backend's seconds per megapixel against the wrong size.
+- `taas-admin backend update --adapter` rejects an unknown adapter instead of storing
+  it, which broke dispatch to that backend. `--device` and `--adapter` list their
+  allowed values in `--help`.
+- Helm upgrades using older reused values supply the unstored-job limit, so the workers
+  start when `config.unstoredJobMax` was absent from the previous release.
+- Empty single-image uploads now return `422` before storage or job creation. Empty
+  image members in batch archives are listed in `skipped` instead of becoming jobs.
+- A queued job could be lost: the submit worker took jobs off the queue every pass and
+  put back the ones no backend could take, so a worker that stopped mid-pass (a rollout,
+  an OOM kill) dropped them. They stayed `queued` until the queued timeout failed them,
+  and `/load` didn't count them, so KEDA didn't scale for them. A job waiting for a
+  backend at zero replicas was taken and put back every pass, so a rollout lost it
+  almost surely. Jobs now leave the queue only when a worker claims one to dispatch
+  (two workers can't both claim it), and the cleanup worker puts back any queued job
+  that is in no queue.
+- The workers ignored SIGTERM (as PID 1, a signal without a handler is dropped), so every
+  stop waited out the 30 s grace period and was SIGKILLed mid-pass, with two submit
+  workers running during each rollout. They now finish the current pass and exit.
+- A job that failed after the engine ran it (an output it couldn't produce, or an
+  engine-reported failure) had no `started_at`, and its `failed` event no run time; the
+  engine's timestamps are now kept, as for a done job.
+- The Helm chart's KEDA mode never scaled: its Redis trigger watched a list `ocr-jobs`
+  that taas never writes. KEDA now scales the engine on `GET /load` (`metrics-api`,
+  `keda.loadFilter`, `keda.targetBacklogSeconds`; needs `secrets.loadToken`). The
+  `keda.redisAddress`, `listName`, `listLength` and `redisPassword*` values are gone.
+  With `minReplicas: 0`, set `jobs.queued_timeout_seconds` above the engine's cold
+  start.
 - The Python client (`TaasClient`) no longer opens a fresh `httpx.AsyncClient` for every
   presigned result fetch. One pooled client now lives for the lifetime of the WebSocket
   connection, so a result download reuses the connection instead of paying a new TCP — and,

@@ -1,19 +1,24 @@
 """Pins the poller's poll-result classification: harvest, fail-fast, requeue within budget, keep polling."""
 
 import dataclasses
+from datetime import datetime
 
 import httpx
 import pytest
 
-from app.engines.tuzkaocr import TuzkaOcrAdapter
+from app.engines.tuzkaocr.adapter import TuzkaOcrAdapter
+from app.schemas.attempt import Attempt
+from app.schemas.redis import EngineRun
 from app.services.retry_policy import is_retryable_engine_failure, is_retryable_poll_error
-from app.workers.poller import (
-    PollOutcome,
-    _probe_failure_status,
+from app.workers.poller.steps import (
     classify_poll_result,
-    poll_attempt,
+    failed_poll_attempt,
     poll_failure_message,
+    probe_failure_status,
+    retried_poll_attempt,
 )
+from app.workers.poller.types import PollOutcome
+from tests.factories import job_state
 
 
 def _http_error(code: int) -> httpx.HTTPStatusError:
@@ -25,8 +30,8 @@ def _outcome(**kw) -> PollOutcome:
     base = {
         "job_id": "j",
         "status": "failed",
-        "meta": {"backend_id": "7"},
-        "times": {},
+        "state": job_state(backend_id=7),
+        "run": EngineRun(),
         "retryable": False,
         "http_status": None,
         "error": None,
@@ -97,21 +102,15 @@ def test_engine_failure_message_is_engine_error_text():
 
 
 def test_poll_attempt_stage_and_backend():
-    engine = poll_attempt(
-        _outcome(http_status=500, error="crash", stage="engine"), True, "2026-06-01T12:00:00"
+    at = datetime(2026, 6, 1, 12)
+    engine = retried_poll_attempt(_outcome(http_status=500, error="crash", stage="engine"), at)
+    assert engine == Attempt(
+        at=at, stage="engine", backend_id=7, http_status=500, error="crash", retry=True
     )
-    assert engine == {
-        "at": "2026-06-01T12:00:00",
-        "backend_id": 7,
-        "error": "crash",
-        "http_status": 500,
-        "retry": True,
-        "stage": "engine",
-    }
-    poll = poll_attempt(_outcome(status="unreachable", meta={}), False, "t")
-    assert poll["stage"] == "poll"
-    assert poll["backend_id"] is None
-    assert poll["error"] == "unreachable"
+    poll = failed_poll_attempt(_outcome(status="unreachable", state=job_state()), at)
+    assert poll.stage == "poll"
+    assert poll.backend_id is None
+    assert poll.error == "unreachable"
 
 
 def _make_adapter(handler) -> tuple[TuzkaOcrAdapter, httpx.AsyncClient]:
@@ -130,7 +129,7 @@ async def test_probe_failure_status_reads_result_http_status(code: int):
 
     adapter, http = _make_adapter(handler)
     try:
-        assert await _probe_failure_status(adapter, "e1") == code
+        assert await probe_failure_status(adapter, "e1") == code
     finally:
         await http.aclose()
 
@@ -142,6 +141,6 @@ async def test_probe_failure_status_none_when_unreachable():
 
     adapter, http = _make_adapter(handler)
     try:
-        assert await _probe_failure_status(adapter, "e1") is None
+        assert await probe_failure_status(adapter, "e1") is None
     finally:
         await http.aclose()

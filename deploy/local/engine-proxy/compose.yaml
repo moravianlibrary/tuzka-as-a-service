@@ -1,9 +1,9 @@
 # Two host TuzkaOCR engines (GPU + CPU) + one frpc multiplexing both reverse tunnels.
 #
 # Engine images (tuzkaocr:local-cpu / tuzkaocr:local-gpu) are built from local source via
-# the Makefile (`make local-deploy-build-cpu` / `local-deploy-build-gpu`) — NOT pulled.
-# Lifecycle is driven by the Makefile: `make local-deploy-up` / `local-deploy-down` /
-# `local-deploy-clean`.
+# the Makefile (`make engine-build-cpu` / `engine-build-gpu`) — NOT pulled.
+# Lifecycle is driven by the Makefile: `make k3d-up` / `k3d-stop` / `k3d-start` /
+# `k3d-down` / `k3d-clean`.
 #
 # Neither engine publishes a host port — each is reached ONLY through its tunnel into the
 # k3d cluster. One frpc opens two reverse tunnels (gpu1 -> remotePort 8000, cpu1 ->
