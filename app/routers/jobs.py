@@ -1,9 +1,10 @@
 """Public API-key job endpoints: submit an OCR job and poll its status and results."""
 
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
@@ -476,6 +477,18 @@ _SERVED_DOMAINS_SQL = text(
 )
 
 
+@dataclass(frozen=True)
+class ServedDomain:
+    """A ``_SERVED_DOMAINS_SQL`` row."""
+
+    name: str
+    label: str | None
+    description: str | None
+    options_schema: dict[str, Any] | None
+    legacy_engine_id: int | None
+    outputs: list[str]
+
+
 @router.get(
     "/domains",
     response_model=DomainListResponse,
@@ -498,20 +511,20 @@ async def list_domains(
     submit ``options`` field is validated against, derived from the engine's own OpenAPI.
     A domain your key can't use isn't listed.
     """
-    rows = (await db.execute(_SERVED_DOMAINS_SQL)).mappings().all()
+    rows = (await db.execute(_SERVED_DOMAINS_SQL)).mappings()
     entries = []
-    for r in rows:
-        outputs = visible_outputs(principal, r["name"], frozenset(r["outputs"]))
+    for domain in (ServedDomain(**row) for row in rows):
+        outputs = visible_outputs(principal, domain.name, frozenset(domain.outputs))
         if not outputs:
             continue
         entries.append(
             DomainEntry(
-                name=r["name"],
-                label=r["label"],
-                description=r["description"],
-                outputs=[o for o in r["outputs"] if o in outputs],  # keep the SQL's order
-                options_schema=r["options_schema"],
-                legacy_engine_id=r["legacy_engine_id"],
+                name=domain.name,
+                label=domain.label,
+                description=domain.description,
+                outputs=[o for o in domain.outputs if o in outputs],  # keep the SQL's order
+                options_schema=domain.options_schema,
+                legacy_engine_id=domain.legacy_engine_id,
             )
         )
     return DomainListResponse(domains=entries)
