@@ -1,20 +1,17 @@
 """Tests for retention (step 6, D5): the pure cutoffs and eviction plan, and the TTL
 sweep against a throwaway migrated Postgres (``TEST_DATABASE_URL``; skips otherwise)."""
 
-import os
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.schemas.runtime_config import RuntimeConfig
 from app.services import retention
 from app.services.retention import expired_job_cutoffs, plan_eviction
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 NOW = datetime(2026, 10, 21, 12, 0, 0)
 
 # ---- pure ----
@@ -41,31 +38,6 @@ def test_eviction_stops_when_rows_run_out() -> None:
 
 
 # ---- the TTL sweep (DB) ----
-
-
-@pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
-            text(
-                "TRUNCATE batches, backend_domains, domains, job_results, jobs, backends, "
-                "users, config RESTART IDENTITY CASCADE"
-            )
-        )
-        await s.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
-        await s.commit()
-        yield s
-    await engine.dispose()
 
 
 async def _job(session, status: str, finished_days_ago: float | None) -> uuid.UUID:

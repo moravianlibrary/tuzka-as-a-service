@@ -4,7 +4,6 @@ queue, and how a rejected archive is undone. Against a throwaway migrated Postgr
 
 import asyncio
 import io
-import os
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +12,7 @@ from typing import Any
 import pytest
 from fastapi import UploadFile
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.exceptions import PayloadTooLarge, Unprocessable, UnsupportedMediaType
@@ -24,7 +23,6 @@ from app.services.redis_jobs import peek_pending
 from app.services.scopes import Principal
 from app.vocabulary import BatchStatus, JobStatus
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 IMAGE = (Path(__file__).resolve().parents[1] / "test-data" / "sample.jpg").read_bytes()
 
 
@@ -42,38 +40,19 @@ class FakeIncoming:
 
 
 @pytest.fixture
-async def db():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as session:
-        await session.execute(
-            text(
-                "TRUNCATE batches, backend_domains, domains, job_results, jobs, backends, users, "
-                "config RESTART IDENTITY CASCADE"
-            )
+async def db(session):
+    """A session on the emptied test database, with one backend serving the default
+    domain."""
+    await session.execute(text("INSERT INTO backends (id, url) VALUES (1, 'http://e:8000')"))
+    await session.execute(text("INSERT INTO domains (id, name) VALUES (1, 'default')"))
+    await session.execute(
+        text(
+            "INSERT INTO backend_domains (backend_id, domain_id, outputs) "
+            "VALUES (1, 1, '{alto,txt}')"
         )
-        await session.execute(
-            text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')")
-        )
-        await session.execute(text("INSERT INTO backends (id, url) VALUES (1, 'http://e:8000')"))
-        await session.execute(text("INSERT INTO domains (id, name) VALUES (1, 'default')"))
-        await session.execute(
-            text(
-                "INSERT INTO backend_domains (backend_id, domain_id, outputs) "
-                "VALUES (1, 1, '{alto,txt}')"
-            )
-        )
-        await session.commit()
-        yield session
-    await engine.dispose()
+    )
+    await session.commit()
+    return session
 
 
 @pytest.fixture

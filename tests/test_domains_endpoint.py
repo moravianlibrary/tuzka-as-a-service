@@ -4,41 +4,18 @@ Like the other DB-backed tests, these need a throwaway migrated Postgres via
 ``TEST_DATABASE_URL`` and skip otherwise.
 """
 
-import os
-
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.routers.jobs import list_domains
 from app.services.scopes import Principal
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-
 
 @pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
-            text(
-                "TRUNCATE backend_domains, domains, "
-                "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
-            )
-        )
-        await s.commit()
+async def session(database):
+    """A session on the emptied test database; the tests add their own users."""
+    async with database() as s:
         yield s
-    await engine.dispose()
 
 
 async def _backend(session, bid, *, enabled=True):

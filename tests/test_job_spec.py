@@ -5,13 +5,11 @@ a throwaway migrated Postgres via ``TEST_DATABASE_URL`` and skips otherwise.
 """
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.engines.openapi import options_schema_from_openapi
 from app.services.job_spec import (
@@ -26,7 +24,6 @@ from app.services.job_spec import (
 )
 from app.vocabulary import Fmt
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 ALTO_TXT = frozenset({"alto", "txt"})
 
 # The schema domain sync derives from TuzkaOCR's OpenAPI.
@@ -121,28 +118,12 @@ def test_no_schema_accepts_only_empty_options() -> None:
 
 
 @pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+async def session(database):
+    """A session on the emptied test database. Backend 1 serves default (with the
+    TuzkaOCR schema) and kramarky (no schema yet); disabled backend 2 is the only one
+    serving handwritten."""
     clear_capabilities_cache()  # each test seeds its own rows
-    async with factory() as s:
-        await s.execute(
-            text(
-                "TRUNCATE backend_domains, domains, "
-                "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
-            )
-        )
-        # Backend 1 serves default (with the TuzkaOCR schema) and kramarky (no schema
-        # yet); disabled backend 2 is the only one serving handwritten.
+    async with database() as s:
         await s.execute(
             text(
                 "INSERT INTO backends (id, url, enabled) VALUES "
@@ -165,7 +146,6 @@ async def session():
         )
         await s.commit()
         yield s
-    await engine.dispose()
 
 
 async def _rejects(session, domain, outputs, options) -> str:

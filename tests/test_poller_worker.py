@@ -5,7 +5,6 @@ engine and the object storage are fakes."""
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from datetime import datetime
@@ -15,7 +14,6 @@ import httpx
 import pytest
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.engines.base import EngineStatus, OutputUnavailable, Result
@@ -33,7 +31,6 @@ from app.workers.poller.types import PollOutcome
 from app.workers.poller.worker import PollerWorker
 from tests.factories import job_state
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 TTL = 3600
 BACKEND_ID = 1
 ALTO = (
@@ -93,32 +90,15 @@ class FakeEngine:
 
 
 @pytest.fixture
-async def session_factory():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as db:
-        await db.execute(
-            text(
-                "TRUNCATE batches, backend_domains, domains, job_results, jobs, backends, users, "
-                "config RESTART IDENTITY CASCADE"
-            )
-        )
-        await db.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
+async def session_factory(session_factory):
+    """The emptied test database, with the engine's backend row."""
+    async with session_factory() as db:
         await db.execute(
             text("INSERT INTO backends (id, url) VALUES (:id, 'http://engine:8000')"),
             {"id": BACKEND_ID},
         )
         await db.commit()
-    yield factory
-    await engine.dispose()
+    return session_factory
 
 
 @pytest.fixture

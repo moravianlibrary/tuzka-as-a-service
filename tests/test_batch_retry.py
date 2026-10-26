@@ -2,39 +2,14 @@
 scoring and the per-backend speed both divide by. Against a throwaway migrated Postgres
 (``TEST_DATABASE_URL``) and Redis; skips otherwise."""
 
-import os
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.job import Job
 from app.routers import batches
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-
-
-@pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(text("TRUNCATE batches, job_results, jobs, users RESTART IDENTITY CASCADE"))
-        await s.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
-        await s.commit()
-        yield s
-    await engine.dispose()
 
 
 async def _finished_batch_with_failed_page(session, megapixels: float) -> uuid.UUID:

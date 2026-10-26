@@ -5,11 +5,9 @@ otherwise; the pure ones always run.
 """
 
 import logging
-import os
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.engines.base import DomainInfo, EngineInfo
 from app.services.domain_sync import (
@@ -19,8 +17,6 @@ from app.services.domain_sync import (
     plan_domain_links,
     served_capabilities,
 )
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 ALTO_TXT = frozenset({"alto", "txt"})
 SCHEMA_V1 = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -88,29 +84,12 @@ _SCHEMA_OF_DEFAULT = text("SELECT options_schema FROM domains WHERE name = 'defa
 
 
 @pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
-            text(
-                "TRUNCATE backend_domains, domains, "
-                "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
-            )
-        )
+async def session(database):
+    """A session on the emptied test database, with backend 1."""
+    async with database() as s:
         await s.execute(text("INSERT INTO backends (id, url) VALUES (1, 'http://e1')"))
         await s.commit()
         yield s
-    await engine.dispose()
 
 
 @pytest.mark.asyncio

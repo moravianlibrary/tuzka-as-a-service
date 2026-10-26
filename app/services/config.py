@@ -65,6 +65,12 @@ async def set_values(db: AsyncSession, values: dict[str, Any]) -> None:
     _cache.pop("runtime_config", None)
 
 
+def clear_cache() -> None:
+    """Forget every cached value, for a caller that changed the tables some other way
+    (a test's TRUNCATE)."""
+    _cache.clear()
+
+
 def invalidate_user(username: str) -> None:
     _cache.pop(f"user:{username}", None)
 

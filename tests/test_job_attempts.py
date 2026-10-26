@@ -3,22 +3,17 @@ produces a working ``update(Job).values(...)`` payload."""
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime
 
 import pytest
 from sqlalchemy import select, text, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.clock import utcnow
 from app.models.job import Job
 from app.schemas.attempt import Attempt
 from app.services.job_attempts import append_attempt
 from app.vocabulary import FailureStage
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-
 
 # ---- stored shape (D8) ----
 
@@ -52,30 +47,11 @@ def test_attempt_is_stored_in_d8_shape() -> None:
 
 
 @pytest.fixture
-async def session():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run job_attempts tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
-            text(
-                "TRUNCATE backend_domains, domains, "
-                "job_results, jobs, backends, users RESTART IDENTITY CASCADE"
-            )
-        )
-        await s.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
-        await s.execute(text("INSERT INTO backends (id, url) VALUES (1, 'http://e')"))
-        await s.commit()
-        yield s
-    await engine.dispose()
+async def session(session):
+    """A session on the emptied test database, with ``alice`` and backend 1."""
+    await session.execute(text("INSERT INTO backends (id, url) VALUES (1, 'http://e')"))
+    await session.commit()
+    return session
 
 
 async def test_append_attempt_adds_entries(session) -> None:

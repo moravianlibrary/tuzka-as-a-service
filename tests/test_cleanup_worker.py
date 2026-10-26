@@ -4,7 +4,6 @@ migrated Postgres (``TEST_DATABASE_URL``) and Redis; skips otherwise. The object
 is a fake."""
 
 import asyncio
-import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -14,8 +13,6 @@ from typing import Any
 
 import pytest
 import redis.asyncio as aioredis
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.clock import utcnow
 from app.config import Settings
@@ -25,7 +22,6 @@ from app.vocabulary import JobStatus
 from app.workers.cleanup import HEAVY_EVERY, CleanupWorker
 from tests.factories import job_state
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 TTL = 3600
 
 
@@ -55,31 +51,6 @@ class BrokenBucket(FakeBucket):
     async def list_objects(self, bucket: str, **_: Any) -> AsyncIterator[FakeObject]:
         raise ConnectionError("storage down")
         yield  # an async generator, like the real listing
-
-
-@pytest.fixture
-async def session_factory():
-    if not TEST_DATABASE_URL:
-        pytest.skip("Set TEST_DATABASE_URL to a throwaway migrated DB to run these tests")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        await engine.dispose()
-        pytest.skip("TEST_DATABASE_URL not reachable")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as db:
-        await db.execute(
-            text(
-                "TRUNCATE batches, backend_domains, domains, job_results, jobs, backends, users, "
-                "config RESTART IDENTITY CASCADE"
-            )
-        )
-        await db.execute(text("INSERT INTO users (username, hashed_key) VALUES ('alice', 'x')"))
-        await db.commit()
-    yield factory
-    await engine.dispose()
 
 
 def _worker(session_factory, r: aioredis.Redis, incoming: FakeBucket, results: FakeBucket):
