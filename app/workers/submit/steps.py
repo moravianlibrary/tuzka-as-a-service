@@ -2,12 +2,14 @@
 unit-testable without the worker."""
 
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 
 from app.clock import utcnow
 from app.schemas.attempt import Attempt
 from app.schemas.redis import JobState
+from app.services.events import failure
 from app.services.redis_jobs import (
     QueueEntry,
 )
@@ -166,6 +168,11 @@ def classify_dispatch_error(error: Exception) -> DispatchFailure:
         transient=is_retryable_dispatch_error(error),
         transport=isinstance(error, httpx.TransportError),
     )
+
+
+def dispatch_event_fields(failed: DispatchFailure) -> dict[str, Any]:
+    """The error columns of the job's ``retried``/``failed`` event."""
+    return failure(FailureStage.DISPATCH, failed.http_status, failed.transport)
 
 
 def failed_dispatch_attempt(backend_id: int, http_status: int | None, error: str) -> Attempt:

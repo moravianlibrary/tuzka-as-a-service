@@ -59,6 +59,7 @@ from app.workers.stages import StageTimer, log_stages, stage_metric_rows
 from app.workers.submit.steps import (
     allocate_scored,
     classify_dispatch_error,
+    dispatch_event_fields,
     failed_dispatch_attempt,
     pending_job,
     retried_dispatch_attempt,
@@ -360,7 +361,7 @@ class SubmitWorker:
         if perf.counts_against_backend(failed.http_status):
             await perf.record_failure(self.r, backend.id, state.domain)
         attempt = failed_dispatch_attempt(backend.id, failed.http_status, msg)
-        await self._fail_job(job_id, state, backend, attempt, failed.event_fields)
+        await self._fail_job(job_id, state, backend, attempt, dispatch_event_fields(failed))
 
     async def _retry_later(
         self,
@@ -402,7 +403,7 @@ class SubmitWorker:
                 job_id,
                 state,
                 backend,
-                **failed.event_fields,
+                **dispatch_event_fields(failed),
             )
         )
 
