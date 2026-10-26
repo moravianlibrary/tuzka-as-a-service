@@ -18,8 +18,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
-from app.engines import make_adapter
 from app.engines.base import EngineAdapter, EngineStatus, OutputUnavailable
+from app.engines.cache import AdapterCache
 from app.engines.outputs import ext_for
 from app.models.backend import Backend
 from app.models.db import make_engine
@@ -29,7 +29,6 @@ from app.schemas.redis import EngineRun, JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
 from app.services.alto_stats import parse_alto
-from app.services.auth import decrypt_backend_key
 from app.services.event_emitter import get_emitter
 from app.services.events import (
     JobEvent,
@@ -75,7 +74,6 @@ from app.services.storage import (
 )
 from app.telemetry import job_span, setup_telemetry
 from app.vocabulary import (
-    AdapterId,
     EngineState,
     FailureStage,
     JobEventName,
@@ -317,43 +315,32 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     emitter = get_emitter(settings)
     await emitter.start()
 
-    # backend id -> (adapter id, decrypted key, display label), read from the DB once
-    # per backend.
-    backend_info: dict[int, tuple[AdapterId, str | None, str]] = {}
-    # (backend id, url) -> adapter. The URL comes from the job hash, i.e. where the job
-    # was actually dispatched, so a backend re-registered at a new URL gets a new adapter.
-    adapters: dict[tuple[int | None, str], EngineAdapter] = {}
+    # Backend rows by id, read from the DB once each; None = the row is gone.
+    backends: dict[int, Backend | None] = {}
+    # Keyed by the job hash's URL, i.e. where the job was actually dispatched, so a
+    # backend re-registered at a new URL still gets its in-flight jobs polled.
+    adapters = AdapterCache(http, settings.key_encryption_secret)
+
+    async def backend_for(state: JobState) -> Backend | None:
+        backend_id = state.backend_id
+        if backend_id is None:
+            return None
+        if backend_id not in backends:
+            async with session_factory() as db:
+                backends[backend_id] = await db.get(Backend, backend_id)
+        return backends[backend_id]
 
     async def adapter_for(state: JobState) -> EngineAdapter:
-        backend_id = state.backend_id
         url = state.backend_url
         if url is None:
             raise LookupError(f"job state has no backend_url (status {state.status})")
-        if backend_id is not None and backend_id not in backend_info:
-            async with session_factory() as db:
-                backend = await db.get(Backend, backend_id)
-            adapter_id, key, label = AdapterId.TUZKAOCR, None, ""
-            if backend:
-                adapter_id = backend.adapter
-                label = backend.label or str(backend.id)
-                if backend.api_key_enc:
-                    key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-            backend_info[backend_id] = (adapter_id, key, label)
-        adapter_id, key, _ = (
-            backend_info[backend_id] if backend_id is not None else (AdapterId.TUZKAOCR, None, "")
-        )
-        cache_key = (backend_id, url)
-        if cache_key not in adapters:
-            adapters[cache_key] = make_adapter(adapter_id, url, key, http)
-        return adapters[cache_key]
+        return adapters.for_backend(await backend_for(state), url)
 
     def job_event(
         name: JobEventName, job_id: str, state: JobState, job_rec: Job | None, **fields: Any
     ) -> JobEvent:
         """An event for a job the poller is finishing, from its hash and DB row."""
-        backend_id = state.backend_id
-        adapter = backend_info[backend_id][0] if backend_id in backend_info else ""
-        backend = backend_info[backend_id][2] if backend_id in backend_info else ""
+        backend = backends.get(state.backend_id) if state.backend_id is not None else None
         return JobEvent(
             ts=utcnow(),
             event=name,
@@ -361,9 +348,9 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
             username=state.username,
             domain=state.domain,
             outputs=sorted(state.outputs),
-            backend_id=backend_id,
-            backend=backend,
-            adapter=adapter,
+            backend_id=state.backend_id,
+            backend=(backend.label or str(backend.id)) if backend else "",
+            adapter=backend.adapter if backend else "",
             engine_version=(job_rec.engine_version if job_rec else None) or "",
             file_size_bytes=job_rec.file_size_bytes if job_rec else None,
             **fields,

@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.clock import utcnow
 from app.config import Settings
-from app.engines import make_adapter
-from app.engines.base import EngineAdapter, EngineFullError
+from app.engines.base import EngineFullError
+from app.engines.cache import AdapterCache
 from app.models.backend import Backend
 from app.models.db import make_engine
 from app.models.job import Job
@@ -23,7 +23,6 @@ from app.schemas.attempt import Attempt
 from app.schemas.redis import JobState
 from app.services import batch_store, live_metrics, perf
 from app.services import config as config_service
-from app.services.auth import decrypt_backend_key
 from app.services.domain_sync import all_served_capabilities, apply_domain_sync
 from app.services.event_emitter import get_emitter
 from app.services.events import JobEvent, failure
@@ -54,7 +53,7 @@ from app.services.retry_policy import (
 )
 from app.services.storage import get_incoming_client, get_object
 from app.telemetry import job_span, setup_telemetry
-from app.vocabulary import DEFAULT_DOMAIN, AdapterId, FailureStage, Fmt, JobEventName, JobStatus
+from app.vocabulary import DEFAULT_DOMAIN, FailureStage, Fmt, JobEventName, JobStatus
 from app.workers.shutdown import install_stop
 from app.workers.stages import StageTimer, stage_metric_rows
 
@@ -260,8 +259,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     http = httpx.AsyncClient(timeout=60.0)
     emitter = get_emitter(settings)
     await emitter.start()
-    # backend id -> (what it was built from, adapter); rebuilt when any of that changes.
-    adapters: dict[int, tuple[tuple[AdapterId, str, str | None], EngineAdapter]] = {}
+    adapters = AdapterCache(http, settings.key_encryption_secret)
 
     backends: list[Backend] = []
     backends_refreshed_at = 0.0
@@ -275,20 +273,6 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     # Every backend's capabilities, loaded in one query; 0.0 = reload on next use.
     capabilities: dict[int, dict[str, frozenset[str]]] = {}
     capabilities_loaded_at = 0.0
-
-    def adapter_for(backend: Backend) -> EngineAdapter:
-        """The backend's adapter, built once and rebuilt when its adapter id, URL or key
-        changes (refresh_backends reloads the rows, e.g. after a Helm re-register)."""
-        source = (backend.adapter, backend.url, backend.api_key_enc)
-        cached = adapters.get(backend.id)
-        if cached is not None and cached[0] == source:
-            return cached[1]
-        api_key = None
-        if backend.api_key_enc:
-            api_key = decrypt_backend_key(backend.api_key_enc, settings.key_encryption_secret)
-        adapter = make_adapter(backend.adapter, backend.url, api_key, http)
-        adapters[backend.id] = (source, adapter)
-        return adapter
 
     async def refresh_backends() -> None:
         nonlocal backends, backends_refreshed_at
@@ -307,7 +291,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
     async def sync_domains(backend: Backend) -> None:
         """Fetch the engine's domains, outputs and options schema; rebuild backend_domains."""
         try:
-            info = await adapter_for(backend).describe()
+            info = await adapters.for_backend(backend, backend.url).describe()
         except Exception as exc:
             logger.warning("Domain sync failed for %s: %s", backend.url, exc)
             return
@@ -366,7 +350,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         if cached and now - cached[1] < settings.health_cache_seconds:
             return cached[0]
 
-        healthy = await adapter_for(backend).healthy()
+        healthy = await adapters.for_backend(backend, backend.url).healthy()
         health_cache[backend.id] = (healthy, now)
         if healthy:
             logger.info(f"Backend {backend.label or backend.url} healthy")
@@ -474,7 +458,7 @@ async def main() -> None:  # noqa: C901, PLR0912, PLR0915 - split up on refactor
         # Named by job id: the external id is the caller's free text, not a file name.
         filename = f"{job_id}{ext}"
         try:
-            adapter = adapter_for(backend)
+            adapter = adapters.for_backend(backend, backend.url)
             with timer.stage("engine_submit"):
                 engine_job_id = await adapter.submit(
                     image_bytes, filename, domain, outputs, state.options
