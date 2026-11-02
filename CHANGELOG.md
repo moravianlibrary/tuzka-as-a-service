@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- ClickHouse no longer grows its own logs without bound: `processors_profile_log`,
+  `opentelemetry_span_log`, `query_views_log` and `error_log` get a TTL like the other
+  system log tables, and the server logs at `warning` (`clickstack.clickhouse.logLevel`)
+  instead of the image's `trace`, which wrote ~370 MiB a day to the container filesystem.
+
 ## [0.9.0] - 2026-10-26
 
 ### Added

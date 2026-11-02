@@ -444,6 +444,9 @@ clickstack:
       limits:
         cpu: "2"
         memory: 4Gi
+    # Server log level (none, fatal, error, warning, information, debug, trace).
+    # The image default is trace: ~370 MiB/day of mostly Trace/Debug lines.
+    logLevel: warning
     # ClickHouse's defaults are sized for big servers: 24.8 creates a 512-thread
     # background-schedule pool and keeps up to 1000 idle query threads. In this
     # 2-CPU pod that shows up as ~700 mostly-sleeping threads. Cap the pools to the

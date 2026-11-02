@@ -24,6 +24,20 @@ data:
       <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></asynchronous_metric_log>
       <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
       <part_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></part_log>
+      <processors_profile_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></processors_profile_log>
+      <opentelemetry_span_log><ttl>finish_date + INTERVAL 7 DAY DELETE</ttl></opentelemetry_span_log>
+      <query_views_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_views_log>
+      <error_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></error_log>
+    </clickhouse>
+  # The image logs at trace into the container filesystem (up to 10 x 1000M), which
+  # is lost on restart anyway. See clickstack.clickhouse.logLevel in values.yaml.
+  logger.xml: |
+    <clickhouse>
+      <logger>
+        <level>{{ $c.logLevel | default "warning" }}</level>
+        <size>100M</size>
+        <count>3</count>
+      </logger>
     </clickhouse>
   # Keep ClickHouse's thread pools proportional to this small single-node deployment.
   # These are startup-only settings; the StatefulSet checksum below rolls the pod when
@@ -113,6 +127,10 @@ spec:
             - name: config
               mountPath: /etc/clickhouse-server/config.d/system-logs.xml
               subPath: system-logs.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/logger.xml
+              subPath: logger.xml
               readOnly: true
             - name: config
               mountPath: /etc/clickhouse-server/config.d/threads.xml
