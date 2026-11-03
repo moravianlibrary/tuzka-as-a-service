@@ -25,7 +25,17 @@ data:
       <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
       <part_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></part_log>
       <processors_profile_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></processors_profile_log>
-      <opentelemetry_span_log><ttl>finish_date + INTERVAL 7 DAY DELETE</ttl></opentelemetry_span_log>
+      <!-- The image's config.xml gives this table an <engine>, and ClickHouse refuses a
+           <ttl> next to one (BAD_ARGUMENTS at startup): the TTL goes inside the engine,
+           which therefore repeats the image's partition and sort keys. -->
+      <opentelemetry_span_log>
+        <engine>
+          engine MergeTree
+          partition by toYYYYMM(finish_date)
+          order by (finish_date, finish_time_us, trace_id)
+          ttl finish_date + INTERVAL 7 DAY DELETE
+        </engine>
+      </opentelemetry_span_log>
       <query_views_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_views_log>
       <error_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></error_log>
     </clickhouse>

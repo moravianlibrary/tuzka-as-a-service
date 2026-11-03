@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format is based on
   `opentelemetry_span_log`, `query_views_log` and `error_log` get a TTL like the other
   system log tables, and the server logs at `warning` (`clickstack.clickhouse.logLevel`)
   instead of the image's `trace`, which wrote ~370 MiB a day to the container filesystem.
+- ClickHouse starts again with chart 0.8.2: chart 0.8.1 set `opentelemetry_span_log`'s TTL
+  beside the `<engine>` the image already gives that table, which ClickHouse rejects at
+  startup (`BAD_ARGUMENTS`, exit code 36). The TTL now sits inside the engine clause.
 
 ## [0.9.0] - 2026-10-26
 
